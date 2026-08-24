@@ -24,8 +24,7 @@ import re
 import uuid
 import zipfile
 
-import pymupdf as fitz
-
+import pymupdf
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -240,7 +239,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.1")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.3")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -1770,7 +1769,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.6.1",
+        "version": "0.6.3",
         "database": "connected" if connected else "unavailable",
     }
 
@@ -2101,14 +2100,55 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
                 )
 
         except Exception as exc:
-            # During validation, DO NOT silently fall back to the PDF text parser.
-            # The fallback can extract filename/title-block fragments and make it
-            # look like Vision AI succeeded when it actually failed.
+            # Do not silently fall back to a weak parser. Return the real
+            # upstream cause so the UI can distinguish rate-limit/transient
+            # Gemini failures from drawing/schema problems.
+            message = str(exc)
+            upper = message.upper()
+
+            if any(
+                marker in upper
+                for marker in (
+                    "429",
+                    "RESOURCE_EXHAUSTED",
+                    "RATE LIMIT",
+                )
+            ):
+                status_code = 429
+                reason = (
+                    "Gemini rate limit reached. "
+                    "Wait a few seconds and retry this drawing."
+                )
+            elif any(
+                marker in upper
+                for marker in (
+                    "503",
+                    "UNAVAILABLE",
+                    "TIMEOUT",
+                    "DEADLINE_EXCEEDED",
+                )
+            ):
+                status_code = 503
+                reason = (
+                    "Gemini is temporarily unavailable. "
+                    "Retry this drawing shortly."
+                )
+            else:
+                status_code = 502
+                reason = "Vision AI extraction failed."
+
+            print(
+                "[ANALYZE ERROR]",
+                type(exc).__name__,
+                message,
+                flush=True,
+            )
+
             raise HTTPException(
-                status_code=502,
+                status_code=status_code,
                 detail=(
-                    "Vision AI extraction failed. "
-                    f"{type(exc).__name__}: {exc}"
+                    f"{reason} "
+                    f"{type(exc).__name__}: {message}"
                 ),
             ) from exc
 

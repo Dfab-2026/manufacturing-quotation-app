@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 import os
 from pathlib import Path
 from typing import Optional
@@ -201,21 +203,53 @@ Important:
             )
         )
 
-    response = client.models.generate_content(
-        model="gemini-3.6-flash",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            response_mime_type="application/json",
-            response_schema=EngineeringDrawingExtraction,
-            temperature=0.1,
-        ),
+    last_error: Exception | None = None
+
+    for attempt in range(1, 3):
+        try:
+            response = client.models.generate_content(
+                model="gemini-3.6-flash",
+                contents=contents,
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    response_schema=EngineeringDrawingExtraction,
+                    temperature=0.1,
+                ),
+            )
+
+            if not response.text:
+                raise RuntimeError("Gemini returned an empty response.")
+
+            parsed = EngineeringDrawingExtraction.model_validate_json(
+                response.text
+            )
+
+            return parsed.model_dump()
+
+        except Exception as exc:
+            last_error = exc
+            message = str(exc).upper()
+
+            transient = any(
+                marker in message
+                for marker in (
+                    "429",
+                    "RESOURCE_EXHAUSTED",
+                    "RATE LIMIT",
+                    "503",
+                    "UNAVAILABLE",
+                    "TIMEOUT",
+                    "DEADLINE_EXCEEDED",
+                )
+            )
+
+            if not transient or attempt >= 2:
+                raise
+
+            # One controlled retry is quicker and safer than the old
+            # frontend burst of multiple simultaneous retries.
+            time.sleep(3.0)
+
+    raise RuntimeError(
+        f"Gemini extraction failed: {last_error}"
     )
-
-    if not response.text:
-        raise RuntimeError("Gemini returned an empty response.")
-
-    parsed = EngineeringDrawingExtraction.model_validate_json(
-        response.text
-    )
-
-    return parsed.model_dump()

@@ -40,7 +40,7 @@ type BatchFailure = {
 };
 
 
-const BATCH_ANALYZE_CONCURRENCY = 2;
+const BATCH_ANALYZE_CONCURRENCY = 1;
 
 const emptySummary: QuoteSummary = {
   direct_cost: 0,
@@ -422,8 +422,8 @@ export default function Page() {
   ): Promise<BatchWorkspace> => {
     let lastError = "Analyze failed";
 
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      const attemptText = attempt > 1 ? ` · retry ${attempt}/3` : "";
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const attemptText = attempt > 1 ? ` · retry ${attempt}/2` : "";
 
       setAnalyzeProgress(`${originalIndex + 1}/${total}`);
       setMsg(
@@ -448,8 +448,8 @@ export default function Page() {
             ? error.message
             : "Analyze failed";
 
-        if (attempt < 3) {
-          await wait(900 * attempt);
+        if (attempt < 2) {
+          await wait(3500);
         }
       }
     }
@@ -679,7 +679,7 @@ export default function Page() {
         );
       } else {
         setMsg(
-          `${ordered.length} of ${selectedFiles.length} drawings analyzed. ${failed.length} failed after 3 attempts — use Retry Failed.`
+          `${ordered.length} of ${selectedFiles.length} drawings analyzed. ${failed.length} failed after 2 attempts — use Retry Failed.`
         );
       }
 

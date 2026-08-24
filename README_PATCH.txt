@@ -1,58 +1,37 @@
-Manufacturing Quotation App — v0.6.1 FAST + ORIGINAL UI
+Manufacturing Quotation App v0.6.3 — Gemini stability + speed fix
 
-WHAT CHANGED
-============
-1. UI restored from v0.5.1
-   The pre-database frontend layout/theme is used again.
-   No visual redesign was added.
+Why the 502 happened
+====================
+The app was wrapping every Gemini exception as HTTP 502.
+With batch concurrency=2 and frontend retries=3, one batch could burst several
+Gemini requests quickly. On free-tier API limits this can cause 429 /
+RESOURCE_EXHAUSTED or transient service failures.
 
-2. Faster Rate Master / costing
-   Rates and settings are cached in the backend process, so each cost row no
-   longer causes repeated Neon queries.
+Changes
+=======
+- Exact previous UI preserved.
+- Vercel RevisionRecord TypeScript fix retained.
+- Batch analysis concurrency: 2 -> 1.
+- Frontend retries: 3 -> 2.
+- Frontend retry delay: 3.5 seconds.
+- Gemini backend performs one controlled retry only for transient errors.
+- Gemini 429 errors now return HTTP 429 instead of misleading 502.
+- Gemini temporary availability errors return HTTP 503.
+- Backend prints the exact Gemini exception as [ANALYZE ERROR].
+- Direct-PDF fast extraction remains enabled.
+- Neon PostgreSQL remains enabled.
 
-3. Faster PostgreSQL connection
-   A small reusable SQLAlchemy connection pool replaces a new database
-   connection for every query.
-
-4. Faster extraction persistence
-   New extractions and reviews are inserted directly.
-   The backend no longer loads and re-writes the complete extraction/review
-   dataset for every drawing.
-
-5. Faster dataset dashboard counts
-   PostgreSQL COUNT queries are used instead of downloading all extraction and
-   review JSON payloads.
-
-6. Faster Gemini preprocessing
-   The original PDF is sent directly to Gemini.
-   Only one small compressed title-block crop is generated.
-   The old 300-DPI full-page PNG render/temp-file step is removed.
-
-7. Faster multi-drawing batches
-   Up to 2 drawings analyze at the same time.
-   Retry behavior remains.
-   This is intentionally limited to 2 to reduce free-tier rate-limit risk.
-
-DATABASE
-========
-Neon PostgreSQL remains enabled. No database rollback.
-
-INSTALL / RESTART
-=================
+After replacing files
+=====================
 Backend:
-  python -m pip install -r requirements.txt
-  python -m uvicorn app.main:app --reload --port 8000
+python -m uvicorn app.main:app --reload --port 8000
 
-Health expected:
-  {
-    "status": "ok",
-    "version": "0.6.1",
-    "database": "connected"
-  }
+Then analyze ONE drawing first.
 
-Frontend:
-  npm run dev
+If Gemini fails, the terminal will now show:
+[ANALYZE ERROR] <real upstream error>
 
-UI
-==
-The frontend CSS and visible layout are restored from v0.5.1.
+For Git/Vercel:
+git add .
+git commit -m "Fix Gemini analyze stability"
+git push
