@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from io import BytesIO
 
-import pymupdf
+import pymupdf as fitz
 
 from .vision import analyze_engineering_drawing
 

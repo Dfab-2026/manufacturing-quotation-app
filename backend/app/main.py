@@ -24,7 +24,8 @@ import re
 import uuid
 import zipfile
 
-import pymupdf
+import pymupdf as fitz
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
@@ -239,7 +240,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.3")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.4")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -1769,7 +1770,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.6.3",
+        "version": "0.6.4",
         "database": "connected" if connected else "unavailable",
     }
 
