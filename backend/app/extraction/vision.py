@@ -208,7 +208,7 @@ Important:
     for attempt in range(1, 3):
         try:
             response = client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
                 contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Literal
 import base64
 import json
+import os
 import math
 import re
 import uuid
@@ -240,10 +241,20 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.4")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.5")
+
+_allowed_origins = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
+_frontend_origin = os.getenv("FRONTEND_ORIGIN", "").strip().rstrip("/")
+if _frontend_origin and _frontend_origin not in _allowed_origins:
+    _allowed_origins.append(_frontend_origin)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1770,7 +1781,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.6.4",
+        "version": "0.6.5",
         "database": "connected" if connected else "unavailable",
     }
 
