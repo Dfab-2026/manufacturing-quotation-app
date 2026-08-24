@@ -16,6 +16,7 @@ import type {
   QuoteSummary,
   RateCatalog,
   RateItem,
+  RevisionRecord,
   Settings
 } from "@/lib/types";
 
