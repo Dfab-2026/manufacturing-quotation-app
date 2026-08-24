@@ -1,0 +1,119 @@
+[
+  {
+    "id": "R-E60ECD28",
+    "created_at": "2026-08-24T05:59:01.033565+00:00",
+    "drawing_no": "16087",
+    "revision": "R2.00",
+    "description": "S355J0 Crush Tube, Flanged M16",
+    "material": "Not detected",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-0D91FCCE",
+    "created_at": "2026-08-24T06:25:58.866485+00:00",
+    "drawing_no": "16087",
+    "revision": "R2.00",
+    "description": "S355J0 Crush Tube, Flanged M16",
+    "material": "Not detected",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-F5BB8E97",
+    "created_at": "2026-08-24T06:28:10.493712+00:00",
+    "drawing_no": "16087",
+    "revision": "R2.00",
+    "description": "S355J0 Crush Tube, Flanged M16",
+    "material": "Not detected",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-F7245684",
+    "created_at": "2026-08-24T06:32:16.467379+00:00",
+    "drawing_no": "16087",
+    "revision": "R2.00",
+    "description": "S355J0 Crush Tube, Flanged M16",
+    "material": "Not detected",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-48F03105",
+    "created_at": "2026-08-24T07:00:12.716537+00:00",
+    "drawing_no": "16092",
+    "revision": "R2.00",
+    "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-D2CD11E2",
+    "created_at": "2026-08-24T07:05:49.629535+00:00",
+    "drawing_no": "16092",
+    "revision": "R2.00",
+    "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel 304 AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-A93017BD",
+    "created_at": "2026-08-24T07:10:11.574298+00:00",
+    "drawing_no": "16092",
+    "revision": "R2.00",
+    "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel 304 AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-494A0694",
+    "created_at": "2026-08-24T07:18:54.894294+00:00",
+    "drawing_no": "16092",
+    "revision": "R2.00",
+    "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel 304 AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-C5CAFB1D",
+    "created_at": "2026-08-24T07:32:59.396955+00:00",
+    "drawing_no": "16092",
+    "revision": "R2.00",
+    "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel 304 AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-B2D9829B",
+    "created_at": "2026-08-24T07:41:56.040243+00:00",
+    "drawing_no": "16092",
+    "revision": "R2.00",
+    "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-F4C603BD",
+    "created_at": "2026-08-24T07:53:41.026157+00:00",
+    "drawing_no": "16166",
+    "revision": "R2.01",
+    "description": "304SS Signal Cable Tray, Lower Compartment - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-8F598AE9",
+    "created_at": "2026-08-24T08:35:35.436069+00:00",
+    "drawing_no": "16103",
+    "revision": "R2.01",
+    "description": "304SS Reservoir Holder - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel AISI 304",
+    "note": "Reviewed extraction saved"
+  },
+  {
+    "id": "R-9E83A134",
+    "created_at": "2026-08-24T08:49:53.062297+00:00",
+    "drawing_no": "16104",
+    "revision": "R2.02",
+    "description": "304SS Expansion Tank Bracket - LQS CDU-L2L 800kW",
+    "material": "Stainless Steel AISI 304",
+    "note": "Reviewed extraction saved"
+  }
+]

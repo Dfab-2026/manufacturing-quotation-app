@@ -1,0 +1,221 @@
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
+from google import genai
+from google.genai import types
+from pydantic import BaseModel, Field
+
+
+load_dotenv()
+
+API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not API_KEY:
+    raise RuntimeError(
+        "GEMINI_API_KEY is missing. Add GEMINI_API_KEY=your_key to backend/.env"
+    )
+
+client = genai.Client(api_key=API_KEY)
+
+
+# -----------------------------
+# Structured engineering schema
+# -----------------------------
+
+class Material(BaseModel):
+    family: str = ""
+    grade: str = ""
+    specification: str = ""
+
+
+class Dimension(BaseModel):
+    label: str = ""
+    value_mm: Optional[float] = None
+    tolerance: str = ""
+    quantity: int = 1
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class Hole(BaseModel):
+    diameter_mm: Optional[float] = None
+    quantity: int = 0
+    type: str = ""
+    callout: str = ""
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class ThreadFeature(BaseModel):
+    designation: str = ""
+    quantity: int = 0
+    through: bool = False
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class Chamfer(BaseModel):
+    size_mm: Optional[float] = None
+    angle_deg: Optional[float] = None
+    quantity: int = 0
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class Bend(BaseModel):
+    angle_deg: Optional[float] = None
+    quantity: int = 0
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class Stud(BaseModel):
+    size: str = ""
+    length_mm: Optional[float] = None
+    quantity: int = 0
+    material: str = ""
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class Weld(BaseModel):
+    type: str = ""
+    size_mm: Optional[float] = None
+    length_mm: Optional[float] = None
+    location: str = ""
+    quantity: int = 0
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class ManufacturingProcess(BaseModel):
+    process: str = ""
+    reason: str = ""
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+class Confidence(BaseModel):
+    drawing_no: int = Field(default=0, ge=0, le=100)
+    revision: int = Field(default=0, ge=0, le=100)
+    description: int = Field(default=0, ge=0, le=100)
+    material: int = Field(default=0, ge=0, le=100)
+    thickness: int = Field(default=0, ge=0, le=100)
+    weight: int = Field(default=0, ge=0, le=100)
+    quantity: int = Field(default=0, ge=0, le=100)
+
+
+class EngineeringDrawingExtraction(BaseModel):
+    drawing_no: str = ""
+    revision: str = ""
+    description: str = ""
+
+    material: Material = Field(default_factory=Material)
+
+    thickness_mm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    product_quantity: int = 1
+
+    dimensions: list[Dimension] = Field(default_factory=list)
+    holes: list[Hole] = Field(default_factory=list)
+    threads: list[ThreadFeature] = Field(default_factory=list)
+    chamfers: list[Chamfer] = Field(default_factory=list)
+    bends: list[Bend] = Field(default_factory=list)
+    studs: list[Stud] = Field(default_factory=list)
+    welds: list[Weld] = Field(default_factory=list)
+
+    surface_finish: list[str] = Field(default_factory=list)
+
+    manufacturing_processes: list[ManufacturingProcess] = Field(
+        default_factory=list
+    )
+
+    notes: list[str] = Field(default_factory=list)
+
+    confidence: Confidence = Field(default_factory=Confidence)
+
+    missing_or_uncertain: list[str] = Field(default_factory=list)
+
+
+def analyze_engineering_drawing(
+    pdf_bytes: bytes,
+    extracted_pdf_text: str = "",
+    title_crop_bytes: bytes | None = None,
+) -> dict:
+    """
+    Fast path:
+    - send the original PDF directly to Gemini
+    - optionally add one compact title-block JPEG crop
+    - keep the same structured extraction schema
+    """
+    if not pdf_bytes:
+        raise ValueError("No PDF bytes were supplied.")
+
+    prompt = """
+You are a senior manufacturing engineer.
+
+Analyze the attached engineering drawing with very high care.
+
+The primary attachment is the original engineering PDF.
+A second attachment may be an enlarged title-block crop.
+
+Extract all useful manufacturing information visible in the drawing.
+
+Important:
+- Read the title block, notes, section views and every dimension callout.
+- Read drawing number and revision from the drawing itself.
+- Extract material FAMILY, GRADE and SPECIFICATION separately.
+- Extract thickness only when the part is sheet/plate/strip and thickness is actually shown.
+- For machined solid parts, thickness may be null.
+- Extract weight only if visible/reliable. Do not estimate it.
+- Capture overall dimensions and important feature dimensions.
+- Capture hole diameter, quantity, THRU/slot/counterbore/countersink notes.
+- Capture metric threads such as M16-6H THRU.
+- Capture chamfers such as 3 x 45 degrees and 0.5 x 45 degrees.
+- Capture bend angles/quantities when applicable.
+- Capture studs/fasteners.
+- Capture welding instructions and tack/full weld notes.
+- Capture deburr, grinding, polishing, passivation and surface-treatment notes.
+- Infer manufacturing processes only when the drawing strongly supports them.
+- Never invent material price, process rate, labour hours or quotation cost.
+- Never use the filename as a substitute for reading the drawing.
+- Use confidence 0-100 for extracted values.
+- Put anything ambiguous into missing_or_uncertain.
+"""
+
+    if extracted_pdf_text.strip():
+        prompt += (
+            "\n\nSECONDARY PDF TEXT (may be corrupted):\n"
+            + extracted_pdf_text[:9000]
+        )
+
+    contents: list[object] = [
+        prompt,
+        types.Part.from_bytes(
+            data=pdf_bytes,
+            mime_type="application/pdf",
+        ),
+    ]
+
+    if title_crop_bytes:
+        contents.append(
+            types.Part.from_bytes(
+                data=title_crop_bytes,
+                mime_type="image/jpeg",
+            )
+        )
+
+    response = client.models.generate_content(
+        model="gemini-3.6-flash",
+        contents=contents,
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=EngineeringDrawingExtraction,
+            temperature=0.1,
+        ),
+    )
+
+    if not response.text:
+        raise RuntimeError("Gemini returned an empty response.")
+
+    parsed = EngineeringDrawingExtraction.model_validate_json(
+        response.text
+    )
+
+    return parsed.model_dump()

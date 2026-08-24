@@ -1,0 +1,21 @@
+{
+  "project": "AI Manufacturing Quotation Web App",
+  "version": "0.3.1",
+  "frontend": "Next.js + TypeScript + AG Grid",
+  "backend": "FastAPI + Python",
+  "features": [
+    "Drawing upload workflow",
+    "Review and revision history",
+    "Excel-like cost sheet",
+    "Rate Master with material + grade catalog",
+    "Editable process, labour, other and commercial rates",
+    "Criticality scores inherited into costing",
+    "Excel export with rate source and critical score",
+    "Quotation PDF export",
+    "Quotation history",
+    "Dataset capture and reviewed correction memory"
+  ],
+  "current_extraction": "Mock/sample extractor",
+  "next_phase": "Real OCR/Vision/CAD extraction",
+  "fix": "Per-file extraction; no hard-coded first-drawing reuse"
+}

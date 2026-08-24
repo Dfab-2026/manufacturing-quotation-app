@@ -1,0 +1,6018 @@
+[
+  {
+    "id": "EXT-54D8FE8695",
+    "created_at": "2026-08-24T05:58:54.398375+00:00",
+    "filename": "[PID#16087] S355J0 Crush Tube, Flanged M16 - R2.00-2024-07-16.pdf",
+    "file_hash": "17a18232173817779b2f693d571c65d2a54498500fb6c1b0c9be9c641e64dcfa",
+    "source": "pdf_parser",
+    "warnings": [
+      "No reliable costing rows were detected. This is intentional: the system will not copy a previous drawing's values."
+    ],
+    "drawing": {
+      "drawing_no": "16087",
+      "revision": "R2.00",
+      "description": "S355J0 Crush Tube, Flanged M16",
+      "material": "Not detected",
+      "thickness_mm": 0.0,
+      "weight_kg": 0.0,
+      "quantity": 1,
+      "notes": []
+    },
+    "rows": []
+  },
+  {
+    "id": "EXT-ED12D67C7E",
+    "created_at": "2026-08-24T06:25:53.256071+00:00",
+    "filename": "[PID#16087] S355J0 Crush Tube, Flanged M16 - R2.00-2024-07-16.pdf",
+    "file_hash": "17a18232173817779b2f693d571c65d2a54498500fb6c1b0c9be9c641e64dcfa",
+    "source": "reviewed_memory",
+    "warnings": [
+      "Exact previously reviewed drawing found. Saved engineer corrections were reused."
+    ],
+    "drawing": {
+      "drawing_no": "16087",
+      "revision": "R2.00",
+      "description": "S355J0 Crush Tube, Flanged M16",
+      "material": "Not detected",
+      "thickness_mm": 0.0,
+      "weight_kg": 0.0,
+      "quantity": 1,
+      "notes": []
+    },
+    "rows": [],
+    "ai_raw": null
+  },
+  {
+    "id": "EXT-35BD1BFED0",
+    "created_at": "2026-08-24T06:28:05.919167+00:00",
+    "filename": "[PID#16087] S355J0 Crush Tube, Flanged M16 - R2.00-2024-07-16.pdf",
+    "file_hash": "17a18232173817779b2f693d571c65d2a54498500fb6c1b0c9be9c641e64dcfa",
+    "source": "reviewed_memory",
+    "warnings": [
+      "Exact previously reviewed drawing found. Saved engineer corrections were reused."
+    ],
+    "drawing": {
+      "drawing_no": "16087",
+      "revision": "R2.00",
+      "description": "S355J0 Crush Tube, Flanged M16",
+      "material": "Not detected",
+      "thickness_mm": 0.0,
+      "weight_kg": 0.0,
+      "quantity": 1,
+      "notes": []
+    },
+    "rows": [],
+    "ai_raw": null
+  },
+  {
+    "id": "EXT-55F55F92DF",
+    "created_at": "2026-08-24T06:32:11.457262+00:00",
+    "filename": "[PID#16087] S355J0 Crush Tube, Flanged M16 - R2.00-2024-07-16.pdf",
+    "file_hash": "17a18232173817779b2f693d571c65d2a54498500fb6c1b0c9be9c641e64dcfa",
+    "source": "reviewed_memory",
+    "warnings": [
+      "Exact previously reviewed drawing found. Saved engineer corrections were reused."
+    ],
+    "drawing": {
+      "drawing_no": "16087",
+      "revision": "R2.00",
+      "description": "S355J0 Crush Tube, Flanged M16",
+      "material": "Not detected",
+      "thickness_mm": 0.0,
+      "weight_kg": 0.0,
+      "quantity": 1,
+      "notes": []
+    },
+    "rows": [],
+    "ai_raw": null
+  },
+  {
+    "id": "EXT-BFBF94E943",
+    "created_at": "2026-08-24T06:35:41.799081+00:00",
+    "filename": "[PID#16092] 304SS Tube Support Strut, Side - R2.00-2024-07-16.pdf",
+    "file_hash": "b7c1a96d952e2eb0f0b2e49b33535da2a7171fba0d53dc64b3ca25c1811a9979",
+    "source": "pdf_text_fallback",
+    "warnings": [
+      "Vision AI extraction failed: Error code: 429 - {'error': {'message': 'You exceeded your current quota, please check your plan and billing details. For more information on this error, read the docs: https://platform.openai.com/docs/guides/error-codes/api-errors.', 'type': 'insufficient_quota', 'param': None, 'code': 'insufficient_quota'}}"
+    ],
+    "drawing": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side",
+      "material": "AISI 304 Stainless Steel",
+      "thickness_mm": 0.0,
+      "weight_kg": 0.0,
+      "quantity": 1,
+      "notes": []
+    },
+    "rows": [
+      {
+        "id": "mat",
+        "category": "MATERIAL",
+        "item": "AISI 304 SS",
+        "drawingQty": "Weight not detected",
+        "costingQty": 0.0,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 0.0,
+        "confidence": "Estimated",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      }
+    ],
+    "ai_raw": null
+  },
+  {
+    "id": "EXT-7C23B25218",
+    "created_at": "2026-08-24T06:59:29.362036+00:00",
+    "filename": "[PID#16092] 304SS Tube Support Strut, Side - R2.00-2024-07-16.pdf",
+    "file_hash": "b7c1a96d952e2eb0f0b2e49b33535da2a7171fba0d53dc64b3ca25c1811a9979",
+    "source": "vision_ai",
+    "warnings": [
+      "Rate Master values are missing for: Tack Welding, Drilling / Boring. Enter approved rates before generating the final quotation."
+    ],
+    "drawing": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Process: Laser Cutting (95% confidence)",
+        "Process: Bending / Form Work (90% confidence)",
+        "Process: Tack Welding (95% confidence)",
+        "Process: Deburring (95% confidence)",
+        "Dimension: Overall Length 1160.0 mm (ISO 2768-mK)",
+        "Dimension: Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Profile Height 18.0 mm (ISO 2768-mK)",
+        "Dimension: Corner Radius 3.0 mm (ISO 2768-mK) × 4",
+        "Bend: 45.0° × 1",
+        "Holes: 31 × Ø9.0 mm thru",
+        "Holes: 4 × Ø7.0 mm slot",
+        "Weld: Tack Weld, Internal stiffener ribs"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "2.3 kg net",
+        "costingQty": 2.3,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 644.0,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Sheet metal profile with multiple holes and slot cuts",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "45 degree angle bend shown on profile section view",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "Tack Welding",
+        "drawingQty": "Tack Weld TYP callouts on stiffener brackets",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": null,
+        "rateSource": "RATE MISSING - add process rate in Rate Master",
+        "criticalScore": 100
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Explicit note: Deburr all sharp edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "35 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 1160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Profile Height",
+          "value_mm": 18.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Corner Radius",
+          "value_mm": 3.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 4,
+          "confidence": 90
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 31,
+          "type": "thru",
+          "callout": "Ø 9 THRU - 31 PLS",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": 7.0,
+          "quantity": 4,
+          "type": "slot",
+          "callout": "7 X 20 THRU - 4 PLS",
+          "confidence": 95
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 45.0,
+          "quantity": 1,
+          "confidence": 85
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Tack Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Internal stiffener ribs",
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting",
+          "reason": "Sheet metal profile with multiple holes and slot cuts",
+          "confidence": 95
+        },
+        {
+          "process": "Bending / Form Work",
+          "reason": "45 degree angle bend shown on profile section view",
+          "confidence": 90
+        },
+        {
+          "process": "Tack Welding",
+          "reason": "Tack Weld TYP callouts on stiffener brackets",
+          "confidence": 95
+        },
+        {
+          "process": "Deburring",
+          "reason": "Explicit note: Deburr all sharp edges",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK"
+      ],
+      "confidence": {
+        "drawing_no": 95,
+        "revision": 95,
+        "description": 95,
+        "material": 95,
+        "thickness": 90,
+        "weight": 95,
+        "quantity": 90
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-7C063B153B",
+    "created_at": "2026-08-24T07:05:34.387935+00:00",
+    "filename": "[PID#16092] 304SS Tube Support Strut, Side - R2.00-2024-07-16.pdf",
+    "file_hash": "b7c1a96d952e2eb0f0b2e49b33535da2a7171fba0d53dc64b3ca25c1811a9979",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel 304 AISI 304",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "5mm Thick TYP",
+        "Tack Weld TYP",
+        "Process: Sheet Metal Cutting (Laser/Waterjet) (95% confidence)",
+        "Process: Bending / Press Brake Forming (90% confidence)",
+        "Process: Tack Welding / Assembly (95% confidence)",
+        "Process: Deburring (95% confidence)",
+        "Dimension: Overall Length 1160.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Inner Length between Flanges 1116.0 mm (ISO 2768-mK)",
+        "Dimension: Profile Height 18.0 mm (ISO 2768-mK)",
+        "Dimension: Internal Profile Dimension 71.0 mm (ISO 2768-mK)",
+        "Bend: 45.0° × 1",
+        "Holes: 31 × Ø9.0 mm THRU",
+        "Holes: 4 Slot",
+        "Weld: Tack Weld, Stiffener rib plates to strut body"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material",
+        "category": "MATERIAL",
+        "item": "Stainless Steel 304 AISI 304",
+        "drawingQty": "2.3 kg net",
+        "costingQty": 2.3,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 644.0,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Strut profile, internal cutouts, 9mm holes, and 7x20 slots",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "45 degree angled profile features",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "5mm thick stiffener plates tack welded inside the strut section",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Drawing explicitly specifies 'Deburr all sharp edges'",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "35 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 1160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Inner Length between Flanges",
+          "value_mm": 1116.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Profile Height",
+          "value_mm": 18.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Internal Profile Dimension",
+          "value_mm": 71.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 31,
+          "type": "THRU",
+          "callout": "Ø 9 THRU - 31 PLS",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 4,
+          "type": "Slot",
+          "callout": "7 X 20 THRU - 4 PLS",
+          "confidence": 95
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 45.0,
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Tack Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Stiffener rib plates to strut body",
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Cutting (Laser/Waterjet)",
+          "reason": "Strut profile, internal cutouts, 9mm holes, and 7x20 slots",
+          "confidence": 95
+        },
+        {
+          "process": "Bending / Press Brake Forming",
+          "reason": "45 degree angled profile features",
+          "confidence": 90
+        },
+        {
+          "process": "Tack Welding / Assembly",
+          "reason": "5mm thick stiffener plates tack welded inside the strut section",
+          "confidence": 95
+        },
+        {
+          "process": "Deburring",
+          "reason": "Drawing explicitly specifies 'Deburr all sharp edges'",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "5mm Thick TYP",
+        "Tack Weld TYP"
+      ],
+      "confidence": {
+        "drawing_no": 95,
+        "revision": 95,
+        "description": 95,
+        "material": 95,
+        "thickness": 95,
+        "weight": 95,
+        "quantity": 80
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-521B3B42AC",
+    "created_at": "2026-08-24T07:09:54.613101+00:00",
+    "filename": "[PID#16092] 304SS Tube Support Strut, Side - R2.00-2024-07-16.pdf",
+    "file_hash": "b7c1a96d952e2eb0f0b2e49b33535da2a7171fba0d53dc64b3ca25c1811a9979",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel 304 AISI 304",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Tack Weld TYP",
+        "5mm Thick TYP",
+        "Process: Laser Cutting (95% confidence)",
+        "Process: Bending / Press Brake Forming (95% confidence)",
+        "Process: Tack Welding (95% confidence)",
+        "Process: Deburring (98% confidence)",
+        "Dimension: Overall Length 1160.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Height 71.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Depth 18.0 mm (ISO 2768-mK)",
+        "Bend: 45.0° × 1",
+        "Holes: 31 × Ø9.0 mm through",
+        "Holes: 4 slot",
+        "Weld: tack weld, Internal stiffeners"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material",
+        "category": "MATERIAL",
+        "item": "Stainless Steel 304 AISI 304",
+        "drawingQty": "2.3 kg net",
+        "costingQty": 2.3,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 644.0,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Sheet metal layout with profile, holes, and slots",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Sheet metal component with formed flange sections",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Tack weld notes and symbols for internal support ribs",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Drawing note states 'Deburr all sharp edges'",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "35 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 1160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 98
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 98
+        },
+        {
+          "label": "Height",
+          "value_mm": 71.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Flange Depth",
+          "value_mm": 18.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 31,
+          "type": "through",
+          "callout": "Ø 9 THRU - 31 PLS",
+          "confidence": 98
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 4,
+          "type": "slot",
+          "callout": "7 X 20 THRU - 4 PLS",
+          "confidence": 95
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 45.0,
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "tack weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Internal stiffeners",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting",
+          "reason": "Sheet metal layout with profile, holes, and slots",
+          "confidence": 95
+        },
+        {
+          "process": "Bending / Press Brake Forming",
+          "reason": "Sheet metal component with formed flange sections",
+          "confidence": 95
+        },
+        {
+          "process": "Tack Welding",
+          "reason": "Tack weld notes and symbols for internal support ribs",
+          "confidence": 95
+        },
+        {
+          "process": "Deburring",
+          "reason": "Drawing note states 'Deburr all sharp edges'",
+          "confidence": 98
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Tack Weld TYP",
+        "5mm Thick TYP"
+      ],
+      "confidence": {
+        "drawing_no": 98,
+        "revision": 98,
+        "description": 98,
+        "material": 98,
+        "thickness": 95,
+        "weight": 98,
+        "quantity": 90
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-A4D3AF2C8F",
+    "created_at": "2026-08-24T07:17:52.752237+00:00",
+    "filename": "[PID#16092] 304SS Tube Support Strut, Side - R2.00-2024-07-16.pdf",
+    "file_hash": "b7c1a96d952e2eb0f0b2e49b33535da2a7171fba0d53dc64b3ca25c1811a9979",
+    "source": "vision_ai",
+    "warnings": [
+      "Vision extraction completed, but some values require review: Specific weld leg size/length not defined for tack welds"
+    ],
+    "drawing": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel 304 AISI 304",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Tack Weld TYP",
+        "5mm Thick TYP",
+        "Process: Laser Cutting / Punching (95% confidence)",
+        "Process: Bending / Press Brake Forming (90% confidence)",
+        "Process: Tack Welding (95% confidence)",
+        "Process: Deburring (100% confidence)",
+        "Review required: Specific weld leg size/length not defined for tack welds",
+        "Dimension: Overall Length 1160.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Height 71.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Width 18.0 mm (ISO 2768-mK)",
+        "Bend: 45.0° × 1",
+        "Holes: 31 × Ø9.0 mm thru",
+        "Holes: 4 slot",
+        "Weld: tack, Stiffeners / internal ribs"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material",
+        "category": "MATERIAL",
+        "item": "Stainless Steel 304 AISI 304",
+        "drawingQty": "2.3 kg net",
+        "costingQty": 2.3,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 644.0,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Cutting outer profile, slot, and hole patterns",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Forming profile bends",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Specified as Tack Weld TYP for rib attachment",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Note specifies Deburr all sharp edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "35 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 1160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Height",
+          "value_mm": 71.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Flange Width",
+          "value_mm": 18.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 31,
+          "type": "thru",
+          "callout": "Ø 9 THRU - 31 PLS",
+          "confidence": 100
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 4,
+          "type": "slot",
+          "callout": "7 X 20 THRU - 4 PLS",
+          "confidence": 100
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 45.0,
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "tack",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Stiffeners / internal ribs",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting / Punching",
+          "reason": "Cutting outer profile, slot, and hole patterns",
+          "confidence": 95
+        },
+        {
+          "process": "Bending / Press Brake Forming",
+          "reason": "Forming profile bends",
+          "confidence": 90
+        },
+        {
+          "process": "Tack Welding",
+          "reason": "Specified as Tack Weld TYP for rib attachment",
+          "confidence": 95
+        },
+        {
+          "process": "Deburring",
+          "reason": "Note specifies Deburr all sharp edges",
+          "confidence": 100
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Tack Weld TYP",
+        "5mm Thick TYP"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 100,
+        "thickness": 95,
+        "weight": 100,
+        "quantity": 100
+      },
+      "missing_or_uncertain": [
+        "Specific weld leg size/length not defined for tack welds"
+      ]
+    }
+  },
+  {
+    "id": "EXT-5590098400",
+    "created_at": "2026-08-24T07:32:53.089094+00:00",
+    "filename": "[PID#16092] 304SS Tube Support Strut, Side - R2.00-2024-07-16.pdf",
+    "file_hash": "b7c1a96d952e2eb0f0b2e49b33535da2a7171fba0d53dc64b3ca25c1811a9979",
+    "source": "vision_ai",
+    "warnings": [
+      "Vision extraction completed, but some values require review: Main body sheet metal thickness appears to be 2mm while stiffener plates are specified as 5mm Thick TYP"
+    ],
+    "drawing": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel 304 AISI 304",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "5mm Thick TYP stiffener plates",
+        "Process: Sheet Metal Laser Cutting / Punching (90% confidence)",
+        "Process: Sheet Metal Press Brake Bending (90% confidence)",
+        "Process: Tack Welding (90% confidence)",
+        "Process: Deburring (95% confidence)",
+        "Review required: Main body sheet metal thickness appears to be 2mm while stiffener plates are specified as 5mm Thick TYP",
+        "Dimension: Overall Length 1160.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Inner Mount Length 1116.0 mm (ISO 2768-mK)",
+        "Dimension: Height 71.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Lip Width 18.0 mm (ISO 2768-mK)",
+        "Dimension: Corner Radius 3.0 mm (ISO 2768-mK) × 4",
+        "Bend: 45.0° × 2",
+        "Holes: 31 × Ø9.0 mm through",
+        "Holes: 4 slot",
+        "Weld: Tack Weld, Internal stiffener plates"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel 304 AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 1.0,
+        "unit": "lot",
+        "rate": 34693.75,
+        "cost": 34693.75,
+        "confidence": "Estimated",
+        "rateId": null,
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Cutting profile outer shape, 31 holes (Ø 9), and 4 slotted holes (7x20)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Forming main channel section and 45-degree angled return flanges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Joining 5mm thick internal stiffener rib plates to the main formed strut body",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Explicit note: Deburr all sharp edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "35 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 1160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Inner Mount Length",
+          "value_mm": 1116.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Height",
+          "value_mm": 71.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Flange Lip Width",
+          "value_mm": 18.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Corner Radius",
+          "value_mm": 3.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 4,
+          "confidence": 90
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 31,
+          "type": "through",
+          "callout": "Ø 9 THRU - 31 PLS",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 4,
+          "type": "slot",
+          "callout": "7 X 20 THRU - 4 PLS",
+          "confidence": 95
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 45.0,
+          "quantity": 2,
+          "confidence": 85
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Tack Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Internal stiffener plates",
+          "quantity": 7,
+          "confidence": 90
+        }
+      ],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Laser Cutting / Punching",
+          "reason": "Cutting profile outer shape, 31 holes (Ø 9), and 4 slotted holes (7x20)",
+          "confidence": 90
+        },
+        {
+          "process": "Sheet Metal Press Brake Bending",
+          "reason": "Forming main channel section and 45-degree angled return flanges",
+          "confidence": 90
+        },
+        {
+          "process": "Tack Welding",
+          "reason": "Joining 5mm thick internal stiffener rib plates to the main formed strut body",
+          "confidence": 90
+        },
+        {
+          "process": "Deburring",
+          "reason": "Explicit note: Deburr all sharp edges",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "5mm Thick TYP stiffener plates"
+      ],
+      "confidence": {
+        "drawing_no": 95,
+        "revision": 95,
+        "description": 95,
+        "material": 95,
+        "thickness": 85,
+        "weight": 95,
+        "quantity": 90
+      },
+      "missing_or_uncertain": [
+        "Main body sheet metal thickness appears to be 2mm while stiffener plates are specified as 5mm Thick TYP"
+      ]
+    }
+  },
+  {
+    "id": "EXT-026973E427",
+    "created_at": "2026-08-24T07:41:46.537843+00:00",
+    "filename": "[PID#16092] 304SS Tube Support Strut, Side - R2.00-2024-07-16.pdf",
+    "file_hash": "b7c1a96d952e2eb0f0b2e49b33535da2a7171fba0d53dc64b3ca25c1811a9979",
+    "source": "vision_ai",
+    "warnings": [
+      "Rate Master values are missing for: Sheet Metal Cutting. Enter approved rates before generating the final quotation."
+    ],
+    "drawing": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "5mm Thick TYP",
+        "Tack Weld TYP",
+        "Process: Sheet Metal Cutting (95% confidence)",
+        "Process: Bending / Press Brake (90% confidence)",
+        "Process: Welding (95% confidence)",
+        "Process: Deburring (95% confidence)",
+        "Dimension: Overall Length 1160.0 mm (ISO 2768-mK)",
+        "Dimension: Inner Section Length 1116.0 mm (ISO 2768-mK)",
+        "Dimension: Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Height 71.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Depth 18.0 mm (ISO 2768-mK)",
+        "Bend: 45.0° × 1",
+        "Holes: 31 × Ø9.0 mm THRU",
+        "Holes: 4 Slot (7 x 20)",
+        "Weld: Tack Weld, TYP"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 1.0,
+        "unit": "lot",
+        "rate": 14372.21,
+        "cost": 14372.21,
+        "confidence": "Estimated",
+        "rateId": null,
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Sheet Metal Cutting",
+        "drawingQty": "Laser cutting/punching for flat pattern layout and holes/slots",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": null,
+        "rateSource": "RATE MISSING - add process rate in Rate Master",
+        "criticalScore": 100
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "45-degree angled flange feature shown in side view",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Tack Weld TYP callouts visible on assembly views",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Explicit note: Deburr all sharp edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "35 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16092",
+      "revision": "R2.00",
+      "description": "304SS Tube Support Strut, Side - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.3,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 1160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Inner Section Length",
+          "value_mm": 1116.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Height",
+          "value_mm": 71.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Flange Depth",
+          "value_mm": 18.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 31,
+          "type": "THRU",
+          "callout": "Ø 9 THRU - 31 PLS",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 4,
+          "type": "Slot (7 x 20)",
+          "callout": "7 X 20 THRU - 4 PLS",
+          "confidence": 95
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 45.0,
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Tack Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "TYP",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Cutting",
+          "reason": "Laser cutting/punching for flat pattern layout and holes/slots",
+          "confidence": 95
+        },
+        {
+          "process": "Bending / Press Brake",
+          "reason": "45-degree angled flange feature shown in side view",
+          "confidence": 90
+        },
+        {
+          "process": "Welding",
+          "reason": "Tack Weld TYP callouts visible on assembly views",
+          "confidence": 95
+        },
+        {
+          "process": "Deburring",
+          "reason": "Explicit note: Deburr all sharp edges",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "5mm Thick TYP",
+        "Tack Weld TYP"
+      ],
+      "confidence": {
+        "drawing_no": 98,
+        "revision": 98,
+        "description": 98,
+        "material": 95,
+        "thickness": 95,
+        "weight": 98,
+        "quantity": 95
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-B29A224C13",
+    "created_at": "2026-08-24T07:53:16.705803+00:00",
+    "filename": "[PID#16166] 304SS Signal Cable Tray, Lower Compartment - R2.01-2024-08-28.pdf",
+    "file_hash": "e3415e84c924ca839749212196d6b669c0635566f5b36efaf8ad02c8bcab3e24",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16166",
+      "revision": "R2.01",
+      "description": "304SS Signal Cable Tray, Lower Compartment - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 1.0,
+      "weight_kg": 0.55,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and Flush",
+        "General Tolerances ISO 2768-mK",
+        "Process: Laser Cutting / Punching (95% confidence)",
+        "Process: CNC Bending / Press Brake (95% confidence)",
+        "Process: Fastener / Threaded Insert Installation (95% confidence)",
+        "Process: TIG Welding & Edge Finishing (95% confidence)",
+        "Dimension: Overall Length 615.5 mm (ISO 2768-mK)",
+        "Dimension: Inner Flange Length 614.5 mm (ISO 2768-mK)",
+        "Dimension: Base Pitch Length 540.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Inner Width 80.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Height 15.0 mm (ISO 2768-mK)",
+        "Thread: M5 × 2 THRU",
+        "Bend: 90.0° × 4",
+        "Surface finish: Grind and Flush welds",
+        "Surface finish: Deburr all sharp edges",
+        "Holes: 48 × Ø9.0 mm through",
+        "Holes: 39 slot",
+        "Holes: 4 slot",
+        "Weld: Corner/Edge Weld, 2 edges"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 15.86,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 4440.8,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Perforated sheet metal tray with numerous round holes and oblong slots",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Sheet metal channel profile formed with multiple longitudinal bends",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "Threading / Tapping",
+        "drawingQty": "Callout for 2 X M5 SS304 Threaded Inserts",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 250.0,
+        "cost": 250.0,
+        "confidence": "Exact",
+        "rateId": "PROC-THREAD",
+        "rateSource": "Rate Master",
+        "criticalScore": 90
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "TIG Welding",
+        "drawingQty": "Callout 'Weld 2 edges Grind and Flush'",
+        "costingQty": 1.0,
+        "unit": "m",
+        "rate": 250.0,
+        "cost": 250.0,
+        "confidence": "Exact",
+        "rateId": "PROC-TIG",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "91 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.5,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 750.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-tig",
+        "category": "LABOUR",
+        "item": "TIG Welder",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-TIG",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16166",
+      "revision": "R2.01",
+      "description": "304SS Signal Cable Tray, Lower Compartment - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 1.0,
+      "weight_kg": 0.55,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 615.5,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 98
+        },
+        {
+          "label": "Inner Flange Length",
+          "value_mm": 614.5,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Base Pitch Length",
+          "value_mm": 540.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 98
+        },
+        {
+          "label": "Inner Width",
+          "value_mm": 80.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Height",
+          "value_mm": 15.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 48,
+          "type": "through",
+          "callout": "Ø 9 THRU - 48 PLS",
+          "confidence": 98
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 39,
+          "type": "slot",
+          "callout": "9 X 20 THRU - 39 PLS",
+          "confidence": 98
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 4,
+          "type": "slot",
+          "callout": "5.5 X 15 THRU - 4 PLS",
+          "confidence": 98
+        }
+      ],
+      "threads": [
+        {
+          "designation": "M5",
+          "quantity": 2,
+          "through": true,
+          "confidence": 95
+        }
+      ],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 90.0,
+          "quantity": 4,
+          "confidence": 90
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Corner/Edge Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "2 edges",
+          "quantity": 2,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [
+        "Grind and Flush welds",
+        "Deburr all sharp edges"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting / Punching",
+          "reason": "Perforated sheet metal tray with numerous round holes and oblong slots",
+          "confidence": 95
+        },
+        {
+          "process": "CNC Bending / Press Brake",
+          "reason": "Sheet metal channel profile formed with multiple longitudinal bends",
+          "confidence": 95
+        },
+        {
+          "process": "Fastener / Threaded Insert Installation",
+          "reason": "Callout for 2 X M5 SS304 Threaded Inserts",
+          "confidence": 95
+        },
+        {
+          "process": "TIG Welding & Edge Finishing",
+          "reason": "Callout 'Weld 2 edges Grind and Flush'",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and Flush",
+        "General Tolerances ISO 2768-mK"
+      ],
+      "confidence": {
+        "drawing_no": 98,
+        "revision": 98,
+        "description": 98,
+        "material": 98,
+        "thickness": 95,
+        "weight": 98,
+        "quantity": 95
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-F6FB0AE382",
+    "created_at": "2026-08-24T08:29:29.067092+00:00",
+    "filename": "[PID#16103] 304SS Reservoir Holder - R2.01-2025-03-17.pdf",
+    "file_hash": "bdad65b0588716709a68e4598bacd088e78144f83c9f42b2da49d75566a14dd9",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16103",
+      "revision": "R2.01",
+      "description": "304SS Reservoir Holder - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 2.0,
+      "weight_kg": 1.39,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Weld 2 edges Grind and flush",
+        "Project Code: LQS CDU-L2L 800kW 2312",
+        "Process: Laser Cutting (95% confidence)",
+        "Process: Press Brake Bending (95% confidence)",
+        "Process: TIG Welding (90% confidence)",
+        "Process: Grinding & Deburring (95% confidence)",
+        "Dimension: Overall Width 237.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Depth 181.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Height 102.0 mm (ISO 2768-mK)",
+        "Dimension: Front Flange Height 32.0 mm (ISO 2768-mK)",
+        "Dimension: Bottom Cutout Width 100.0 mm (ISO 2768-mK)",
+        "Bend: 90.0° × 4",
+        "Surface finish: Grind and flush welds",
+        "Surface finish: Deburr all sharp edges",
+        "Holes: 4 × Ø5.5 mm Through Hole",
+        "Weld: Corner Weld, Edges"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 3.965,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 1110.2,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Sheet metal flat pattern generation with cutouts and hole features",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Bent sheet metal construction shown in section and isometric views",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "TIG Welding",
+        "drawingQty": "Weld 2 edges specified on corner joints",
+        "costingQty": 1.0,
+        "unit": "m",
+        "rate": 250.0,
+        "cost": 250.0,
+        "confidence": "Exact",
+        "rateId": "PROC-TIG",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Grinding & Flush",
+        "drawingQty": "Grind and flush welds note and deburr all sharp edges note",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-GRIND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "4 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-tig",
+        "category": "LABOUR",
+        "item": "TIG Welder",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-TIG",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16103",
+      "revision": "R2.01",
+      "description": "304SS Reservoir Holder - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 2.0,
+      "weight_kg": 1.39,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Width",
+          "value_mm": 237.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Depth",
+          "value_mm": 181.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Height",
+          "value_mm": 102.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Front Flange Height",
+          "value_mm": 32.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Bottom Cutout Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 5.5,
+          "quantity": 4,
+          "type": "Through Hole",
+          "callout": "Ø 5.5 THRU - 4 PLS",
+          "confidence": 100
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 90.0,
+          "quantity": 4,
+          "confidence": 95
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Corner Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Edges",
+          "quantity": 4,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [
+        "Grind and flush welds",
+        "Deburr all sharp edges"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting",
+          "reason": "Sheet metal flat pattern generation with cutouts and hole features",
+          "confidence": 95
+        },
+        {
+          "process": "Press Brake Bending",
+          "reason": "Bent sheet metal construction shown in section and isometric views",
+          "confidence": 95
+        },
+        {
+          "process": "TIG Welding",
+          "reason": "Weld 2 edges specified on corner joints",
+          "confidence": 90
+        },
+        {
+          "process": "Grinding & Deburring",
+          "reason": "Grind and flush welds note and deburr all sharp edges note",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Weld 2 edges Grind and flush",
+        "Project Code: LQS CDU-L2L 800kW 2312"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 100,
+        "thickness": 100,
+        "weight": 100,
+        "quantity": 90
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-0BF580ABBB",
+    "created_at": "2026-08-24T08:30:00.402162+00:00",
+    "filename": "[PID#16104] 304SS Expansion Tank Bracket - R2.02-2024-10-18.pdf",
+    "file_hash": "c5eedfb323a394653463246db9ec2068eed113973ab21047f7dab42a770fe8c7",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16104",
+      "revision": "R2.02",
+      "description": "304SS Expansion Tank Bracket - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel 304 AISI 304",
+      "thickness_mm": 1.2,
+      "weight_kg": 0.25,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and flush",
+        "General Tolerances ISO 2768-mK",
+        "Process: Sheet Metal Laser Cutting / Punching (95% confidence)",
+        "Process: Sheet Metal Bending (95% confidence)",
+        "Process: Welding & Edge Finishing (95% confidence)",
+        "Dimension: Overall Width 150.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Length 210.0 mm (ISO 2768-mK)",
+        "Dimension: Body Length 190.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Depth / Height 25.0 mm (ISO 2768-mK)",
+        "Thread: M8 × 1 THRU",
+        "Chamfer: 10.0 mm × 45.0° (2 place(s))",
+        "Bend: 90.0° × 2",
+        "Surface finish: Grind and flush welds",
+        "Surface finish: Deburred",
+        "Holes: 1 × Ø140.0 mm thru",
+        "Holes: 1 × Ø10.0 mm slot",
+        "Studs: 1 × M8 × 20.0 mm",
+        "Weld: Edge / Corner Weld, 2 edges"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel 304 AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 2.379,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 666.12,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Cutting profile, center cutout Ø140 and 10x23 slot",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Forming side flanges (25mm height)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Weld 2 corner edges and grind flush as noted",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "2 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "ai-chamfers",
+        "category": "PROCESS",
+        "item": "Chamfering",
+        "drawingQty": "2 chamfer location(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 120.0,
+        "cost": 120.0,
+        "confidence": "Estimated",
+        "rateId": "PROC-CHAMFER",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "ai-studs",
+        "category": "PROCESS",
+        "item": "Stud Welding",
+        "drawingQty": "1 stud(s)",
+        "costingQty": 1.0,
+        "unit": "stud",
+        "rate": 50.0,
+        "cost": 50.0,
+        "confidence": "Exact",
+        "rateId": "PROC-STUD",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.5,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 750.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16104",
+      "revision": "R2.02",
+      "description": "304SS Expansion Tank Bracket - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 1.2,
+      "weight_kg": 0.25,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Width",
+          "value_mm": 150.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Length",
+          "value_mm": 210.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Body Length",
+          "value_mm": 190.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Overall Depth / Height",
+          "value_mm": 25.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 140.0,
+          "quantity": 1,
+          "type": "thru",
+          "callout": "Ø 140",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": 10.0,
+          "quantity": 1,
+          "type": "slot",
+          "callout": "10 X 23 TRU",
+          "confidence": 95
+        }
+      ],
+      "threads": [
+        {
+          "designation": "M8",
+          "quantity": 1,
+          "through": true,
+          "confidence": 90
+        }
+      ],
+      "chamfers": [
+        {
+          "size_mm": 10.0,
+          "angle_deg": 45.0,
+          "quantity": 2,
+          "confidence": 95
+        }
+      ],
+      "bends": [
+        {
+          "angle_deg": 90.0,
+          "quantity": 2,
+          "confidence": 85
+        }
+      ],
+      "studs": [
+        {
+          "size": "M8",
+          "length_mm": 20.0,
+          "quantity": 1,
+          "material": "AISI 304",
+          "confidence": 90
+        }
+      ],
+      "welds": [
+        {
+          "type": "Edge / Corner Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "2 edges",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "surface_finish": [
+        "Grind and flush welds",
+        "Deburred"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Laser Cutting / Punching",
+          "reason": "Cutting profile, center cutout Ø140 and 10x23 slot",
+          "confidence": 95
+        },
+        {
+          "process": "Sheet Metal Bending",
+          "reason": "Forming side flanges (25mm height)",
+          "confidence": 95
+        },
+        {
+          "process": "Welding & Edge Finishing",
+          "reason": "Weld 2 corner edges and grind flush as noted",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and flush",
+        "General Tolerances ISO 2768-mK"
+      ],
+      "confidence": {
+        "drawing_no": 95,
+        "revision": 95,
+        "description": 95,
+        "material": 95,
+        "thickness": 95,
+        "weight": 95,
+        "quantity": 90
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-DA79DB2E8B",
+    "created_at": "2026-08-24T08:30:29.162915+00:00",
+    "filename": "[PID#16123] 304SS Heat Exchanger Mounting Bracket - R2.00-2024-07-16.pdf",
+    "file_hash": "6f0bc737ed96ccce3ee783de85b909732530a7cbaa41c4100047551c246af690",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16123",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Bracket - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 3.0,
+      "weight_kg": 0.54,
+      "quantity": 1,
+      "notes": [
+        "Fully weld all corners grind weld flush",
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Process: Sheet Metal Cutting / Laser Cutting (95% confidence)",
+        "Process: Bending / Sheet Metal Forming (90% confidence)",
+        "Process: Welding (98% confidence)",
+        "Process: Grinding (98% confidence)",
+        "Process: Deburring (98% confidence)",
+        "Dimension: Overall Width 160.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Length 170.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Height 47.0 mm (ISO 2768-mK)",
+        "Dimension: Material Thickness 3.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Width 15.0 mm (ISO 2768-mK) × 2",
+        "Dimension: Cutout Angle 135.0 mm (ISO 2768-mK) × 2",
+        "Chamfer: 5.0 mm × 45.0° (2 place(s))",
+        "Surface finish: Grind weld flush",
+        "Surface finish: Deburr all sharp edges",
+        "Holes: 2 through slot",
+        "Holes: 2 recessed slot",
+        "Weld: corner weld, all corners"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 5.9475,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 1665.3,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Required to cut plate material profiles and slots",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Bent bracket structure",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Drawing explicitly calls out 'Fully weld all corners'",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Grinding & Flush",
+        "drawingQty": "Drawing explicitly calls out 'grind weld flush'",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-GRIND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-5",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Drawing explicitly calls out 'Deburr all sharp edges'",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "4 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "ai-chamfers",
+        "category": "PROCESS",
+        "item": "Chamfering",
+        "drawingQty": "2 chamfer location(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 120.0,
+        "cost": 120.0,
+        "confidence": "Estimated",
+        "rateId": "PROC-CHAMFER",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.5,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 750.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16123",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Bracket - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 3.0,
+      "weight_kg": 0.54,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Width",
+          "value_mm": 160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Length",
+          "value_mm": 170.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Height",
+          "value_mm": 47.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Material Thickness",
+          "value_mm": 3.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Flange Width",
+          "value_mm": 15.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 90
+        },
+        {
+          "label": "Cutout Angle",
+          "value_mm": 135.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": null,
+          "quantity": 2,
+          "type": "through slot",
+          "callout": "2 x 12 X 22 THRU ALL",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 2,
+          "type": "recessed slot",
+          "callout": "2 x 11 X 26 ↧ 3",
+          "confidence": 95
+        }
+      ],
+      "threads": [],
+      "chamfers": [
+        {
+          "size_mm": 5.0,
+          "angle_deg": 45.0,
+          "quantity": 2,
+          "confidence": 95
+        }
+      ],
+      "bends": [],
+      "studs": [],
+      "welds": [
+        {
+          "type": "corner weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "all corners",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [
+        "Grind weld flush",
+        "Deburr all sharp edges"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Cutting / Laser Cutting",
+          "reason": "Required to cut plate material profiles and slots",
+          "confidence": 95
+        },
+        {
+          "process": "Bending / Sheet Metal Forming",
+          "reason": "Bent bracket structure",
+          "confidence": 90
+        },
+        {
+          "process": "Welding",
+          "reason": "Drawing explicitly calls out 'Fully weld all corners'",
+          "confidence": 98
+        },
+        {
+          "process": "Grinding",
+          "reason": "Drawing explicitly calls out 'grind weld flush'",
+          "confidence": 98
+        },
+        {
+          "process": "Deburring",
+          "reason": "Drawing explicitly calls out 'Deburr all sharp edges'",
+          "confidence": 98
+        }
+      ],
+      "notes": [
+        "Fully weld all corners grind weld flush",
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK"
+      ],
+      "confidence": {
+        "drawing_no": 98,
+        "revision": 98,
+        "description": 98,
+        "material": 95,
+        "thickness": 95,
+        "weight": 98,
+        "quantity": 90
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-66B2200F15",
+    "created_at": "2026-08-24T08:30:50.674087+00:00",
+    "filename": "[PID#16124] 304SS Heat Exchanger Mounting Base Plate - R2.00-2024-07-16.pdf",
+    "file_hash": "809208b8e1a9640ab3752aa0a0354c2dc68e6eb4932b124570e47900bd85e6f7",
+    "source": "vision_ai",
+    "warnings": [
+      "Vision extraction completed, but some values require review: Plate thickness is not explicitly dimensioned on sheet 1/2 view."
+    ],
+    "drawing": {
+      "drawing_no": "16124",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Base Plate - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel 304 AISI 304",
+      "thickness_mm": 0.0,
+      "weight_kg": 8.38,
+      "quantity": 1,
+      "notes": [
+        "General Tolerances ISO 2768-mK",
+        "Deburr all sharp edges",
+        "Process: Laser Cutting (90% confidence)",
+        "Process: Stud Welding / Pressing (90% confidence)",
+        "Review required: Plate thickness is not explicitly dimensioned on sheet 1/2 view.",
+        "Dimension: Overall Length 525.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 400.0 mm (ISO 2768-mK)",
+        "Dimension: Total Assembly Height 15.0 mm (ISO 2768-mK)",
+        "Dimension: Stud Horizontal Pitch 80.0 mm (ISO 2768-mK) × 2",
+        "Dimension: Stud Vertical Pitch 510.0 mm (ISO 2768-mK)",
+        "Dimension: Stud Edge Distance 7.5 mm (ISO 2768-mK) × 2",
+        "Studs: 4 × M5 × 10.0 mm"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material",
+        "category": "MATERIAL",
+        "item": "Stainless Steel 304 AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 8.38,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 2346.4,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Profile cutting of 304SS base plate.",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Stud Welding",
+        "drawingQty": "4x 304SS female studs attached to base plate.",
+        "costingQty": 1.0,
+        "unit": "stud",
+        "rate": 50.0,
+        "cost": 50.0,
+        "confidence": "Exact",
+        "rateId": "PROC-STUD",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16124",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Base Plate - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": null,
+      "weight_kg": 8.38,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 525.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 400.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Total Assembly Height",
+          "value_mm": 15.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Stud Horizontal Pitch",
+          "value_mm": 80.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 90
+        },
+        {
+          "label": "Stud Vertical Pitch",
+          "value_mm": 510.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Stud Edge Distance",
+          "value_mm": 7.5,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "holes": [],
+      "threads": [],
+      "chamfers": [],
+      "bends": [],
+      "studs": [
+        {
+          "size": "M5",
+          "length_mm": 10.0,
+          "quantity": 4,
+          "material": "304SS",
+          "confidence": 95
+        }
+      ],
+      "welds": [],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting",
+          "reason": "Profile cutting of 304SS base plate.",
+          "confidence": 90
+        },
+        {
+          "process": "Stud Welding / Pressing",
+          "reason": "4x 304SS female studs attached to base plate.",
+          "confidence": 90
+        }
+      ],
+      "notes": [
+        "General Tolerances ISO 2768-mK",
+        "Deburr all sharp edges"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 90,
+        "thickness": 50,
+        "weight": 100,
+        "quantity": 100
+      },
+      "missing_or_uncertain": [
+        "Plate thickness is not explicitly dimensioned on sheet 1/2 view."
+      ]
+    }
+  },
+  {
+    "id": "EXT-D17143A67B",
+    "created_at": "2026-08-24T08:31:28.655012+00:00",
+    "filename": "[PID#16125] S355J0 Heat Exchanger Mounting Column - R2.00-2025-09-01.pdf",
+    "file_hash": "fdfcdf18327ec955372c74710f4b1a4271534f1c7c8881d043eb5990caa81143",
+    "source": "vision_ai",
+    "warnings": [
+      "Rate Master values are missing for: Sandblasting. Enter approved rates before generating the final quotation."
+    ],
+    "drawing": {
+      "drawing_no": "16125",
+      "revision": "R2.00",
+      "description": "S355J0 Heat Exchanger Mounting Column - LQS CDU-L2L 800kW",
+      "material": "Steel S355J0 1.0553",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.27,
+      "quantity": 1,
+      "notes": [
+        "Material S355J0 is relevant to Q355C",
+        "Fully Welded Fabrication",
+        "Deburr all sharp edges",
+        "FINISH: Sandblasted and Powder coat RAL 9003 Glacier White",
+        "Mask all tap/threaded holes while painting",
+        "Process: Sheet Metal Fabrication / Laser Cutting (95% confidence)",
+        "Process: Welding (100% confidence)",
+        "Process: Sandblasting (100% confidence)",
+        "Process: Powder Coating (100% confidence)",
+        "Dimension: Overall Height 328.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 65.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Depth 42.0 mm (ISO 2768-mK)",
+        "Dimension: Wall Thickness 5.0 mm (ISO 2768-mK)",
+        "Surface finish: Sandblasted",
+        "Surface finish: Powder coat RAL 9003 Glacier White",
+        "Holes: 8 × Ø11.0 mm THRU",
+        "Holes: 2 × Ø11.0 mm THRU",
+        "Weld: Fillet Weld, Internal brace plates (2 PLS)"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Steel S355J0 1.0553",
+        "drawingQty": "1 part(s)",
+        "costingQty": 0.8368,
+        "unit": "kg",
+        "rate": 85.0,
+        "cost": 71.128,
+        "confidence": "Exact",
+        "rateId": "MAT-CS-S355J0",
+        "rateSource": "Rate Master",
+        "criticalScore": 95
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Fabricated from 5mm thick steel plates",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Note specifies Fully Welded Fabrication",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "Sandblasting",
+        "drawingQty": "Note specifies FINISH: Sandblasted",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": null,
+        "rateSource": "RATE MISSING - add process rate in Rate Master",
+        "criticalScore": 100
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Powder Coating",
+        "drawingQty": "Note specifies Powder coat RAL 9003 Glacier White",
+        "costingQty": 1.0,
+        "unit": "m2",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-COAT",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "10 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16125",
+      "revision": "R2.00",
+      "description": "S355J0 Heat Exchanger Mounting Column - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Steel",
+        "grade": "S355J0",
+        "specification": "1.0553"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.27,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Height",
+          "value_mm": 328.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 65.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Depth",
+          "value_mm": 42.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Wall Thickness",
+          "value_mm": 5.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 11.0,
+          "quantity": 8,
+          "type": "THRU",
+          "callout": "Ø 11THRU - 4 PLS Both Sides",
+          "confidence": 100
+        },
+        {
+          "diameter_mm": 11.0,
+          "quantity": 2,
+          "type": "THRU",
+          "callout": "Ø 11",
+          "confidence": 95
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Fillet Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Internal brace plates (2 PLS)",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "surface_finish": [
+        "Sandblasted",
+        "Powder coat RAL 9003 Glacier White"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Fabrication / Laser Cutting",
+          "reason": "Fabricated from 5mm thick steel plates",
+          "confidence": 95
+        },
+        {
+          "process": "Welding",
+          "reason": "Note specifies Fully Welded Fabrication",
+          "confidence": 100
+        },
+        {
+          "process": "Sandblasting",
+          "reason": "Note specifies FINISH: Sandblasted",
+          "confidence": 100
+        },
+        {
+          "process": "Powder Coating",
+          "reason": "Note specifies Powder coat RAL 9003 Glacier White",
+          "confidence": 100
+        }
+      ],
+      "notes": [
+        "Material S355J0 is relevant to Q355C",
+        "Fully Welded Fabrication",
+        "Deburr all sharp edges",
+        "FINISH: Sandblasted and Powder coat RAL 9003 Glacier White",
+        "Mask all tap/threaded holes while painting"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 100,
+        "thickness": 95,
+        "weight": 100,
+        "quantity": 100
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-06BE29F70D",
+    "created_at": "2026-08-24T08:32:32.417602+00:00",
+    "filename": "[PID#16166] 304SS Signal Cable Tray, Lower Compartment - R2.01-2024-08-28.pdf",
+    "file_hash": "e3415e84c924ca839749212196d6b669c0635566f5b36efaf8ad02c8bcab3e24",
+    "source": "vision_ai",
+    "warnings": [
+      "Rate Master values are missing for: Hardware Insertion. Enter approved rates before generating the final quotation."
+    ],
+    "drawing": {
+      "drawing_no": "16166",
+      "revision": "R2.01",
+      "description": "304SS Signal Cable Tray, Lower Compartment - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 1.0,
+      "weight_kg": 0.55,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and Flush",
+        "2 X M5 SS304 Threaded Insert",
+        "General Tolerances ISO 2768-mK",
+        "Process: Laser Cutting / CNC Punching (95% confidence)",
+        "Process: Sheet Metal Bending (95% confidence)",
+        "Process: Welding (90% confidence)",
+        "Process: Hardware Insertion (90% confidence)",
+        "Process: Grinding / Finishing (90% confidence)",
+        "Process: Deburring (95% confidence)",
+        "Dimension: Overall Length 615.5 mm (ISO 2768-mK)",
+        "Dimension: Inner Flange Length 614.5 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Inner Width 80.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Height 15.0 mm (ISO 2768-mK) × 2",
+        "Thread: M5 × 2 THRU",
+        "Bend: 90.0° × 2",
+        "Holes: 48 × Ø9.0 mm thru",
+        "Holes: 4 slot",
+        "Holes: 39 slot",
+        "Weld: Corner Weld, 2 edges"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 15.86,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 4440.8,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Extensive hole and slot patterns on sheet metal blank",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Tray features two 90-degree side flanges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Weld 2 edges specified on corner joints",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Hardware Insertion",
+        "drawingQty": "2 X M5 SS304 Threaded Insert callout",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": null,
+        "rateSource": "RATE MISSING - add process rate in Rate Master",
+        "criticalScore": 100
+      },
+      {
+        "id": "ai-process-5",
+        "category": "PROCESS",
+        "item": "Grinding & Flush",
+        "drawingQty": "Grind and Flush requirement on welded edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-GRIND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-6",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Deburr all sharp edges note",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "91 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16166",
+      "revision": "R2.01",
+      "description": "304SS Signal Cable Tray, Lower Compartment - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": ""
+      },
+      "thickness_mm": 1.0,
+      "weight_kg": 0.55,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 615.5,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Inner Flange Length",
+          "value_mm": 614.5,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Inner Width",
+          "value_mm": 80.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Flange Height",
+          "value_mm": 15.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 9.0,
+          "quantity": 48,
+          "type": "thru",
+          "callout": "Ø 9 THRU - 48 PLS",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 4,
+          "type": "slot",
+          "callout": "5.5 X 15 THRU - 4 PLS",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": null,
+          "quantity": 39,
+          "type": "slot",
+          "callout": "9 X 20 THRU - 39 PLS",
+          "confidence": 95
+        }
+      ],
+      "threads": [
+        {
+          "designation": "M5",
+          "quantity": 2,
+          "through": true,
+          "confidence": 90
+        }
+      ],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 90.0,
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Corner Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "2 edges",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting / CNC Punching",
+          "reason": "Extensive hole and slot patterns on sheet metal blank",
+          "confidence": 95
+        },
+        {
+          "process": "Sheet Metal Bending",
+          "reason": "Tray features two 90-degree side flanges",
+          "confidence": 95
+        },
+        {
+          "process": "Welding",
+          "reason": "Weld 2 edges specified on corner joints",
+          "confidence": 90
+        },
+        {
+          "process": "Hardware Insertion",
+          "reason": "2 X M5 SS304 Threaded Insert callout",
+          "confidence": 90
+        },
+        {
+          "process": "Grinding / Finishing",
+          "reason": "Grind and Flush requirement on welded edges",
+          "confidence": 90
+        },
+        {
+          "process": "Deburring",
+          "reason": "Deburr all sharp edges note",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and Flush",
+        "2 X M5 SS304 Threaded Insert",
+        "General Tolerances ISO 2768-mK"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 100,
+        "thickness": 95,
+        "weight": 100,
+        "quantity": 100
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-1B42CB45E4",
+    "created_at": "2026-08-24T08:34:38.697263+00:00",
+    "filename": "[PID#16174] S355J0 Refill Pump and Reservoir Stand-R2.01-2025-09-01.pdf",
+    "file_hash": "2a58a76c99510c5ed7f4ef092bc5076dfdae6a0de283b709253e48372986221c",
+    "source": "vision_ai",
+    "warnings": [
+      "Rate Master values are missing for: Sandblasting. Enter approved rates before generating the final quotation."
+    ],
+    "drawing": {
+      "drawing_no": "16174",
+      "revision": "R2.01",
+      "description": "S355J0 Refill Pump and Reservoir Stand - LQS CDU-L2L 800kW",
+      "material": "Structural Steel S355J0 EN 10025-2",
+      "thickness_mm": 0.0,
+      "weight_kg": 11.14,
+      "quantity": 1,
+      "notes": [
+        "Material S355J0 is relevant to Q355C",
+        "Fully Welded Fabrication",
+        "Deburr all sharp edges",
+        "FINISH: Sandblasted and Powder coat RAL 9003 Glacier White",
+        "Mask all tap/threaded holes while painting",
+        "Process: Welding / Fabrication (95% confidence)",
+        "Process: Sandblasting (95% confidence)",
+        "Process: Powder Coating (95% confidence)",
+        "Dimension: Overall Length 870.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 265.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Height 40.0 mm (ISO 2768-mK)",
+        "Thread: M8 × 2 THRU",
+        "Thread: M5 × 8 THRU",
+        "Thread: M8 × 4 THRU",
+        "Chamfer: 0.5 mm × 45.0° (1 place(s))",
+        "Surface finish: Sandblasted",
+        "Surface finish: Powder coat RAL 9003 Glacier White",
+        "Weld: Tack Weld, DIN 934 M8 Hex Nut (Item 1)",
+        "Weld: Full Weld, Fabrication Assembly"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material",
+        "category": "MATERIAL",
+        "item": "Structural Steel S355J0 EN 10025-2",
+        "drawingQty": "1 part(s)",
+        "costingQty": 11.14,
+        "unit": "kg",
+        "rate": 85.0,
+        "cost": 946.9000000000001,
+        "confidence": "Exact",
+        "rateId": "MAT-CS-S355J0",
+        "rateSource": "Rate Master",
+        "criticalScore": 95
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Drawing specifies Fully Welded Fabrication and Tack Weld callout in Detail C.",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Sandblasting",
+        "drawingQty": "Finish note explicitly calls out sandblasted.",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": null,
+        "rateSource": "RATE MISSING - add process rate in Rate Master",
+        "criticalScore": 100
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "Powder Coating",
+        "drawingQty": "Finish note explicitly calls out powder coat RAL 9003 Glacier White.",
+        "costingQty": 1.0,
+        "unit": "m2",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-COAT",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-chamfers",
+        "category": "PROCESS",
+        "item": "Chamfering",
+        "drawingQty": "1 chamfer location(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 120.0,
+        "cost": 120.0,
+        "confidence": "Estimated",
+        "rateId": "PROC-CHAMFER",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16174",
+      "revision": "R2.01",
+      "description": "S355J0 Refill Pump and Reservoir Stand - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Structural Steel",
+        "grade": "S355J0",
+        "specification": "EN 10025-2"
+      },
+      "thickness_mm": null,
+      "weight_kg": 11.14,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 870.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 265.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Height",
+          "value_mm": 40.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "holes": [],
+      "threads": [
+        {
+          "designation": "M8",
+          "quantity": 2,
+          "through": true,
+          "confidence": 90
+        },
+        {
+          "designation": "M5",
+          "quantity": 8,
+          "through": true,
+          "confidence": 90
+        },
+        {
+          "designation": "M8",
+          "quantity": 4,
+          "through": true,
+          "confidence": 90
+        }
+      ],
+      "chamfers": [
+        {
+          "size_mm": 0.5,
+          "angle_deg": 45.0,
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "bends": [],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Tack Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "DIN 934 M8 Hex Nut (Item 1)",
+          "quantity": 2,
+          "confidence": 90
+        },
+        {
+          "type": "Full Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Fabrication Assembly",
+          "quantity": 1,
+          "confidence": 85
+        }
+      ],
+      "surface_finish": [
+        "Sandblasted",
+        "Powder coat RAL 9003 Glacier White"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Welding / Fabrication",
+          "reason": "Drawing specifies Fully Welded Fabrication and Tack Weld callout in Detail C.",
+          "confidence": 95
+        },
+        {
+          "process": "Sandblasting",
+          "reason": "Finish note explicitly calls out sandblasted.",
+          "confidence": 95
+        },
+        {
+          "process": "Powder Coating",
+          "reason": "Finish note explicitly calls out powder coat RAL 9003 Glacier White.",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Material S355J0 is relevant to Q355C",
+        "Fully Welded Fabrication",
+        "Deburr all sharp edges",
+        "FINISH: Sandblasted and Powder coat RAL 9003 Glacier White",
+        "Mask all tap/threaded holes while painting"
+      ],
+      "confidence": {
+        "drawing_no": 95,
+        "revision": 95,
+        "description": 95,
+        "material": 95,
+        "thickness": 50,
+        "weight": 90,
+        "quantity": 95
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-C415EC3391",
+    "created_at": "2026-08-24T08:46:47.889751+00:00",
+    "filename": "[PID#16103] 304SS Reservoir Holder - R2.01-2025-03-17.pdf",
+    "file_hash": "bdad65b0588716709a68e4598bacd088e78144f83c9f42b2da49d75566a14dd9",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16103",
+      "revision": "R2.01",
+      "description": "304SS Reservoir Holder - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 2.0,
+      "weight_kg": 1.39,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Weld 2 edges Grind and flush",
+        "Process: Sheet Metal Laser Cutting / Punching (100% confidence)",
+        "Process: Sheet Metal Bending / Press Brake (100% confidence)",
+        "Process: Welding (100% confidence)",
+        "Process: Deburring (100% confidence)",
+        "Dimension: Overall Length 237.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 181.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Height 102.0 mm (ISO 2768-mK)",
+        "Dimension: Front Flange Height 32.0 mm (ISO 2768-mK)",
+        "Dimension: Hole Pattern Width Pitch 94.0 mm (ISO 2768-mK)",
+        "Dimension: Hole Pitch Length Center 114.0 mm (ISO 2768-mK)",
+        "Dimension: Hole Offset Front Edge 77.0 mm (ISO 2768-mK)",
+        "Dimension: Hole Offset Rear Edge 46.0 mm (ISO 2768-mK)",
+        "Dimension: Front Cutout Width 100.0 mm (ISO 2768-mK)",
+        "Dimension: Side Cutout Top Width 70.0 mm (ISO 2768-mK) × 2",
+        "Dimension: Side Flange Top Edge Length 18.0 mm (ISO 2768-mK) × 2",
+        "Dimension: Side Cutout Bottom Offset 15.0 mm (ISO 2768-mK) × 2",
+        "Bend: 90.0° × 4",
+        "Surface finish: Grind and flush welds",
+        "Holes: 4 × Ø5.5 mm THRU",
+        "Weld: Corner / Fillet Weld, Corner edges"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 3.965,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 1110.2,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Flat sheet profile with internal cutouts and holes",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Multiple 90-degree bend flanges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Corner edges welded and ground flush as indicated by weld symbols and notes",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "General note specifies deburr all sharp edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "4 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16103",
+      "revision": "R2.01",
+      "description": "304SS Reservoir Holder - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 2.0,
+      "weight_kg": 1.39,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 237.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 181.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Height",
+          "value_mm": 102.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Front Flange Height",
+          "value_mm": 32.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Hole Pattern Width Pitch",
+          "value_mm": 94.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Hole Pitch Length Center",
+          "value_mm": 114.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Hole Offset Front Edge",
+          "value_mm": 77.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Hole Offset Rear Edge",
+          "value_mm": 46.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Front Cutout Width",
+          "value_mm": 100.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Side Cutout Top Width",
+          "value_mm": 70.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 95
+        },
+        {
+          "label": "Side Flange Top Edge Length",
+          "value_mm": 18.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 95
+        },
+        {
+          "label": "Side Cutout Bottom Offset",
+          "value_mm": 15.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 95
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 5.5,
+          "quantity": 4,
+          "type": "THRU",
+          "callout": "Ø 5.5 THRU - 4 PLS",
+          "confidence": 100
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [
+        {
+          "angle_deg": 90.0,
+          "quantity": 4,
+          "confidence": 95
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Corner / Fillet Weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Corner edges",
+          "quantity": 4,
+          "confidence": 100
+        }
+      ],
+      "surface_finish": [
+        "Grind and flush welds"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Laser Cutting / Punching",
+          "reason": "Flat sheet profile with internal cutouts and holes",
+          "confidence": 100
+        },
+        {
+          "process": "Sheet Metal Bending / Press Brake",
+          "reason": "Multiple 90-degree bend flanges",
+          "confidence": 100
+        },
+        {
+          "process": "Welding",
+          "reason": "Corner edges welded and ground flush as indicated by weld symbols and notes",
+          "confidence": 100
+        },
+        {
+          "process": "Deburring",
+          "reason": "General note specifies deburr all sharp edges",
+          "confidence": 100
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "General Tolerances ISO 2768-mK",
+        "Weld 2 edges Grind and flush"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 100,
+        "thickness": 100,
+        "weight": 100,
+        "quantity": 100
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-BCC4BE7739",
+    "created_at": "2026-08-24T08:47:05.587735+00:00",
+    "filename": "[PID#16104] 304SS Expansion Tank Bracket - R2.02-2024-10-18.pdf",
+    "file_hash": "c5eedfb323a394653463246db9ec2068eed113973ab21047f7dab42a770fe8c7",
+    "source": "vision_ai",
+    "warnings": [
+      "Rate Master values are missing for: Sheet Metal Cutting. Enter approved rates before generating the final quotation."
+    ],
+    "drawing": {
+      "drawing_no": "16104",
+      "revision": "R2.02",
+      "description": "304SS Expansion Tank Bracket - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 1.2,
+      "weight_kg": 0.25,
+      "quantity": 1,
+      "notes": [
+        "General Tolerances ISO 2768-mK",
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and flush",
+        "Process: Sheet Metal Cutting (95% confidence)",
+        "Process: Bending / Press Brake Forming (95% confidence)",
+        "Process: Welding (95% confidence)",
+        "Process: Grinding / Finishing (90% confidence)",
+        "Dimension: Width 150.0 mm (ISO 2768-mK)",
+        "Dimension: Total Height 210.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Height 25.0 mm (ISO 2768-mK)",
+        "Dimension: Main Plate Height 190.0 mm (ISO 2768-mK)",
+        "Thread: M8 × 1",
+        "Chamfer: 10.0 mm × 45.0° (2 place(s))",
+        "Bend: 90.0° × 2",
+        "Surface finish: Grind and flush",
+        "Surface finish: Deburr all sharp edges",
+        "Holes: 1 × Ø140.0 mm through",
+        "Holes: 1 × Ø10.0 mm slot",
+        "Weld: edge weld, 2 edges"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 2.379,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 666.12,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Sheet Metal Cutting",
+        "drawingQty": "Laser or punch cutting of outer profile, Ø140 hole, and 10x23 slot",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": null,
+        "rateSource": "RATE MISSING - add process rate in Rate Master",
+        "criticalScore": 100
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Side flanges formed from 1.2mm sheet metal",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Weld 2 edges and attachment of M8/Ø12 boss",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Grinding & Flush",
+        "drawingQty": "Grind and flush welds and deburr sharp edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-GRIND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "2 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "ai-chamfers",
+        "category": "PROCESS",
+        "item": "Chamfering",
+        "drawingQty": "2 chamfer location(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 120.0,
+        "cost": 120.0,
+        "confidence": "Estimated",
+        "rateId": "PROC-CHAMFER",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.5,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 750.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16104",
+      "revision": "R2.02",
+      "description": "304SS Expansion Tank Bracket - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 1.2,
+      "weight_kg": 0.25,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Width",
+          "value_mm": 150.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Total Height",
+          "value_mm": 210.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Flange Height",
+          "value_mm": 25.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Main Plate Height",
+          "value_mm": 190.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 140.0,
+          "quantity": 1,
+          "type": "through",
+          "callout": "Ø140",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": 10.0,
+          "quantity": 1,
+          "type": "slot",
+          "callout": "10 X 23 TRU",
+          "confidence": 90
+        }
+      ],
+      "threads": [
+        {
+          "designation": "M8",
+          "quantity": 1,
+          "through": false,
+          "confidence": 90
+        }
+      ],
+      "chamfers": [
+        {
+          "size_mm": 10.0,
+          "angle_deg": 45.0,
+          "quantity": 2,
+          "confidence": 95
+        }
+      ],
+      "bends": [
+        {
+          "angle_deg": 90.0,
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "edge weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "2 edges",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "surface_finish": [
+        "Grind and flush",
+        "Deburr all sharp edges"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Cutting",
+          "reason": "Laser or punch cutting of outer profile, Ø140 hole, and 10x23 slot",
+          "confidence": 95
+        },
+        {
+          "process": "Bending / Press Brake Forming",
+          "reason": "Side flanges formed from 1.2mm sheet metal",
+          "confidence": 95
+        },
+        {
+          "process": "Welding",
+          "reason": "Weld 2 edges and attachment of M8/Ø12 boss",
+          "confidence": 95
+        },
+        {
+          "process": "Grinding / Finishing",
+          "reason": "Grind and flush welds and deburr sharp edges",
+          "confidence": 90
+        }
+      ],
+      "notes": [
+        "General Tolerances ISO 2768-mK",
+        "Deburr all sharp edges",
+        "Weld 2 edges Grind and flush"
+      ],
+      "confidence": {
+        "drawing_no": 95,
+        "revision": 95,
+        "description": 95,
+        "material": 95,
+        "thickness": 95,
+        "weight": 95,
+        "quantity": 90
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-1459FC043F",
+    "created_at": "2026-08-24T08:47:21.842063+00:00",
+    "filename": "[PID#16123] 304SS Heat Exchanger Mounting Bracket - R2.00-2024-07-16.pdf",
+    "file_hash": "6f0bc737ed96ccce3ee783de85b909732530a7cbaa41c4100047551c246af690",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16123",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Bracket - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel AISI 304",
+      "thickness_mm": 3.0,
+      "weight_kg": 0.54,
+      "quantity": 1,
+      "notes": [
+        "Deburr all sharp edges",
+        "Fully weld all corners grind weld flush",
+        "General Tolerances ISO 2768-mK",
+        "Process: Laser Cutting / Blanking (95% confidence)",
+        "Process: Sheet Metal Bending (90% confidence)",
+        "Process: TIG Welding (95% confidence)",
+        "Process: Grinding & Deburring (95% confidence)",
+        "Dimension: Overall Length 170.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 160.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Height 47.0 mm (ISO 2768-mK)",
+        "Dimension: Flange Bend Angle 135.0 mm (ISO 2768-mK)",
+        "Chamfer: 5.0 mm × 45.0° (2 place(s))",
+        "Bend: 135.0° × 1",
+        "Bend: 90.0° × 2",
+        "Surface finish: Deburr all sharp edges",
+        "Surface finish: Grind weld flush",
+        "Holes: 2 × Ø12.0 mm slot",
+        "Holes: 2 × Ø11.0 mm slot counterbore/recess",
+        "Weld: Corner weld, All corners"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Stainless Steel AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 5.9475,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 1665.3,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Sheet metal flat profile and slot feature creation",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Press Brake Forming",
+        "drawingQty": "Forming of bracket geometry with 135-degree and 90-degree angles",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BEND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "TIG Welding",
+        "drawingQty": "Drawing explicitly specifies 'Fully weld all corners'",
+        "costingQty": 1.0,
+        "unit": "m",
+        "rate": 250.0,
+        "cost": 250.0,
+        "confidence": "Exact",
+        "rateId": "PROC-TIG",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Grinding & Flush",
+        "drawingQty": "Drawing notes require 'grind weld flush' and 'Deburr all sharp edges'",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-GRIND",
+        "rateSource": "Rate Master",
+        "criticalScore": 70
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "4 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "ai-chamfers",
+        "category": "PROCESS",
+        "item": "Chamfering",
+        "drawingQty": "2 chamfer location(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 120.0,
+        "cost": 120.0,
+        "confidence": "Estimated",
+        "rateId": "PROC-CHAMFER",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.5,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 750.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-tig",
+        "category": "LABOUR",
+        "item": "TIG Welder",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-TIG",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16123",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Bracket - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "AISI 304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": 3.0,
+      "weight_kg": 0.54,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 170.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 160.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Height",
+          "value_mm": 47.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Flange Bend Angle",
+          "value_mm": 135.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 12.0,
+          "quantity": 2,
+          "type": "slot",
+          "callout": "2 x 12 X 22 THRU ALL",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": 11.0,
+          "quantity": 2,
+          "type": "slot counterbore/recess",
+          "callout": "2 x 11 X 26 ↧ 3",
+          "confidence": 90
+        }
+      ],
+      "threads": [],
+      "chamfers": [
+        {
+          "size_mm": 5.0,
+          "angle_deg": 45.0,
+          "quantity": 2,
+          "confidence": 95
+        }
+      ],
+      "bends": [
+        {
+          "angle_deg": 135.0,
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "angle_deg": 90.0,
+          "quantity": 2,
+          "confidence": 85
+        }
+      ],
+      "studs": [],
+      "welds": [
+        {
+          "type": "Corner weld",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "All corners",
+          "quantity": 2,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [
+        "Deburr all sharp edges",
+        "Grind weld flush"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Laser Cutting / Blanking",
+          "reason": "Sheet metal flat profile and slot feature creation",
+          "confidence": 95
+        },
+        {
+          "process": "Sheet Metal Bending",
+          "reason": "Forming of bracket geometry with 135-degree and 90-degree angles",
+          "confidence": 90
+        },
+        {
+          "process": "TIG Welding",
+          "reason": "Drawing explicitly specifies 'Fully weld all corners'",
+          "confidence": 95
+        },
+        {
+          "process": "Grinding & Deburring",
+          "reason": "Drawing notes require 'grind weld flush' and 'Deburr all sharp edges'",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Deburr all sharp edges",
+        "Fully weld all corners grind weld flush",
+        "General Tolerances ISO 2768-mK"
+      ],
+      "confidence": {
+        "drawing_no": 98,
+        "revision": 98,
+        "description": 98,
+        "material": 95,
+        "thickness": 95,
+        "weight": 95,
+        "quantity": 90
+      },
+      "missing_or_uncertain": []
+    }
+  },
+  {
+    "id": "EXT-CE757DC8BA",
+    "created_at": "2026-08-24T08:48:53.314455+00:00",
+    "filename": "[PID#16124] 304SS Heat Exchanger Mounting Base Plate - R2.00-2024-07-16.pdf",
+    "file_hash": "809208b8e1a9640ab3752aa0a0354c2dc68e6eb4932b124570e47900bd85e6f7",
+    "source": "vision_ai",
+    "warnings": [
+      "Vision extraction completed, but some values require review: Plate thickness is not explicitly dimensioned on sheet 1, Corner hole details/dimensions appear on sheet 2",
+      "Rate Master values are missing for: Sheet Metal Fabrication. Enter approved rates before generating the final quotation."
+    ],
+    "drawing": {
+      "drawing_no": "16124",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Base Plate - LQS CDU-L2L 800kW",
+      "material": "Stainless Steel 304 AISI 304",
+      "thickness_mm": 0.0,
+      "weight_kg": 8.38,
+      "quantity": 1,
+      "notes": [
+        "General Tolerances ISO 2768-mK",
+        "BOM Item 1: 304SS Heat Exchanger Mounting Base Plate - LQS CDU-L2L 800kW (QTY 1)",
+        "BOM Item 2: 304SS Female Stud - HBS #3257010 - Ø7.1 x 10 M5 M5 x 10mm (QTY 4)",
+        "Process: Stud Welding / Pressing (90% confidence)",
+        "Process: Sheet Metal Fabrication (85% confidence)",
+        "Review required: Plate thickness is not explicitly dimensioned on sheet 1",
+        "Review required: Corner hole details/dimensions appear on sheet 2",
+        "Dimension: Overall Length 525.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 400.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Depth 15.0 mm (ISO 2768-mK)",
+        "Dimension: Stud Horizontal Pitch 80.0 mm (ISO 2768-mK) × 2",
+        "Dimension: Stud Vertical Pitch 510.0 mm (ISO 2768-mK)",
+        "Dimension: Stud Edge Distance Vertical 7.5 mm (ISO 2768-mK) × 2",
+        "Studs: 4 × M5 × 10.0 mm"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material",
+        "category": "MATERIAL",
+        "item": "Stainless Steel 304 AISI 304",
+        "drawingQty": "1 part(s)",
+        "costingQty": 8.38,
+        "unit": "kg",
+        "rate": 280.0,
+        "cost": 2346.4,
+        "confidence": "Exact",
+        "rateId": "MAT-SS-304",
+        "rateSource": "Rate Master",
+        "criticalScore": 92
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Stud Welding",
+        "drawingQty": "BOM item 2 specifies 4x HBS female studs mounted onto base plate",
+        "costingQty": 1.0,
+        "unit": "stud",
+        "rate": 50.0,
+        "cost": 50.0,
+        "confidence": "Exact",
+        "rateId": "PROC-STUD",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "Sheet Metal Fabrication",
+        "drawingQty": "Flat mounting plate profile with installed studs",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 0.0,
+        "cost": 0.0,
+        "confidence": "Exact",
+        "rateId": null,
+        "rateSource": "RATE MISSING - add process rate in Rate Master",
+        "criticalScore": 100
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16124",
+      "revision": "R2.00",
+      "description": "304SS Heat Exchanger Mounting Base Plate - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Stainless Steel",
+        "grade": "304",
+        "specification": "AISI 304"
+      },
+      "thickness_mm": null,
+      "weight_kg": 8.38,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Length",
+          "value_mm": 525.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 400.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Overall Depth",
+          "value_mm": 15.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Stud Horizontal Pitch",
+          "value_mm": 80.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 90
+        },
+        {
+          "label": "Stud Vertical Pitch",
+          "value_mm": 510.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 90
+        },
+        {
+          "label": "Stud Edge Distance Vertical",
+          "value_mm": 7.5,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 90
+        }
+      ],
+      "holes": [],
+      "threads": [],
+      "chamfers": [],
+      "bends": [],
+      "studs": [
+        {
+          "size": "M5",
+          "length_mm": 10.0,
+          "quantity": 4,
+          "material": "304SS",
+          "confidence": 95
+        }
+      ],
+      "welds": [],
+      "surface_finish": [],
+      "manufacturing_processes": [
+        {
+          "process": "Stud Welding / Pressing",
+          "reason": "BOM item 2 specifies 4x HBS female studs mounted onto base plate",
+          "confidence": 90
+        },
+        {
+          "process": "Sheet Metal Fabrication",
+          "reason": "Flat mounting plate profile with installed studs",
+          "confidence": 85
+        }
+      ],
+      "notes": [
+        "General Tolerances ISO 2768-mK",
+        "BOM Item 1: 304SS Heat Exchanger Mounting Base Plate - LQS CDU-L2L 800kW (QTY 1)",
+        "BOM Item 2: 304SS Female Stud - HBS #3257010 - Ø7.1 x 10 M5 M5 x 10mm (QTY 4)"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 90,
+        "thickness": 30,
+        "weight": 100,
+        "quantity": 100
+      },
+      "missing_or_uncertain": [
+        "Plate thickness is not explicitly dimensioned on sheet 1",
+        "Corner hole details/dimensions appear on sheet 2"
+      ]
+    }
+  },
+  {
+    "id": "EXT-EA9D37A7A7",
+    "created_at": "2026-08-24T08:49:24.982745+00:00",
+    "filename": "[PID#16125] S355J0 Heat Exchanger Mounting Column - R2.00-2025-09-01.pdf",
+    "file_hash": "fdfcdf18327ec955372c74710f4b1a4271534f1c7c8881d043eb5990caa81143",
+    "source": "vision_ai",
+    "warnings": [],
+    "drawing": {
+      "drawing_no": "16125",
+      "revision": "R2.00",
+      "description": "S355J0 Heat Exchanger Mounting Column - LQS CDU-L2L 800kW",
+      "material": "Steel S355J0 / 1.0553 EN 10025-2",
+      "thickness_mm": 5.0,
+      "weight_kg": 2.27,
+      "quantity": 1,
+      "notes": [
+        "Material S355J0 is relevant to Q355C",
+        "Fully Welded Fabrication",
+        "Deburr all sharp edges",
+        "FINISH: Sandblasted and Powder coat RAL 9003 Glacier White",
+        "Mask all tap/threaded holes while painting",
+        "Process: Sheet Metal Cutting / Laser Cutting (90% confidence)",
+        "Process: Welding / Fabrication (95% confidence)",
+        "Process: Deburring (95% confidence)",
+        "Process: Sandblasting & Powder Coating (95% confidence)",
+        "Dimension: Overall Height 328.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Width 65.0 mm (ISO 2768-mK)",
+        "Dimension: Overall Depth 42.0 mm (ISO 2768-mK)",
+        "Dimension: Plate Thickness 5.0 mm (ISO 2768-mK)",
+        "Dimension: Hole Pitch 1 (End to 1st hole) 50.0 mm (ISO 2768-mK) × 2",
+        "Dimension: Hole Pitch 2 59.0 mm (ISO 2768-mK) × 2",
+        "Dimension: Hole Pitch 3 (Middle spacing) 110.0 mm (ISO 2768-mK)",
+        "Surface finish: Deburr all sharp edges",
+        "Surface finish: Sandblasted",
+        "Surface finish: Powder coat RAL 9003 Glacier White",
+        "Holes: 8 × Ø11.0 mm through",
+        "Holes: 2 × Ø11.0 mm through",
+        "Weld: fillet, Internal member connections",
+        "Weld: welded fabrication, All joints"
+      ]
+    },
+    "rows": [
+      {
+        "id": "ai-material-stock",
+        "category": "MATERIAL",
+        "item": "Steel S355J0 / 1.0553 EN 10025-2",
+        "drawingQty": "1 part(s)",
+        "costingQty": 0.8368,
+        "unit": "kg",
+        "rate": 85.0,
+        "cost": 71.128,
+        "confidence": "Exact",
+        "rateId": "MAT-CS-S355J0",
+        "rateSource": "Rate Master",
+        "criticalScore": 95
+      },
+      {
+        "id": "ai-process-1",
+        "category": "PROCESS",
+        "item": "Laser Cutting",
+        "drawingQty": "Flat plate components cut to size with profiled holes",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 450.0,
+        "cost": 450.0,
+        "confidence": "Exact",
+        "rateId": "PROC-LASER",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-process-2",
+        "category": "PROCESS",
+        "item": "General / Tack Welding",
+        "drawingQty": "Note explicitly states Fully Welded Fabrication",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 80
+      },
+      {
+        "id": "ai-process-3",
+        "category": "PROCESS",
+        "item": "Deburring",
+        "drawingQty": "Note specifies deburring all sharp edges",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 150.0,
+        "cost": 150.0,
+        "confidence": "Exact",
+        "rateId": "PROC-DEBURR",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "ai-process-4",
+        "category": "PROCESS",
+        "item": "Powder Coating",
+        "drawingQty": "Note specifies finish requirements",
+        "costingQty": 1.0,
+        "unit": "m2",
+        "rate": 300.0,
+        "cost": 300.0,
+        "confidence": "Exact",
+        "rateId": "PROC-COAT",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "ai-holes",
+        "category": "PROCESS",
+        "item": "Drilling / Boring",
+        "drawingQty": "10 hole(s)",
+        "costingQty": 1.0,
+        "unit": "job",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Exact",
+        "rateId": "PROC-BORE",
+        "rateSource": "Rate Master",
+        "criticalScore": 85
+      },
+      {
+        "id": "lab-fabricator",
+        "category": "LABOUR",
+        "item": "Fabricator",
+        "drawingQty": "Default fabrication labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 350.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FAB",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machine-operator",
+        "category": "LABOUR",
+        "item": "Machine Operator",
+        "drawingQty": "Default machine-operation labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 350.0,
+        "cost": 262.5,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACHINE",
+        "rateSource": "Rate Master",
+        "criticalScore": 65
+      },
+      {
+        "id": "lab-machinist",
+        "category": "LABOUR",
+        "item": "Machinist",
+        "drawingQty": "Default machining labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 500.0,
+        "cost": 500.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-MACH",
+        "rateSource": "Rate Master",
+        "criticalScore": 78
+      },
+      {
+        "id": "lab-welder",
+        "category": "LABOUR",
+        "item": "Welder / Fabricator",
+        "drawingQty": "Default welding labour allowance",
+        "costingQty": 1.0,
+        "unit": "hr",
+        "rate": 400.0,
+        "cost": 400.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-WELD",
+        "rateSource": "Rate Master",
+        "criticalScore": 75
+      },
+      {
+        "id": "lab-finishing",
+        "category": "LABOUR",
+        "item": "Finishing Operator",
+        "drawingQty": "Default finishing labour allowance",
+        "costingQty": 0.75,
+        "unit": "hr",
+        "rate": 300.0,
+        "cost": 225.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-FINISH",
+        "rateSource": "Rate Master",
+        "criticalScore": 55
+      },
+      {
+        "id": "lab-qc",
+        "category": "LABOUR",
+        "item": "QC / Handling",
+        "drawingQty": "Default inspection/handling labour allowance",
+        "costingQty": 0.5,
+        "unit": "hr",
+        "rate": 250.0,
+        "cost": 125.0,
+        "confidence": "Estimated",
+        "rateId": "LAB-QC",
+        "rateSource": "Rate Master",
+        "criticalScore": 45
+      }
+    ],
+    "ai_raw": {
+      "drawing_no": "16125",
+      "revision": "R2.00",
+      "description": "S355J0 Heat Exchanger Mounting Column - LQS CDU-L2L 800kW",
+      "material": {
+        "family": "Steel",
+        "grade": "S355J0 / 1.0553",
+        "specification": "EN 10025-2"
+      },
+      "thickness_mm": 5.0,
+      "weight_kg": 2.27,
+      "product_quantity": 1,
+      "dimensions": [
+        {
+          "label": "Overall Height",
+          "value_mm": 328.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Width",
+          "value_mm": 65.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Overall Depth",
+          "value_mm": 42.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 100
+        },
+        {
+          "label": "Plate Thickness",
+          "value_mm": 5.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        },
+        {
+          "label": "Hole Pitch 1 (End to 1st hole)",
+          "value_mm": 50.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 95
+        },
+        {
+          "label": "Hole Pitch 2",
+          "value_mm": 59.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 2,
+          "confidence": 95
+        },
+        {
+          "label": "Hole Pitch 3 (Middle spacing)",
+          "value_mm": 110.0,
+          "tolerance": "ISO 2768-mK",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "holes": [
+        {
+          "diameter_mm": 11.0,
+          "quantity": 8,
+          "type": "through",
+          "callout": "Ø 11THRU - 4 PLS Both Sides",
+          "confidence": 95
+        },
+        {
+          "diameter_mm": 11.0,
+          "quantity": 2,
+          "type": "through",
+          "callout": "Ø 11 THRU Top & Bottom Plates",
+          "confidence": 90
+        }
+      ],
+      "threads": [],
+      "chamfers": [],
+      "bends": [],
+      "studs": [],
+      "welds": [
+        {
+          "type": "fillet",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "Internal member connections",
+          "quantity": 2,
+          "confidence": 90
+        },
+        {
+          "type": "welded fabrication",
+          "size_mm": null,
+          "length_mm": null,
+          "location": "All joints",
+          "quantity": 1,
+          "confidence": 95
+        }
+      ],
+      "surface_finish": [
+        "Deburr all sharp edges",
+        "Sandblasted",
+        "Powder coat RAL 9003 Glacier White"
+      ],
+      "manufacturing_processes": [
+        {
+          "process": "Sheet Metal Cutting / Laser Cutting",
+          "reason": "Flat plate components cut to size with profiled holes",
+          "confidence": 90
+        },
+        {
+          "process": "Welding / Fabrication",
+          "reason": "Note explicitly states Fully Welded Fabrication",
+          "confidence": 95
+        },
+        {
+          "process": "Deburring",
+          "reason": "Note specifies deburring all sharp edges",
+          "confidence": 95
+        },
+        {
+          "process": "Sandblasting & Powder Coating",
+          "reason": "Note specifies finish requirements",
+          "confidence": 95
+        }
+      ],
+      "notes": [
+        "Material S355J0 is relevant to Q355C",
+        "Fully Welded Fabrication",
+        "Deburr all sharp edges",
+        "FINISH: Sandblasted and Powder coat RAL 9003 Glacier White",
+        "Mask all tap/threaded holes while painting"
+      ],
+      "confidence": {
+        "drawing_no": 100,
+        "revision": 100,
+        "description": 100,
+        "material": 100,
+        "thickness": 95,
+        "weight": 100,
+        "quantity": 100
+      },
+      "missing_or_uncertain": []
+    }
+  }
+]

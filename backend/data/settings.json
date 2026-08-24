@@ -1,0 +1,12 @@
+{
+  "company_name": "DFAB STAINLESS SYSTEMS PVT LTD",
+  "currency": "INR",
+  "material_wastage_pct": 10.0,
+  "overhead_pct": 12.0,
+  "markup_pct": 15.0,
+  "auto_dataset_capture": true,
+  "learn_from_corrections": true,
+  "training_batch_threshold": 25,
+  "critical_medium_threshold": 40,
+  "critical_high_threshold": 70
+}

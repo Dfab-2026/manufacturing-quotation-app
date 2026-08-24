@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-multipart
+pydantic
+python-dotenv
+sqlalchemy>=2.0
+psycopg[binary]
+alembic
+pypdf
+pymupdf
+pillow
+google-genai
+openpyxl
+reportlab
