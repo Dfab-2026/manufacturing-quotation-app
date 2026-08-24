@@ -1,0 +1,20 @@
+[project]
+name = "dfab-quotation-api"
+version = "0.6.6"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi",
+  "uvicorn[standard]",
+  "python-multipart",
+  "pydantic",
+  "python-dotenv",
+  "sqlalchemy>=2.0",
+  "psycopg[binary]",
+  "alembic",
+  "pypdf",
+  "pymupdf",
+  "pillow",
+  "google-genai",
+  "openpyxl",
+  "reportlab",
+]

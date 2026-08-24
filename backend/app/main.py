@@ -241,7 +241,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.5")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.6")
 
 _allowed_origins = [
     "http://localhost:3000",
@@ -1775,13 +1775,22 @@ def reviewed_memory(file_hash: str):
     return latest_review_by_hash(file_hash)
 
 
+@app.get("/")
+def root():
+    return {
+        "service": "dfab-quotation-api",
+        "status": "ok",
+        "version": "0.6.6",
+    }
+
+
 @app.get("/api/health")
 def health():
     connected = db_ping()
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.6.5",
+        "version": "0.6.6",
         "database": "connected" if connected else "unavailable",
     }
 
