@@ -1,0 +1,12 @@
+DFAB Manufacturing Quotation App v0.9.1
+
+Every uploaded file is a separate source; no source borrows another file's data.
+PDF: Gemini extraction.
+PNG/JPG/JPEG/WEBP: Gemini Vision extraction.
+DXF: ezdxf geometry/text extraction.
+STEP/STP/IGES/IGS: OpenCascade browser parser with 6.5-second timeout; metadata-only independent fallback if slow/unavailable.
+GLB/GLTF: independent 3D source.
+STL/OBJ/X_T/X_B: independent review-required output if exact parsing is unavailable.
+DWG: independent source; exact proprietary DWG geometry requires a dedicated DWG SDK/converter, otherwise review-required output is returned and no other file data is reused.
+Backend uses requirements.txt; only new parser dependency is ezdxf>=1.4,<2.
+UI shows only Analyzing…; no counters or retry labels.

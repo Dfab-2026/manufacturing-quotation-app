@@ -1,0 +1,15 @@
+DFAB Manufacturing Quotation App v0.9.5
+
+No new dependency is required for this UI/workflow patch.
+
+Updated behavior:
+- sidebar close button beside AI Quotation / Manufacturing Costing heading
+- sidebar content shifted slightly upward
+- gap between Dataset Learning and Settings
+- actual diamond-shaped resume button beside New Quotation
+- X remove button on each uploaded source
+- deleting a source removes its own analysis/DFM/BOM state
+- deleting the final source closes that quotation session and generates a fresh workspace ID
+- next upload therefore starts a new quotation
+- app clears any app-controlled beforeunload handler
+- existing AI/CAD analysis, DFM/BOM selectors, database persistence and costing remain unchanged

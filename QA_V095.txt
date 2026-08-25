@@ -1,0 +1,22 @@
+DFAB Manufacturing Quotation App v0.9.5 — QA
+
+PASS
+====
+- sidebar close button moved beside brand/title
+- sidebar shifted upward
+- Settings separated from Dataset Learning
+- resume control is a real diamond-shaped button
+- every uploaded source has an X remove action
+- deleting a source removes matching workspace/DFM/BOM state
+- deleting the last source resets the quotation and creates a fresh workspace ID
+- next upload starts a new quotation session
+- app clears app-controlled onbeforeunload
+- DFM/BOM source switching preserved
+- requested ₹ cursor contrast preserved
+- Python syntax passed
+- frontend TypeScript/TSX syntax passed
+
+LIMIT
+=====
+This patch archive does not contain the complete frontend package.json/node_modules,
+so full Next.js browser E2E/build cannot be run from the patch archive alone.

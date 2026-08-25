@@ -13,6 +13,7 @@ dependencies = [
   "alembic",
   "pypdf",
   "pymupdf",
+  "ezdxf>=1.4,<2",
   "pillow",
   "google-genai",
   "openpyxl",

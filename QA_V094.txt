@@ -1,0 +1,27 @@
+DFAB Manufacturing Quotation App v0.9.4 — Navigation/Reliability QA
+
+- Original sidebar visual language retained.
+- Small diamond ◆ added next to New Quotation.
+- Diamond resumes current working quotation or latest non-empty saved workspace.
+- Synthetic browser guard/trap removed.
+- App does not register a beforeunload leave-site confirmation.
+- Browser Back follows real history and can leave naturally.
+- IndexedDB/database persistence remains unchanged.
+- Cursor:
+  light/white UI = dark navy ₹
+  dark navy sidebar / primary buttons = light-blue ₹
+- 3D canvas no longer replaces the ₹ cursor with grab/grabbing.
+- DFM/BOM source selectors from v0.9.3 preserved.
+
+QA:
+- Python syntax compile
+- TypeScript/TSX transpile
+- Resume handler/button presence
+- No dfabGuard state
+- No beforeunload event listener
+- Cursor rules verified
+- DFM/BOM selectors verified
+
+The patch does not contain frontend/package.json/node_modules, so a full
+Next.js production build/browser E2E test cannot be executed from this patch
+alone. Run npm run build from the complete repository after replacement.

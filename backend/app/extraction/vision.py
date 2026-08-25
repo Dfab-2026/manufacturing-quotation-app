@@ -93,6 +93,20 @@ class ManufacturingProcess(BaseModel):
     confidence: int = Field(default=0, ge=0, le=100)
 
 
+class AssemblyPart(BaseModel):
+    item_no: str = ""
+    part_name: str = ""
+    drawing_no: str = ""
+    quantity: int = 1
+    material: str = ""
+    length_mm: Optional[float] = None
+    width_mm: Optional[float] = None
+    height_mm: Optional[float] = None
+    thickness_mm: Optional[float] = None
+    description: str = ""
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
 class Confidence(BaseModel):
     drawing_no: int = Field(default=0, ge=0, le=100)
     revision: int = Field(default=0, ge=0, le=100)
@@ -107,6 +121,8 @@ class EngineeringDrawingExtraction(BaseModel):
     drawing_no: str = ""
     revision: str = ""
     description: str = ""
+    drawing_type: str = "part"
+    assembly_parts: list[AssemblyPart] = Field(default_factory=list)
 
     material: Material = Field(default_factory=Material)
 
@@ -133,6 +149,20 @@ class EngineeringDrawingExtraction(BaseModel):
     confidence: Confidence = Field(default_factory=Confidence)
 
     missing_or_uncertain: list[str] = Field(default_factory=list)
+
+
+def analyze_engineering_media(content_bytes: bytes, mime_type: str) -> dict:
+    if not content_bytes:
+        raise ValueError("No media bytes were supplied.")
+    prompt = """You are a senior manufacturing engineer. Analyze this engineering drawing image. Extract drawing number, revision, description, drawing_type, assembly_parts, material, thickness, dimensions, holes, threads, chamfers, bends, studs, welds, surface_finish, manufacturing_processes, notes, confidence and missing_or_uncertain. Never invent values. Keep assembly components separate. Never invent rates/cost."""
+    response = client.models.generate_content(
+        model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+        contents=[prompt, types.Part.from_bytes(data=content_bytes, mime_type=mime_type)],
+        config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=EngineeringDrawingExtraction, temperature=0.1),
+    )
+    if not response.text:
+        raise RuntimeError("Gemini returned an empty response.")
+    return EngineeringDrawingExtraction.model_validate_json(response.text).model_dump()
 
 
 def analyze_engineering_drawing(
@@ -162,6 +192,12 @@ Extract all useful manufacturing information visible in the drawing.
 Important:
 - Read the title block, notes, section views and every dimension callout.
 - Read drawing number and revision from the drawing itself.
+- First classify drawing_type as one of: part, assembly, weldment, sheet_metal, machining, mixed.
+- If this is an ASSEMBLY / GA / weldment drawing, do NOT collapse all geometry into one part.
+- Extract every identifiable component separately into assembly_parts in BOM/item-number order.
+- For each assembly component capture item number, part name, drawing number, quantity, material, length, width, height, thickness and description when visible.
+- Example: Plate 1 must be one row with its own L/W/T; Plate 2 must be the next independent row; Plate 3 another row. Never mix dimensions from different components.
+- If a component dimension is not visible/reliable, keep it null and lower confidence instead of inventing it.
 - Extract material FAMILY, GRADE and SPECIFICATION separately.
 - Extract thickness only when the part is sheet/plate/strip and thickness is actually shown.
 - For machined solid parts, thickness may be null.

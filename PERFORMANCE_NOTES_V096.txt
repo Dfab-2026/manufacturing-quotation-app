@@ -1,0 +1,16 @@
+DFAB Manufacturing Quotation App v0.9.6
+
+Page Unresponsive fix:
+- STEP/STP/IGES OpenCascade parsing moved from main thread to a Web Worker.
+- Heavy CAD parse is no longer started immediately after upload.
+- Source analysis concurrency reduced from 2 to 1.
+- Browser gets a short UI yield before each source analysis.
+- Existing timeout/fallback remains.
+
+DFM/BOM:
+- cleaner compact source tabs
+- repeated explanatory text removed
+- 3D review card reduced to 280 x 280
+- source-specific DFM/BOM switching preserved
+
+No new package required.

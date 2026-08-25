@@ -3108,3 +3108,744 @@ body,
 .training-modal-icon {
   cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='28' viewBox='0 0 24 28'><text x='2' y='22' font-family='Arial,sans-serif' font-size='23' font-weight='700' fill='%2387CEFA'>%E2%82%B9</text></svg>") 6 7, auto !important;
 }
+
+
+/* =========================================================
+   v0.8.8 — Reliable source upload status
+   ========================================================= */
+.uploaded-source-list {
+  margin-top: 12px;
+  display: grid;
+  gap: 7px;
+}
+
+.uploaded-source-card {
+  min-height: 58px;
+  border: 1px solid #d9e4ee;
+  border-radius: 10px;
+  background: #fff;
+  padding: 8px 10px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+}
+
+.uploaded-source-card.model {
+  background: #f8fbfe;
+}
+
+.uploaded-source-check {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #e7f6ed;
+  color: #1f7a4d;
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.uploaded-source-card.uploading .uploaded-source-check {
+  background: #fff4d5;
+  color: #805900;
+}
+
+.uploaded-source-card.failed {
+  border-color: #edc5c5;
+  background: #fff7f7;
+}
+
+.uploaded-source-card.failed .uploaded-source-check {
+  background: #fde8e8;
+  color: #a61b1b;
+}
+
+.uploaded-source-card > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.uploaded-source-card b {
+  color: #294766;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.uploaded-source-card small {
+  color: #7a8999;
+  font-size: 10px;
+}
+
+.uploaded-source-card em {
+  color: #1f7a4d;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.uploaded-source-card.uploading em { color: #9b6a00; }
+.uploaded-source-card.failed em { color: #a61b1b; }
+
+@media (max-width: 720px) {
+  .uploaded-source-card {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .uploaded-source-card em {
+    grid-column: 2;
+  }
+}
+
+
+/* =========================================================
+   v0.8.9 — Mixed-source overview + instant upload response
+   ========================================================= */
+
+.source-overview-box {
+  border-color: #cfdce8;
+}
+
+.source-selector-list {
+  grid-template-columns: repeat(auto-fill, minmax(175px, 1fr));
+}
+
+.source-selector-list button {
+  min-width: 0;
+  position: relative;
+}
+
+.source-selector-list button > small {
+  color: #6b7e91;
+  font-weight: 900;
+}
+
+.source-selector-list button > b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-selector-list button.source-model {
+  border-style: dashed;
+  background: #f8fbfe;
+}
+
+.source-selector-list button.source-model.active {
+  border-style: solid;
+  background: #edf6ff;
+}
+
+.source-cad-overview {
+  margin-top: 10px;
+  border: 1px solid #cdddeb;
+  border-radius: 10px;
+  background: #f7fbff;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.source-cad-overview > span {
+  color: #24568e;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .05em;
+}
+
+.source-cad-overview > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.source-cad-overview b {
+  color: #294766;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.source-cad-overview small {
+  color: #708196;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.source-cad-overview i {
+  color: #1f7a4d;
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.uploaded-source-card.uploaded {
+  border-color: #cfe3d7;
+}
+
+@media (max-width: 720px) {
+  .source-cad-overview {
+    grid-template-columns: 1fr;
+  }
+
+  .source-cad-overview i {
+    justify-self: start;
+  }
+}
+
+
+/* =========================================================
+   v0.9.0 — Independent CAD quotation + compact DFM 3D viewer
+   ========================================================= */
+
+.dfm-reference-layout {
+  display: grid;
+  gap: 12px;
+  align-items: start;
+}
+
+.dfm-reference-layout.with-cad {
+  grid-template-columns: 330px minmax(0, 1fr);
+}
+
+.dfm-reference-layout.without-cad {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.dfm-cad-review-card,
+.dfm-reference-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.dfm-cad-review-card {
+  width: 330px;
+}
+
+.dfm-cad-square {
+  width: 300px;
+  height: 300px;
+  margin: 14px auto;
+  border: 1px solid #d7e1eb;
+  border-radius: 10px;
+  overflow: hidden;
+  background: #f5f8fb;
+}
+
+.dfm-model-shell-compact {
+  width: 100%;
+  height: 100%;
+  min-height: 0 !important;
+  position: relative;
+  background: #f5f8fb;
+}
+
+.dfm-cad-canvas {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+.dfm-model-shell-compact .dfm-model-message {
+  min-height: 0;
+  width: 100%;
+  height: 100%;
+  padding: 16px;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 6px;
+}
+
+.dfm-model-shell-compact model-viewer {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.dfm-model-issue-count {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  border-radius: 999px;
+  background: rgba(174, 42, 42, .92);
+  color: #fff;
+  padding: 4px 7px;
+  font-size: 9px;
+  font-weight: 900;
+  pointer-events: none;
+}
+
+.source-selector-list button.source-model.active {
+  border-color: #6e9bc6;
+  background: #edf6ff;
+  box-shadow: inset 3px 0 0 #24568e;
+}
+
+@media (max-width: 1100px) {
+  .dfm-reference-layout.with-cad {
+    grid-template-columns: 1fr;
+  }
+
+  .dfm-cad-review-card {
+    width: min(330px, 100%);
+  }
+}
+
+@media (max-width: 420px) {
+  .dfm-cad-review-card {
+    width: 100%;
+  }
+
+  .dfm-cad-square {
+    width: min(300px, calc(100vw - 72px));
+    height: min(300px, calc(100vw - 72px));
+  }
+}
+
+.drawing-analyze-loader b{white-space:nowrap;}
+
+
+/* v0.9.2 — stable analysis state */
+.source-selector-list button span {
+  line-height: 1.25;
+}
+
+
+/* =========================================================
+   v0.9.3 — QA fixes
+   ========================================================= */
+
+/* DFM/BOM source selector — same source concept as quotation workflow */
+.artifact-source-switcher {
+  margin: 12px 0;
+  border: 1px solid #d8e2ec;
+  border-radius: 12px;
+  background: #fff;
+  padding: 10px;
+}
+
+.artifact-source-switcher-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.artifact-source-switcher-head span {
+  color: #6b7d90;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .06em;
+}
+
+.artifact-source-switcher-head b {
+  color: #294766;
+  font-size: 10px;
+}
+
+.artifact-source-switcher-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 7px;
+}
+
+.artifact-source-switcher-list button {
+  min-width: 0;
+  border: 1px solid #d7e0e9;
+  border-radius: 9px;
+  background: #f9fbfd;
+  padding: 8px 9px;
+  display: grid;
+  gap: 3px;
+  text-align: left;
+  pointer-events: auto;
+}
+
+.artifact-source-switcher-list button:hover:not(:disabled) {
+  border-color: #91abc4;
+  background: #f1f7fc;
+}
+
+.artifact-source-switcher-list button.active {
+  border-color: #527fa8;
+  background: #edf5fc;
+  box-shadow: inset 3px 0 0 #24568e;
+}
+
+.artifact-source-switcher-list button:disabled {
+  opacity: .55;
+}
+
+.artifact-source-switcher-list small {
+  color: #7a8a9b;
+  font-size: 9px;
+  font-weight: 900;
+}
+
+.artifact-source-switcher-list b {
+  color: #294766;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.artifact-source-switcher-list span {
+  color: #718194;
+  font-size: 9px;
+}
+
+/* Sidebar clickability / stacking */
+.side {
+  z-index: 250;
+  pointer-events: auto;
+}
+
+.side nav,
+.side nav button,
+.sidebar-toggle,
+.sidebar-open-btn {
+  pointer-events: auto !important;
+  position: relative;
+  z-index: 2;
+}
+
+/* STEP viewer interaction without continuous animation */
+.dfm-cad-canvas canvas {
+  touch-action: none;
+}
+
+/* FINAL cursor rule:
+   light/white UI = dark navy ₹
+   dark-blue sidebar/primary surfaces = light-blue ₹
+*/
+html,
+body,
+*,
+*::before,
+*::after {
+  cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='28' viewBox='0 0 24 28'><text x='2' y='22' font-family='Arial,sans-serif' font-size='23' font-weight='700' fill='%2317365d'>%E2%82%B9</text></svg>") 6 7, auto !important;
+}
+
+.side,
+.side *,
+.btn.primary,
+.btn.primary * {
+  cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='28' viewBox='0 0 24 28'><text x='2' y='22' font-family='Arial,sans-serif' font-size='23' font-weight='700' fill='%2387CEFA'>%E2%82%B9</text></svg>") 6 7, auto !important;
+}
+
+
+
+/* =========================================================
+   v0.9.4 — Reliable navigation flow / resume diamond
+   ========================================================= */
+
+.new-quotation-nav-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 6px;
+  align-items: stretch;
+}
+
+.side nav .new-quotation-nav-main {
+  width: 100%;
+}
+
+.side nav .resume-quotation-diamond {
+  width: 32px;
+  min-width: 32px;
+  height: 40px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  text-align: center;
+  border: 1px solid #ffffff26;
+  border-radius: 9px;
+  background: #ffffff0d;
+  color: #d9e3ef;
+}
+
+.side nav .resume-quotation-diamond:hover {
+  background: #ffffff1c;
+  color: #ffffff;
+}
+
+.side nav .resume-quotation-diamond span {
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* Final cursor rule:
+   light/white UI = dark navy ₹
+   dark navy sidebar / dark primary buttons = light-blue ₹
+*/
+html,
+body,
+*,
+*::before,
+*::after {
+  cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='28' viewBox='0 0 24 28'><text x='2' y='22' font-family='Arial,sans-serif' font-size='23' font-weight='700' fill='%2317365d'>%E2%82%B9</text></svg>") 6 7, auto !important;
+}
+
+.side,
+.side *,
+.btn.primary,
+.btn.primary * {
+  cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='28' viewBox='0 0 24 28'><text x='2' y='22' font-family='Arial,sans-serif' font-size='23' font-weight='700' fill='%2387CEFA'>%E2%82%B9</text></svg>") 6 7, auto !important;
+}
+
+
+/* =========================================================
+   v0.9.5 — sidebar alignment, true diamond resume, upload removal
+   ========================================================= */
+
+.side {
+  padding-top: 14px;
+  gap: 18px;
+}
+
+.sidebar-brand-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  gap: 8px;
+  align-items: center;
+}
+
+.sidebar-brand-row .brand {
+  min-width: 0;
+}
+
+.sidebar-toggle-inline {
+  position: static !important;
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  padding: 0 !important;
+  display: grid !important;
+  place-items: center;
+  border-radius: 8px !important;
+}
+
+.side nav .settings-nav-button {
+  margin-top: 13px;
+}
+
+.new-quotation-nav-row {
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 8px;
+  align-items: center;
+}
+
+.side nav .resume-quotation-diamond {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  justify-self: center;
+  border-radius: 4px;
+  transform: rotate(45deg);
+  border: 1px solid #ffffff32;
+  background: #ffffff10;
+}
+
+.side nav .resume-quotation-diamond:hover {
+  background: #ffffff25;
+}
+
+.side nav .resume-quotation-diamond span {
+  display: block;
+  transform: rotate(-45deg);
+  font-size: 9px;
+  line-height: 1;
+}
+
+.uploaded-source-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.uploaded-source-remove {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  border: 1px solid #d8e1ea;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #718195;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  font-size: 17px;
+  line-height: 1;
+  font-weight: 500;
+}
+
+.uploaded-source-remove:hover {
+  border-color: #cfaaaa;
+  background: #fff6f6;
+  color: #a02828;
+}
+
+/* Exact requested cursor behavior */
+html,
+body,
+*,
+*::before,
+*::after {
+  cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='28' viewBox='0 0 24 28'><text x='2' y='22' font-family='Arial,sans-serif' font-size='23' font-weight='700' fill='%2317365d'>%E2%82%B9</text></svg>") 6 7, auto !important;
+}
+
+.side,
+.side *,
+.btn.primary,
+.btn.primary * {
+  cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='24' height='28' viewBox='0 0 24 28'><text x='2' y='22' font-family='Arial,sans-serif' font-size='23' font-weight='700' fill='%2387CEFA'>%E2%82%B9</text></svg>") 6 7, auto !important;
+}
+
+@media (max-width: 720px) {
+  .uploaded-source-actions {
+    grid-column: 2;
+    justify-content: space-between;
+  }
+}
+
+
+/* =========================================================
+   v0.9.6 — performance + premium DFM/BOM
+   ========================================================= */
+
+.artifact-source-switcher {
+  margin: 10px 0 14px;
+  padding: 9px 10px;
+  border: 1px solid #dfe7ef;
+  border-radius: 10px;
+  background: #ffffff;
+  box-shadow: 0 2px 10px rgba(22, 48, 78, 0.04);
+}
+
+.artifact-source-switcher-head {
+  margin-bottom: 7px;
+}
+
+.artifact-source-switcher-head span {
+  font-size: 9px;
+  color: #718397;
+  letter-spacing: .08em;
+}
+
+.artifact-source-switcher-head b {
+  min-width: 22px;
+  height: 22px;
+  border-radius: 999px;
+  background: #edf3f8;
+  color: #294766;
+  display: grid;
+  place-items: center;
+  font-size: 9px;
+}
+
+.artifact-source-switcher-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.artifact-source-switcher-list button {
+  width: auto;
+  min-width: 135px;
+  max-width: 220px;
+  border-radius: 8px;
+  padding: 7px 9px;
+  background: #fbfcfe;
+  border: 1px solid #e0e7ee;
+  box-shadow: none;
+}
+
+.artifact-source-switcher-list button.active {
+  border-color: #5e84a9;
+  background: #f1f6fb;
+  box-shadow: inset 3px 0 0 #24568e;
+}
+
+.artifact-source-switcher-list button small {
+  font-size: 8px;
+}
+
+.artifact-source-switcher-list button b {
+  font-size: 10px;
+}
+
+.artifact-source-switcher-list button span {
+  font-size: 8px;
+  color: #7e8d9e;
+}
+
+.artifact-editor {
+  box-shadow: 0 6px 22px rgba(16, 42, 74, 0.05);
+}
+
+.dfm-cad-review-card,
+.dfm-reference-card {
+  border-color: #dfe7ef;
+  box-shadow: 0 3px 14px rgba(16, 42, 74, 0.04);
+}
+
+.dfm-cad-square {
+  width: 280px;
+  height: 280px;
+}
+
+.drawing-analyze-loader {
+  min-height: 72px;
+}
+
+.drawing-analyze-loader b {
+  font-size: 13px;
+}
+
+.drawing-analyze-loader span {
+  font-size: 10px;
+  color: #758699;
+}
+
+
+/* =========================================================
+   v0.9.7 — strict single ongoing quotation
+   ========================================================= */
+
+.end-process-btn {
+  border: 1px solid #e3c8c8;
+  border-radius: 8px;
+  background: #fffafa;
+  color: #9a3434;
+  padding: 7px 10px;
+  font-size: 9px;
+  font-weight: 900;
+  letter-spacing: .02em;
+}
+
+.end-process-btn:hover:not(:disabled) {
+  border-color: #cc9a9a;
+  background: #fff2f2;
+  color: #842626;
+}
+
+.end-process-btn:disabled {
+  opacity: .5;
+}

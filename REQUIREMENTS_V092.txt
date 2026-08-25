@@ -1,0 +1,22 @@
+v0.9.2 runtime requirements
+
+Backend:
+- install backend/requirements.txt
+- DATABASE_URL
+- GEMINI_API_KEY
+- GEMINI_MODEL=gemini-3.5-flash-lite
+
+No additional desktop CAD software is required.
+
+Parsing routes:
+- PDF: Gemini engineering extraction
+- PNG/JPG/JPEG/WEBP: Gemini Vision
+- DXF: ezdxf
+- STEP/STP/IGES/IGS: browser OpenCascade/WASM
+- STL: built-in browser binary/ASCII parser
+- OBJ: built-in browser parser
+- GLB/GLTF: independent 3D source / browser viewer
+- DWG/X_T/X_B: independent Review Required fallback if direct geometry parser is unavailable
+
+Reliability rule:
+No source may copy/borrow extraction data from another uploaded source.

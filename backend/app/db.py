@@ -170,6 +170,30 @@ class CostRowRecord(Base):
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
+class WorkspaceSessionRecord(Base):
+    __tablename__ = "workspace_sessions"
+
+    id: Mapped[str] = mapped_column(String(120), primary_key=True)
+    name: Mapped[str] = mapped_column(String(240), default="Quotation Dataset")
+    created_at: Mapped[str] = mapped_column(String(64), default="", index=True)
+    updated_at: Mapped[str] = mapped_column(String(64), default="", index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class WorkspaceFileRecord(Base):
+    __tablename__ = "workspace_files"
+
+    id: Mapped[str] = mapped_column(String(160), primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(120), default="", index=True)
+    filename: Mapped[str] = mapped_column(Text, default="")
+    mime_type: Mapped[str] = mapped_column(String(160), default="application/octet-stream")
+    role: Mapped[str] = mapped_column(String(40), default="drawing")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    file_hash: Mapped[str] = mapped_column(String(128), default="", index=True)
+    created_at: Mapped[str] = mapped_column(String(64), default="", index=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+
+
 class TrainingSampleRecord(Base):
     __tablename__ = "training_samples"
 
@@ -1059,6 +1083,141 @@ def migrate_legacy_json(data_dir: Path) -> dict:
         )
 
     return result
+
+
+def save_workspace_session_db(
+    session_id: str,
+    name: str,
+    payload: dict,
+    stamp: str,
+) -> dict:
+    with SessionLocal.begin() as session:
+        row = session.get(WorkspaceSessionRecord, session_id)
+        if row is None:
+            row = WorkspaceSessionRecord(
+                id=session_id,
+                name=name or "Quotation Dataset",
+                created_at=stamp,
+                updated_at=stamp,
+                payload=payload or {},
+            )
+            session.add(row)
+        else:
+            row.name = name or row.name
+            row.updated_at = stamp
+            row.payload = payload or {}
+    return {"status": "saved", "id": session_id, "updated_at": stamp}
+
+
+def save_workspace_file_db(
+    session_id: str,
+    file_id: str,
+    filename: str,
+    mime_type: str,
+    role: str,
+    size_bytes: int,
+    file_hash: str,
+    content: bytes,
+    stamp: str,
+) -> dict:
+    with SessionLocal.begin() as session:
+        row = session.get(WorkspaceFileRecord, file_id)
+        if row is None:
+            session.add(
+                WorkspaceFileRecord(
+                    id=file_id,
+                    session_id=session_id,
+                    filename=filename,
+                    mime_type=mime_type,
+                    role=role,
+                    size_bytes=size_bytes,
+                    file_hash=file_hash,
+                    created_at=stamp,
+                    content=content,
+                )
+            )
+    return {
+        "status": "uploaded",
+        "id": file_id,
+        "filename": filename,
+        "role": role,
+        "size_bytes": size_bytes,
+        "file_hash": file_hash,
+    }
+
+
+def get_workspace_session_db(session_id: str) -> dict | None:
+    with SessionLocal() as session:
+        row = session.get(WorkspaceSessionRecord, session_id)
+        if row is None:
+            return None
+
+        files = session.execute(
+            select(WorkspaceFileRecord).where(
+                WorkspaceFileRecord.session_id == session_id
+            )
+        ).scalars().all()
+
+        return {
+            "id": row.id,
+            "name": row.name,
+            "created_at": row.created_at,
+            "updated_at": row.updated_at,
+            "payload": row.payload,
+            "files": [
+                {
+                    "id": item.id,
+                    "filename": item.filename,
+                    "mime_type": item.mime_type,
+                    "role": item.role,
+                    "size_bytes": item.size_bytes,
+                    "file_hash": item.file_hash,
+                }
+                for item in files
+            ],
+        }
+
+
+def list_workspace_sessions_db() -> list[dict]:
+    with SessionLocal() as session:
+        rows = session.execute(
+            select(WorkspaceSessionRecord)
+            .order_by(WorkspaceSessionRecord.updated_at.desc())
+            .limit(100)
+        ).scalars().all()
+
+        return [
+            {
+                "id": row.id,
+                "name": row.name,
+                "created_at": row.created_at,
+                "updated_at": row.updated_at,
+                "payload": row.payload,
+            }
+            for row in rows
+        ]
+
+
+def get_workspace_file_db(session_id: str, file_id: str) -> dict | None:
+    with SessionLocal() as session:
+        row = session.get(WorkspaceFileRecord, file_id)
+        if row is None or row.session_id != session_id:
+            return None
+        return {
+            "filename": row.filename,
+            "mime_type": row.mime_type,
+            "content": bytes(row.content),
+        }
+
+
+def delete_workspace_session_db(session_id: str) -> None:
+    with SessionLocal.begin() as session:
+        session.query(WorkspaceFileRecord).filter(
+            WorkspaceFileRecord.session_id == session_id
+        ).delete()
+        row = session.get(WorkspaceSessionRecord, session_id)
+        if row is not None:
+            session.delete(row)
 
 
 def init_database(legacy_data_dir: Path | None = None) -> dict:

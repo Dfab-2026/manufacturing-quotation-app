@@ -1,0 +1,36 @@
+DFAB Manufacturing Quotation App v0.9.3 — QA Summary
+
+FIXED
+=====
+- DFM page now shows one source button per uploaded source.
+- DFM source button switches to that source's exact DFM using file_hash.
+- BOM page now shows the same source-button pattern.
+- BOM source button switches to that source's exact BOM.
+- Fallback-analysis sources now populate DFM and BOM too.
+- STEP 3D viewer no longer uses a permanent requestAnimationFrame loop.
+- STEP viewer renders on load / resize / drag / zoom only.
+- OrbitControls runtime dependency removed.
+- occt-import-js uses jsDelivr first and unpkg fallback.
+- API analysis calls have timeouts instead of waiting indefinitely.
+- Sidebar buttons explicitly use type=button and elevated pointer/z-index.
+- Cursor final rule:
+  white/light areas => dark navy ₹
+  dark-blue sidebar / primary buttons => light-blue ₹
+
+STATIC QA
+=========
+- Python syntax compile
+- TypeScript/TSX transpile check
+- Required source selectors present
+- DFM/BOM matching uses analysis.file_hash
+- fallback artifacts call verified
+- STEP viewer continuous animation loop removed
+- request timeout helper verified
+- cursor override verified
+
+LIMIT
+=====
+The supplied patch archive has no frontend/package.json or node_modules, so a
+real `npm run build` / browser E2E test cannot be executed inside this patch
+archive. The code-level QA above is completed; production deploy should still
+run the full Next.js build from the complete repository.

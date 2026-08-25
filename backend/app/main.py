@@ -1,5 +1,6 @@
 from __future__ import annotations
 from app.extraction.pipeline import analyze_pdf_with_ai
+from app.extraction.vision import analyze_engineering_media
 from app.db import (
     append_extraction_record,
     append_review_record,
@@ -12,6 +13,12 @@ from app.db import (
     save_store,
     training_samples_for_export,
     upsert_training_sample,
+    save_workspace_session_db,
+    save_workspace_file_db,
+    get_workspace_session_db,
+    list_workspace_sessions_db,
+    get_workspace_file_db,
+    delete_workspace_session_db,
 )
 
 from datetime import datetime, timezone
@@ -25,13 +32,14 @@ import os
 import math
 import re
 import uuid
+import tempfile
 import zipfile
 
 import pymupdf as fitz
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from pydantic import BaseModel, Field
@@ -288,7 +296,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.8.7")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.9.7")
 
 _allowed_origins = [
     "http://localhost:3000",
@@ -444,6 +452,32 @@ class EngineeringArtifactReq(BaseModel):
     drawing: Drawing
     rows: list[Row] = Field(default_factory=list)
     ai_raw: dict = Field(default_factory=dict)
+
+
+class FallbackAnalysisReq(BaseModel):
+    filename: str
+    source_format: str = ""
+    reason: str = ""
+
+
+class CadAnalysisReq(BaseModel):
+    filename: str
+    file_hash: str
+    format: str
+    parser_status: str = "parsed"
+    root_name: str = ""
+    part_count: int = 1
+    mesh_count: int = 0
+    triangle_count: int = 0
+    dimensions_mm: dict[str, float] = Field(default_factory=dict)
+    surface_area_mm2: float = 0
+    volume_mm3: float = 0
+    component_names: list[str] = Field(default_factory=list)
+
+
+class WorkspaceSessionReq(BaseModel):
+    name: str = "Quotation Dataset"
+    payload: dict = Field(default_factory=dict)
 
 
 class Settings(BaseModel):
@@ -1129,6 +1163,41 @@ def parse_float_match(match, group=1, default=0.0) -> float:
         return float(match.group(group).replace(",", "."))
     except Exception:
         return default
+
+
+def analyze_dxf_geometry(content: bytes, filename: str):
+    import ezdxf
+    from ezdxf import bbox
+    with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as h:
+        h.write(content); temp_name=h.name
+    try:
+        doc=ezdxf.readfile(temp_name); msp=doc.modelspace()
+        texts=[]; counts={}
+        for e in msp:
+            t=e.dxftype(); counts[t]=counts.get(t,0)+1
+            if t=="TEXT": texts.append(str(e.dxf.text or ""))
+            elif t=="MTEXT":
+                try:texts.append(str(e.plain_text() or ""))
+                except Exception:pass
+        try:
+            s=bbox.extents(msp,fast=True).size; x,y,z=float(s.x),float(s.y),float(s.z)
+        except Exception:x=y=z=0.0
+        material,_=detect_material("\n".join(texts),filename)
+        ai_raw={
+          "drawing_no":Path(filename).stem[:120],"revision":"","description":clean_filename_description(filename),"drawing_type":"mixed","assembly_parts":[],
+          "material":{"family":material if material!="Not detected" else "","grade":"","specification":""},"thickness_mm":None,"weight_kg":None,"product_quantity":1,
+          "dimensions":[{"label":"Overall X","value_mm":x,"tolerance":"","quantity":1,"confidence":95},{"label":"Overall Y","value_mm":y,"tolerance":"","quantity":1,"confidence":95},{"label":"Overall Z","value_mm":z,"tolerance":"","quantity":1,"confidence":95}] if (x>0 or y>0 or z>0) else [],
+          "holes":[],"threads":[],"chamfers":[],"bends":[],"studs":[],"welds":[],"surface_finish":[],
+          "manufacturing_processes":[{"process":"Laser Cutting","reason":"DXF profile geometry detected; verify final process.","confidence":70}],
+          "notes":[f"DXF entities: {counts}",f"Overall extents: {x:g} × {y:g} × {z:g} mm"],
+          "confidence":{"drawing_no":80,"material":50 if material!="Not detected" else 0,"dimensions":95 if (x>0 or y>0 or z>0) else 0,"processes":70},
+          "missing_or_uncertain":["Confirm material grade, thickness, tolerances and final manufacturing route."]
+        }
+        drawing=ai_result_to_drawing(ai_raw); rows=ai_result_to_rows(ai_raw,drawing)
+        return ai_raw,drawing,rows,list(ai_raw["missing_or_uncertain"])
+    finally:
+        try:Path(temp_name).unlink(missing_ok=True)
+        except Exception:pass
 
 
 def extract_drawing_fields(content: bytes, filename: str):
@@ -2637,7 +2706,7 @@ def root():
     return {
         "service": "dfab-quotation-api",
         "status": "ok",
-        "version": "0.8.7",
+        "version": "0.9.7",
     }
 
 
@@ -2647,7 +2716,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.8.7",
+        "version": "0.9.7",
         "database": "connected" if connected else "unavailable",
     }
 
@@ -3219,6 +3288,388 @@ def apply_saved_rates(value: CostReq):
     return updated
 
 
+@app.put("/api/workspaces/{session_id}")
+def save_workspace_session(session_id: str, value: WorkspaceSessionReq):
+    return save_workspace_session_db(
+        session_id=session_id,
+        name=value.name,
+        payload=value.payload,
+        stamp=now(),
+    )
+
+
+@app.post("/api/workspaces/{session_id}/files")
+async def save_workspace_file(
+    session_id: str,
+    role: str = Form("drawing"),
+    file: UploadFile = File(...),
+):
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    file_hash = sha256(content).hexdigest()
+    file_id = f"WF-{session_id[:16]}-{file_hash[:20]}"
+
+    return save_workspace_file_db(
+        session_id=session_id,
+        file_id=file_id,
+        filename=file.filename or "upload.bin",
+        mime_type=file.content_type or "application/octet-stream",
+        role=role,
+        size_bytes=len(content),
+        file_hash=file_hash,
+        content=content,
+        stamp=now(),
+    )
+
+
+@app.get("/api/workspaces/{session_id}")
+def get_workspace_session(session_id: str):
+    result = get_workspace_session_db(session_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace not found.")
+    return result
+
+
+@app.get("/api/workspaces")
+def list_workspace_sessions():
+    return list_workspace_sessions_db()
+
+
+@app.get("/api/workspaces/{session_id}/files/{file_id}")
+def download_workspace_file(session_id: str, file_id: str):
+    result = get_workspace_file_db(session_id, file_id)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Workspace file not found.")
+
+    return Response(
+        content=result["content"],
+        media_type=result["mime_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'attachment; filename="{result["filename"]}"'
+        },
+    )
+
+
+@app.delete("/api/workspaces/{session_id}")
+def delete_workspace_session(session_id: str):
+    delete_workspace_session_db(session_id)
+    return {"status": "deleted", "id": session_id}
+
+
+@app.post("/api/analyze-fallback")
+def analyze_fallback(value: FallbackAnalysisReq):
+    filename = Path(value.filename or "source").name
+    extension = Path(filename).suffix.lower()
+    stem = Path(filename).stem[:120]
+    fmt = (value.source_format or extension.lstrip(".") or "FILE").upper()
+
+    likely_process = (
+        "Laser Cutting"
+        if extension in {".dxf", ".dwg"}
+        else "General Machining"
+        if extension in {".step", ".stp", ".iges", ".igs", ".stl", ".obj", ".glb", ".gltf", ".x_t", ".x_b"}
+        else "Inspection & Handling"
+    )
+
+    reason = (
+        value.reason.strip()
+        or "Primary parser/AI extraction did not return a usable result."
+    )
+
+    ai_raw = {
+        "drawing_no": stem,
+        "revision": "",
+        "description": stem,
+        "drawing_type": "mixed",
+        "assembly_parts": [],
+        "material": {
+            "family": "",
+            "grade": "",
+            "specification": "",
+        },
+        "thickness_mm": None,
+        "weight_kg": None,
+        "product_quantity": 1,
+        "dimensions": [],
+        "holes": [],
+        "threads": [],
+        "chamfers": [],
+        "bends": [],
+        "studs": [],
+        "welds": [],
+        "surface_finish": [],
+        "manufacturing_processes": [
+            {
+                "process": likely_process,
+                "reason": f"{fmt} independent fallback route; engineer review required.",
+                "confidence": 30,
+            },
+            {
+                "process": "Inspection & Handling",
+                "reason": "Source needs engineering review before quotation release.",
+                "confidence": 100,
+            },
+        ],
+        "notes": [
+            f"Independent source fallback: {filename}",
+            f"Source format: {fmt}",
+            reason,
+        ],
+        "confidence": {
+            "drawing_no": 60,
+            "material": 0,
+            "thickness": 0,
+            "weight": 0,
+            "dimensions": 0,
+            "processes": 30,
+        },
+        "missing_or_uncertain": [
+            "Automatic extraction was incomplete for this source.",
+            "Review dimensions, material, tolerances, process route and costing inputs before release.",
+            reason,
+        ],
+    }
+
+    drawing = ai_result_to_drawing(ai_raw)
+    rows = ai_result_to_rows(ai_raw, drawing)
+    summary = calc(rows)
+
+    file_hash = sha256(
+        f"{filename}|{fmt}|fallback".encode("utf-8")
+    ).hexdigest()
+
+    artifact_payload = EngineeringArtifactReq(
+        file_hash=file_hash,
+        filename=filename,
+        drawing=drawing,
+        rows=rows,
+        ai_raw=ai_raw,
+    )
+
+    return {
+        "extraction_id": "FALLBACK-" + uuid.uuid4().hex[:10].upper(),
+        "file_hash": file_hash,
+        "learning_source": "independent_fallback",
+        "extraction_warnings": ai_raw["missing_or_uncertain"],
+        "text_preview": "",
+        "preview_image": "",
+        "drawing": drawing,
+        "rows": rows,
+        "summary": summary,
+        "dfm": _generate_dfm(artifact_payload),
+        "bom": _generate_bom(artifact_payload),
+        "ai_raw": ai_raw,
+        "source_type": "cad" if extension in {
+            ".step", ".stp", ".iges", ".igs", ".stl", ".obj",
+            ".glb", ".gltf", ".x_t", ".x_b"
+        } else "drawing",
+        "source_format": fmt,
+    }
+
+
+@app.post("/api/analyze-cad")
+def analyze_cad(value: CadAnalysisReq):
+    """
+    Analyze a CAD source as its OWN quotation item.
+
+    STEP/STP/IGES geometry is parsed in the browser with OpenCascade/WASM and
+    only compact geometry metrics are sent here. This source is never merged
+    with another uploaded PDF/image drawing.
+    """
+    filename = Path(value.filename or "cad_part.step").name
+    stem = Path(filename).stem[:120]
+    fmt = str(value.format or "CAD").upper()
+
+    x = max(0.0, float(value.dimensions_mm.get("x", 0) or 0))
+    y = max(0.0, float(value.dimensions_mm.get("y", 0) or 0))
+    z = max(0.0, float(value.dimensions_mm.get("z", 0) or 0))
+
+    dimensions = []
+    for label, dimension_value in (
+        ("Overall X", x),
+        ("Overall Y", y),
+        ("Overall Z", z),
+    ):
+        if dimension_value > 0:
+            dimensions.append(
+                {
+                    "label": label,
+                    "value_mm": round(dimension_value, 4),
+                    "tolerance": "",
+                    "quantity": 1,
+                    "confidence": 100,
+                }
+            )
+
+    component_names = [
+        str(name).strip()
+        for name in (value.component_names or [])
+        if str(name).strip()
+    ][:100]
+
+    assembly_parts = []
+    for index, name in enumerate(component_names, 1):
+        assembly_parts.append(
+            {
+                "item_no": str(index),
+                "part_name": name,
+                "drawing_no": "",
+                "quantity": 1,
+                "material": "",
+                "length_mm": None,
+                "width_mm": None,
+                "height_mm": None,
+                "thickness_mm": None,
+                "description": "Component name read from CAD assembly tree",
+                "confidence": 90,
+            }
+        )
+
+    parser_exact = value.parser_status == "parsed"
+    part_count = max(1, int(value.part_count or 1))
+
+    process_name = "CNC Milling" if parser_exact else "General Machining"
+    process_confidence = 80 if parser_exact else 55
+
+    missing_or_uncertain = [
+        "Material / grade is not reliably defined by the triangulated CAD geometry; confirm before costing.",
+        "Manufacturing tolerances and surface-finish requirements must be confirmed from the released engineering specification.",
+    ]
+
+    if not parser_exact:
+        missing_or_uncertain.insert(
+            0,
+            f"{fmt} is stored as an independent CAD source, but exact solid geometry metrics were not parsed in this version."
+        )
+
+    ai_raw = {
+        "drawing_no": stem,
+        "revision": "",
+        "description": value.root_name.strip() or stem,
+        "drawing_type": "assembly" if part_count > 1 else "machining",
+        "assembly_parts": assembly_parts,
+        "material": {
+            "family": "",
+            "grade": "",
+            "specification": "",
+        },
+        "thickness_mm": None,
+        "weight_kg": None,
+        "product_quantity": 1,
+        "dimensions": dimensions,
+        "holes": [],
+        "threads": [],
+        "chamfers": [],
+        "bends": [],
+        "studs": [],
+        "welds": [],
+        "surface_finish": [],
+        "manufacturing_processes": [
+            {
+                "process": process_name,
+                "reason": (
+                    f"Independent {fmt} 3D CAD source; "
+                    f"{part_count} part(s), {value.mesh_count} mesh(es), "
+                    f"{value.triangle_count} triangles."
+                ),
+                "confidence": process_confidence,
+            },
+            {
+                "process": "Inspection & Handling",
+                "reason": "CAD-derived geometry requires dimensional/engineering review before release.",
+                "confidence": 80,
+            },
+        ],
+        "notes": [
+            f"Independent CAD source: {filename}",
+            f"CAD format: {fmt}",
+            (
+                f"Overall geometry: {x:g} × {y:g} × {z:g} mm"
+                if x > 0 and y > 0 and z > 0
+                else "Overall CAD dimensions not available."
+            ),
+            f"Surface area (triangulated estimate): {float(value.surface_area_mm2 or 0):.2f} mm²",
+            f"Solid volume (triangulated estimate): {float(value.volume_mm3 or 0):.2f} mm³",
+            f"CAD parts detected: {part_count}",
+        ],
+        "confidence": {
+            "drawing_no": 90,
+            "material": 0,
+            "thickness": 0,
+            "weight": 0,
+            "dimensions": 100 if dimensions else 0,
+            "processes": process_confidence,
+        },
+        "missing_or_uncertain": missing_or_uncertain,
+        "cad_geometry": {
+            "format": fmt,
+            "parser_status": value.parser_status,
+            "root_name": value.root_name,
+            "part_count": part_count,
+            "mesh_count": max(0, int(value.mesh_count or 0)),
+            "triangle_count": max(0, int(value.triangle_count or 0)),
+            "dimensions_mm": {
+                "x": x,
+                "y": y,
+                "z": z,
+            },
+            "surface_area_mm2": max(0.0, float(value.surface_area_mm2 or 0)),
+            "volume_mm3": max(0.0, float(value.volume_mm3 or 0)),
+            "component_names": component_names,
+        },
+    }
+
+    drawing = ai_result_to_drawing(ai_raw)
+    rows = ai_result_to_rows(ai_raw, drawing)
+    summary = calc(rows)
+
+    extraction_id = "CAD-" + uuid.uuid4().hex[:10].upper()
+    warnings = list(missing_or_uncertain)
+
+    settings = load("settings", defaults_settings())
+    if settings.get("auto_dataset_capture", True):
+        append_extraction_record(
+            {
+                "id": extraction_id,
+                "created_at": now(),
+                "filename": filename,
+                "file_hash": value.file_hash,
+                "source": "cad_geometry",
+                "warnings": warnings,
+                "drawing": drawing.model_dump(),
+                "rows": [row.model_dump() for row in rows],
+                "ai_raw": ai_raw,
+            }
+        )
+
+    artifact_payload = EngineeringArtifactReq(
+        file_hash=value.file_hash,
+        filename=filename,
+        drawing=drawing,
+        rows=rows,
+        ai_raw=ai_raw,
+    )
+
+    return {
+        "extraction_id": extraction_id,
+        "file_hash": value.file_hash,
+        "learning_source": "cad_geometry",
+        "extraction_warnings": warnings,
+        "text_preview": "",
+        "preview_image": "",
+        "drawing": drawing,
+        "rows": rows,
+        "summary": summary,
+        "dfm": _generate_dfm(artifact_payload),
+        "bom": _generate_bom(artifact_payload),
+        "ai_raw": ai_raw,
+        "source_type": "cad",
+        "source_format": fmt,
+    }
+
+
 @app.post("/api/analyze")
 async def analyze(file: UploadFile = File(...), force_ai: bool = True):
     content = await file.read()
@@ -3338,11 +3789,20 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
                 ),
             ) from exc
 
+    elif extension in {".png", ".jpg", ".jpeg", ".webp"}:
+        mime_map={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".webp":"image/webp"}
+        ai_raw=analyze_engineering_media(content,mime_map[extension])
+        drawing=ai_result_to_drawing(ai_raw); rows=ai_result_to_rows(ai_raw,drawing); source="vision_ai_image"
+        warnings=["Image analyzed with Vision AI; verify critical manufacturing values."]
+        uncertain=ai_raw.get("missing_or_uncertain") or []
+        if uncertain:warnings.append("Review required: "+", ".join(str(x) for x in uncertain[:12]))
+    elif extension==".dxf":
+        try:
+            ai_raw,drawing,rows,warnings=analyze_dxf_geometry(content,filename); source="dxf_geometry"
+        except Exception as exc:
+            drawing,rows,source,warnings,text_preview=extract_drawing_fields(content,filename); warnings.insert(0,f"DXF parser fallback: {exc}")
     else:
-        # Existing non-PDF safe parser/blank behavior.
-        drawing, rows, source, warnings, text_preview = extract_drawing_fields(
-            content, filename
-        )
+        drawing, rows, source, warnings, text_preview = extract_drawing_fields(content, filename)
 
     settings = load("settings", defaults_settings())
 
@@ -3389,6 +3849,8 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
         "dfm": dfm_report,
         "bom": bom_report,
         "ai_raw": ai_raw,
+        "source_type": "drawing",
+        "source_format": extension.lstrip(".").upper(),
     }
 
 

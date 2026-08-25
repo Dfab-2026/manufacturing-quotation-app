@@ -41,10 +41,26 @@ export type QuoteSummary = {
 
 export type EngineeringFeature = Record<string, unknown>;
 
+export type AssemblyPartExtraction = {
+  item_no?: string;
+  part_name?: string;
+  drawing_no?: string;
+  quantity?: number;
+  material?: string;
+  length_mm?: number | null;
+  width_mm?: number | null;
+  height_mm?: number | null;
+  thickness_mm?: number | null;
+  description?: string;
+  confidence?: number;
+};
+
 export type AIExtraction = {
   drawing_no?: string;
   revision?: string;
   description?: string;
+  drawing_type?: string;
+  assembly_parts?: AssemblyPartExtraction[];
   material?: {
     family?: string;
     grade?: string;
@@ -65,6 +81,22 @@ export type AIExtraction = {
   notes?: unknown[];
   confidence?: Record<string, number>;
   missing_or_uncertain?: unknown[];
+  cad_geometry?: {
+    format?: string;
+    parser_status?: string;
+    root_name?: string;
+    part_count?: number;
+    mesh_count?: number;
+    triangle_count?: number;
+    dimensions_mm?: {
+      x?: number;
+      y?: number;
+      z?: number;
+    };
+    surface_area_mm2?: number;
+    volume_mm3?: number;
+    component_names?: string[];
+  };
 };
 
 export type AnalysisResponse = {
@@ -80,6 +112,8 @@ export type AnalysisResponse = {
   summary?: QuoteSummary;
   dfm?: DfmReport;
   bom?: BomReport;
+  source_type?: "drawing" | "cad";
+  source_format?: string;
 };
 
 export type Settings = {

@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import ModelViewer from "@/components/ModelViewer";
+import {
+  inspectCadFile,
+  isVisualCadFormat
+} from "@/lib/cad";
 import type { CellValueChangedEvent, ColDef } from "ag-grid-community";
 import * as api from "@/lib/api";
 import type {
@@ -43,7 +47,7 @@ type BatchFailure = {
 };
 
 
-const BATCH_ANALYZE_CONCURRENCY = 2;
+const BATCH_ANALYZE_CONCURRENCY = 1;
 const DFM_HISTORY_KEY = "dfab-dfm-history-v080";
 const BOM_HISTORY_KEY = "dfab-bom-history-v080";
 type ArtifactJobState = "processing" | "ready" | "review" | "attention" | "failed";
@@ -271,6 +275,8 @@ type PersistedWorkflowDraft = {
   commercialAmountOverrides: CommercialAmountOverrides;
   customer: string;
   modelFile?: File | null;
+  sourceFiles?: File[];
+  activeSourceKey?: string;
   datasetId: string;
   datasetName: string;
   batchFailures?: BatchFailure[];
@@ -394,10 +400,20 @@ async function loadLatestWorkspaceDataset(): Promise<PersistedWorkflowDraft | nu
 
   db.close();
 
-  return values
+  const sorted = values
     .filter((item) => item?.datasetId)
-    .sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")))[0]
-    || null;
+    .sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
+
+  return sorted.find((item) =>
+    Boolean(
+      item.analysis
+      || item.drawing
+      || item.file
+      || item.files?.length
+      || item.sourceFiles?.length
+      || item.batchItems?.length
+    )
+  ) || sorted[0] || null;
 }
 
 async function listWorkspaceDatasetSummaries(): Promise<WorkspaceDatasetSummary[]> {
@@ -474,11 +490,14 @@ export default function Page() {
   const [selectedDfmId, setSelectedDfmId] = useState("");
   const [selectedBomId, setSelectedBomId] = useState("");
   const [modelFile, setModelFile] = useState<File | null>(null);
+  const [sourceFiles, setSourceFiles] = useState<File[]>([]);
+  const [activeSourceKey, setActiveSourceKey] = useState("");
   const [showDfmHistory, setShowDfmHistory] = useState(false);
   const [showBomHistory, setShowBomHistory] = useState(false);
   const [workspaceDatasetId, setWorkspaceDatasetId] = useState(() => createWorkspaceDatasetId());
   const [workspaceDatasetName, setWorkspaceDatasetName] = useState("Untitled Quotation Dataset");
   const [workspaceDatasets, setWorkspaceDatasets] = useState<WorkspaceDatasetSummary[]>([]);
+  const [uploadedFileStatus, setUploadedFileStatus] = useState<Record<string, "uploading" | "uploaded" | "failed">>({});
   const [draftHydrated, setDraftHydrated] = useState(false);
   const historyReadyRef = useRef(false);
   const restoringHistoryRef = useRef(false);
@@ -544,6 +563,7 @@ export default function Page() {
 
   // Use DFAB's website icon as both the sidebar brand source and browser tab icon.
   useEffect(() => {
+    window.onbeforeunload = null;
     document.title = "DFAB AI Quotation";
 
     let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
@@ -630,6 +650,21 @@ export default function Page() {
     );
     setCustomer(saved.customer || "Sample Customer");
     setModelFile(saved.modelFile || null);
+
+    const restoredSources =
+      saved.sourceFiles?.length
+        ? saved.sourceFiles
+        : [
+            ...(saved.files || []),
+            ...(saved.modelFile ? [saved.modelFile] : [])
+          ];
+
+    setSourceFiles(restoredSources);
+    setActiveSourceKey(
+      saved.activeSourceKey
+      || (restoredSources[0] ? fileKey(restoredSources[0]) : "")
+    );
+
     setWorkspaceDatasetId(saved.datasetId || createWorkspaceDatasetId());
     setWorkspaceDatasetName(saved.datasetName || "Quotation Dataset");
 
@@ -710,6 +745,8 @@ export default function Page() {
         commercialAmountOverrides,
         customer,
         modelFile,
+        sourceFiles,
+        activeSourceKey,
         datasetId: workspaceDatasetId,
         datasetName: workspaceDatasetName,
         batchFailures,
@@ -725,6 +762,7 @@ export default function Page() {
         saveWorkspaceDataset(snapshot)
       ])
         .then(() => {
+          saveWorkspaceToDatabase(snapshot);
           void refreshWorkspaceDatasets();
         })
         .catch(() => {
@@ -750,6 +788,8 @@ export default function Page() {
     commercialAmountOverrides,
     customer,
     modelFile,
+    sourceFiles,
+    activeSourceKey,
     workspaceDatasetId,
     workspaceDatasetName,
     batchFailures,
@@ -761,17 +801,11 @@ export default function Page() {
     refreshWorkspaceDatasets
   ]);
 
-  // Keep browser/system Back inside the application and return to the previous
-  // app view/step instead of dropping the whole quotation session.
+  // Browser Back follows normal in-app history without trapping the user.
   useEffect(() => {
     if (!draftHydrated || historyReadyRef.current) return;
 
     history.replaceState(
-      { dfabGuard: true },
-      "",
-      window.location.href
-    );
-    history.pushState(
       { dfabApp: true, view, step, datasetId: workspaceDatasetId },
       "",
       window.location.href
@@ -792,7 +826,7 @@ export default function Page() {
       "",
       window.location.href
     );
-  }, [draftHydrated, view, step]);
+  }, [draftHydrated, view, step, workspaceDatasetId]);
 
   useEffect(() => {
     if (!draftHydrated) return;
@@ -800,55 +834,35 @@ export default function Page() {
     const onPopState = (event: PopStateEvent) => {
       const state = event.state as {
         dfabApp?: boolean;
-        dfabGuard?: boolean;
         view?: View;
         step?: number;
         datasetId?: string;
       } | null;
 
-      if (state?.dfabApp) {
-        restoringHistoryRef.current = true;
-        const targetView = state.view || "dashboard";
-        const targetStep = Math.min(4, Math.max(1, Number(state.step || 1)));
-
-        if (targetView === "workflow" && state.datasetId) {
-          void loadWorkspaceDataset(state.datasetId)
-            .then((saved) => {
-              if (saved) applyPersistedWorkflow(saved, false);
-            })
-            .finally(() => {
-              setView(targetView);
-              setStep(targetStep);
-            });
-        } else {
-          setView(targetView);
-          setStep(targetStep);
-        }
-        return;
-      }
-
-      // Reached the guard state: stay inside the app.
-      const targetView: View = view === "workflow" && step > 1
-        ? "workflow"
-        : "dashboard";
-      const targetStep = view === "workflow" && step > 1
-        ? step - 1
-        : 1;
+      if (!state?.dfabApp) return;
 
       restoringHistoryRef.current = true;
-      setView(targetView);
-      setStep(targetStep);
+      const targetView = state.view || "dashboard";
+      const targetStep = Math.min(4, Math.max(1, Number(state.step || 1)));
 
-      history.pushState(
-        { dfabApp: true, view: targetView, step: targetStep, datasetId: workspaceDatasetId },
-        "",
-        window.location.href
-      );
+      if (targetView === "workflow" && state.datasetId) {
+        void loadWorkspaceDataset(state.datasetId)
+          .then((saved) => {
+            if (saved) applyPersistedWorkflow(saved, false);
+          })
+          .finally(() => {
+            setView(targetView);
+            setStep(targetStep);
+          });
+      } else {
+        setView(targetView);
+        setStep(targetStep);
+      }
     };
 
     window.addEventListener("popstate", onPopState);
     return () => window.removeEventListener("popstate", onPopState);
-  }, [draftHydrated, view, step]);
+  }, [draftHydrated]);
 
   useEffect(() => {
     if (!file) {
@@ -860,8 +874,9 @@ export default function Page() {
     return () => URL.revokeObjectURL(url);
   }, [file]);
 
-  const newQuote = () => {
-    void clearWorkflowDraft().catch(() => undefined);
+  const resetOngoingQuotationState = (
+    message = "Upload a drawing to begin."
+  ) => {
     setView("workflow");
     setStep(1);
     setFile(null);
@@ -875,10 +890,11 @@ export default function Page() {
     setTrainingPromptItems([]);
     setTrainingBusy(false);
     setModelFile(null);
+    setSourceFiles([]);
+    setActiveSourceKey("");
+    setUploadedFileStatus({});
     setShowDfmHistory(false);
     setShowBomHistory(false);
-    setWorkspaceDatasetId(createWorkspaceDatasetId());
-    setWorkspaceDatasetName("Untitled Quotation Dataset");
     setAnalysis(null);
     setDrawing(null);
     setRows([]);
@@ -889,7 +905,162 @@ export default function Page() {
       overhead: null,
       markup: null
     });
-    setMsg("Upload a drawing to begin.");
+    setWorkspaceDatasetId(createWorkspaceDatasetId());
+    setWorkspaceDatasetName("Untitled Quotation Dataset");
+    setMsg(message);
+  };
+
+  const deleteOngoingQuotation = async (
+    message = "Process ended. Upload a file to start a new quotation."
+  ) => {
+    const oldDatasetId = workspaceDatasetId;
+    const activeHashes = new Set(
+      batchItemsRef.current
+        .map((item) => item.analysis?.file_hash)
+        .filter(Boolean)
+    );
+
+    await Promise.allSettled([
+      clearWorkflowDraft(),
+      deleteWorkspaceDataset(oldDatasetId),
+      api.deleteWorkspaceSession(oldDatasetId)
+    ]);
+
+    // Remove only artifacts belonging to the active process.
+    if (activeHashes.size) {
+      setDfmReports((current) =>
+        current.filter((item) => !activeHashes.has(item.file_hash))
+      );
+      setBomReports((current) =>
+        current.filter((item) => !activeHashes.has(item.file_hash))
+      );
+    }
+
+    resetOngoingQuotationState(message);
+    void refreshWorkspaceDatasets();
+  };
+
+  const newQuote = () => {
+    // Only one ongoing quotation is allowed.
+    // Starting New Quotation automatically deletes the previous ongoing process.
+    void deleteOngoingQuotation("New quotation ready. Upload a file to begin.");
+  };
+
+  const resumeWorkingQuotation = async () => {
+    const hasCurrentWork = Boolean(
+      analysis
+      || drawing
+      || file
+      || files.length
+      || sourceFiles.length
+      || batchItemsRef.current.length
+    );
+
+    if (hasCurrentWork) {
+      setView("workflow");
+      setStep(Math.min(4, Math.max(1, Number(step || 1))));
+      setMsg("Ongoing quotation opened.");
+      return;
+    }
+
+    try {
+      // Strictly restore only the ACTIVE draft.
+      // Never reopen an older workspace/dataset from history.
+      const saved = await loadWorkflowDraft();
+
+      if (saved) {
+        applyPersistedWorkflow(saved, false);
+        setView("workflow");
+        setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
+        setMsg("Ongoing quotation opened.");
+        return;
+      }
+    } catch {
+      // If active draft storage is unavailable, remain on the current app state.
+    }
+
+    setView("workflow");
+    setStep(1);
+    setMsg("No ongoing quotation. Upload a file to begin.");
+  };
+
+  const removeUploadedSource = (selected: File) => {
+    const removedKey = fileKey(selected);
+    const currentWorkspaces = snapshotActiveBatch();
+    const removedWorkspace = currentWorkspaces.find(
+      (item) => fileKey(item.file) === removedKey
+    );
+    const removedHash = removedWorkspace?.analysis.file_hash || "";
+
+    const remainingSources = allSourceFiles.filter(
+      (item) => fileKey(item) !== removedKey
+    );
+    const remainingDrawings = files.filter(
+      (item) => fileKey(item) !== removedKey
+    );
+    const remainingWorkspaces = currentWorkspaces.filter(
+      (item) => fileKey(item.file) !== removedKey
+    );
+
+    setSourceFiles(remainingSources);
+    setFiles(remainingDrawings);
+    replaceBatchItems(remainingWorkspaces);
+    setBatchFailures((current) =>
+      current.filter((item) => fileKey(item.file) !== removedKey)
+    );
+
+    setUploadedFileStatus((current) => {
+      const next = { ...current };
+      delete next[removedKey];
+      return next;
+    });
+
+    if (removedHash) {
+      setDfmReports((current) =>
+        current.filter((item) => item.file_hash !== removedHash)
+      );
+      setBomReports((current) =>
+        current.filter((item) => item.file_hash !== removedHash)
+      );
+    }
+
+    const remainingModels = remainingSources.filter((item) => isModelSource(item));
+    setModelFile(remainingModels.at(-1) || null);
+
+    if (activeSourceKey === removedKey || activeBatchId === removedWorkspace?.id) {
+      const nextWorkspace = remainingWorkspaces[0] || null;
+      const nextSource = nextWorkspace?.file || remainingSources[0] || null;
+
+      setActiveSourceKey(nextSource ? fileKey(nextSource) : "");
+
+      if (nextWorkspace) {
+        setActiveBatchId(nextWorkspace.id);
+        setFile(nextWorkspace.file);
+        setAnalysis(nextWorkspace.analysis);
+        setDrawing(nextWorkspace.drawing);
+        setRows(nextWorkspace.rows);
+        setSummary(nextWorkspace.summary);
+      } else {
+        setActiveBatchId("");
+        setFile(remainingDrawings[0] || null);
+        setAnalysis(null);
+        setDrawing(null);
+        setRows([]);
+        setSummary(emptySummary);
+        setStep(1);
+      }
+    } else if (file && fileKey(file) === removedKey) {
+      setFile(remainingDrawings[0] || null);
+    }
+
+    if (remainingSources.length === 0) {
+      void deleteOngoingQuotation(
+        "Quotation ended. Upload a file to start a new quotation."
+      );
+      return;
+    }
+
+    setMsg(`${selected.name} removed from this quotation.`);
   };
 
   const replaceBatchItems = (items: BatchWorkspace[]) => {
@@ -926,6 +1097,7 @@ export default function Page() {
     if (!target) return;
 
     setActiveBatchId(target.id);
+    setActiveSourceKey(fileKey(target.file));
     setFile(target.file);
     setAnalysis(target.analysis);
     setDrawing(target.drawing);
@@ -1054,16 +1226,18 @@ export default function Page() {
     let lastError = "Analyze failed";
 
     for (let attempt = 1; attempt <= 2; attempt += 1) {
-      const attemptText = attempt > 1 ? ` · retry ${attempt}/2` : "";
-
-      setAnalyzeProgress(`${originalIndex + 1}/${total}`);
-      setMsg(
-        `Analyzing drawing ${originalIndex + 1}/${total}: ${selected.name}${attemptText}`
-      );
+      setAnalyzeProgress("Analyzing");
+      setMsg("Analyzing…");
 
       try {
-        const result = await api.analyzeDrawing(selected, true);
-        const itemSummary = result.summary || await api.calculateQuote(result.rows);
+        await new Promise<void>((resolve) => window.setTimeout(resolve, 40));
+
+        const result = isModelSource(selected)
+          ? await api.analyzeCad(await inspectCadFile(selected))
+          : await api.analyzeDrawing(selected, true);
+
+        const itemSummary =
+          result.summary || await api.calculateQuote(result.rows);
 
         const workspace: BatchWorkspace = {
           id: `${result.file_hash}-${originalIndex}`,
@@ -1104,12 +1278,34 @@ export default function Page() {
       }
     }
 
-    throw new Error(lastError);
+    try {
+      const fallback = await api.analyzeFallback(
+        selected,
+        lastError || "Automatic extraction did not complete."
+      );
+
+      const fallbackSummary =
+        fallback.summary || await api.calculateQuote(fallback.rows);
+
+      const fallbackWorkspace: BatchWorkspace = {
+        id: fileKey(selected),
+        file: selected,
+        analysis: fallback,
+        drawing: fallback.drawing,
+        rows: fallback.rows,
+        summary: fallbackSummary
+      };
+
+      acceptParallelArtifacts(fallbackWorkspace);
+      return fallbackWorkspace;
+    } catch {
+      throw new Error(lastError);
+    }
   };
 
   const sortBatchBySelectedFiles = (items: BatchWorkspace[]) => {
     const order = new Map(
-      files.map((selected, index) => [fileKey(selected), index])
+      allSourceFiles.map((selected, index) => [fileKey(selected), index])
     );
 
     return [...items].sort(
@@ -1131,7 +1327,7 @@ export default function Page() {
       for (const failure of batchFailures) {
         const originalIndex = Math.max(
           0,
-          files.findIndex(
+          allSourceFiles.findIndex(
             (selected) => fileKey(selected) === fileKey(failure.file)
           )
         );
@@ -1141,7 +1337,7 @@ export default function Page() {
             await analyzeOneWithRetry(
               failure.file,
               originalIndex,
-              files.length || batchItems.length + batchFailures.length
+              allSourceFiles.length || batchItems.length + batchFailures.length
             )
           );
         } catch (error) {
@@ -1172,6 +1368,7 @@ export default function Page() {
         if (!activeBatchId && merged.length) {
           const first = merged[0];
           setActiveBatchId(first.id);
+          setActiveSourceKey(fileKey(first.file));
           setFile(first.file);
           setAnalysis(first.analysis);
           setDrawing(first.drawing);
@@ -1188,11 +1385,11 @@ export default function Page() {
 
       if (!stillFailed.length) {
         setMsg(
-          `All ${files.length || analyzedCount} drawings analyzed successfully.`
+          `All ${allSourceFiles.length || analyzedCount} source files analyzed successfully.`
         );
       } else {
         setMsg(
-          `${analyzedCount} of ${files.length || analyzedCount + stillFailed.length} drawings analyzed. ${stillFailed.length} still need retry.`
+          `${analyzedCount} of ${allSourceFiles.length || analyzedCount + stillFailed.length} source files analyzed. ${stillFailed.length} still need retry.`
         );
       }
     } finally {
@@ -1316,9 +1513,7 @@ export default function Page() {
   };
 
   const analyze = async () => {
-    const selectedFiles = files.length
-      ? files
-      : (file ? [file] : []);
+    const selectedFiles = allSourceFiles;
 
     if (!selectedFiles.length) return;
 
@@ -1394,8 +1589,8 @@ export default function Page() {
       if (!ordered.length) {
         setMsg(
           failed.length
-            ? `0 of ${selectedFiles.length} drawings analyzed. Use Retry Failed.`
-            : "No drawings were analyzed."
+            ? `0 of ${selectedFiles.length} source files analyzed. Use Retry Failed.`
+            : "No source files were analyzed."
         );
         return;
       }
@@ -1403,6 +1598,7 @@ export default function Page() {
       const first = ordered[0];
 
       setActiveBatchId(first.id);
+      setActiveSourceKey(fileKey(first.file));
       setFile(first.file);
       setAnalysis(first.analysis);
       setDrawing(first.drawing);
@@ -1418,12 +1614,12 @@ export default function Page() {
       if (!failed.length) {
         setMsg(
           selectedFiles.length === 1
-            ? "1 drawing analyzed."
-            : `All ${selectedFiles.length} drawings analyzed. Select a drawing number to review its details.`
+            ? "1 source file analyzed."
+            : `All ${selectedFiles.length} source files analyzed independently. Select any source to review its own details.`
         );
       } else {
         setMsg(
-          `${ordered.length} of ${selectedFiles.length} drawings analyzed. ${failed.length} failed after 2 attempts — use Retry Failed.`
+          `${ordered.length} of ${selectedFiles.length} source files analyzed. ${failed.length} failed after 2 attempts — use Retry Failed.`
         );
       }
 
@@ -2174,6 +2370,8 @@ export default function Page() {
       commercialAmountOverrides,
       customer,
       modelFile,
+      sourceFiles,
+      activeSourceKey,
       datasetId: workspaceDatasetId,
       datasetName: workspaceDatasetName,
       batchFailures,
@@ -2188,10 +2386,34 @@ export default function Page() {
       saveWorkflowDraft(snapshot),
       saveWorkspaceDataset(snapshot)
     ]);
+
+    saveWorkspaceToDatabase(snapshot);
   };
 
   const openEngineeringArtifact = (target: "dfm" | "bom") => {
-    // Save the exact quotation/cost-sheet state before leaving the workflow.
+    const activeWorkspace = batchItemsRef.current.find(
+      (item) => item.id === activeBatchId
+    );
+
+    if (activeWorkspace) {
+      if (target === "dfm") {
+        const matching = dfmReports.find(
+          (report) =>
+            report.file_hash === activeWorkspace.analysis.file_hash
+        );
+
+        if (matching) setSelectedDfmId(matching.id);
+      } else {
+        const matching = bomReports.find(
+          (report) =>
+            report.file_hash === activeWorkspace.analysis.file_hash
+        );
+
+        if (matching) setSelectedBomId(matching.id);
+      }
+    }
+
+    // Save exact source/review/cost state before leaving the workflow.
     void saveCurrentWorkspaceNow(view === "workflow" ? "workflow" : view)
       .catch(() => undefined)
       .finally(() => setView(target));
@@ -2216,8 +2438,89 @@ export default function Page() {
     await refreshWorkspaceDatasets();
   };
 
+  const saveWorkspaceToDatabase = (snapshot: PersistedWorkflowDraft) => {
+    const payload: Record<string, unknown> = {
+      view: snapshot.view,
+      step: snapshot.step,
+      activeBatchId: snapshot.activeBatchId,
+      quoteMode: snapshot.quoteMode,
+      analysis: snapshot.analysis,
+      drawing: snapshot.drawing,
+      rows: snapshot.rows,
+      summary: snapshot.summary,
+      customer: snapshot.customer,
+      datasetId: snapshot.datasetId,
+      datasetName: snapshot.datasetName,
+      dfmReports: snapshot.dfmReports,
+      bomReports: snapshot.bomReports,
+      savedAt: snapshot.savedAt,
+      files: (snapshot.files || []).map((item) => ({
+        name: item.name,
+        size: item.size,
+        type: item.type,
+        lastModified: item.lastModified
+      })),
+      sourceFiles: (snapshot.sourceFiles || []).map((item) => ({
+        name: item.name,
+        size: item.size,
+        type: item.type,
+        lastModified: item.lastModified
+      })),
+      activeSourceKey: snapshot.activeSourceKey || "",
+      modelFile: snapshot.modelFile
+        ? {
+            name: snapshot.modelFile.name,
+            size: snapshot.modelFile.size,
+            type: snapshot.modelFile.type,
+            lastModified: snapshot.modelFile.lastModified
+          }
+        : null
+    };
+
+    void api.saveWorkspaceSession(
+      snapshot.datasetId,
+      snapshot.datasetName,
+      payload
+    ).catch(() => undefined);
+  };
+
+  const modelSourceExtensions = useMemo(
+    () => new Set([
+      "step", "stp", "glb", "gltf", "stl", "obj",
+      "iges", "igs", "x_t", "x_b"
+    ]),
+    []
+  );
+
+  const isModelSource = (selected: File) =>
+    isVisualCadFormat(selected);
+
+  const allSourceFiles = sourceFiles.length
+    ? sourceFiles
+    : [
+        ...files,
+        ...(modelFile ? [modelFile] : [])
+      ];
+
+  const activeSource =
+    allSourceFiles.find((selected) => fileKey(selected) === activeSourceKey)
+    || allSourceFiles[0]
+    || null;
+
   const selectedDfm = dfmReports.find((item) => item.id === selectedDfmId) || dfmReports.at(-1) || null;
   const selectedBom = bomReports.find((item) => item.id === selectedBomId) || bomReports.at(-1) || null;
+
+  const selectedDfmWorkspace = selectedDfm
+    ? batchItems.find(
+        (item) =>
+          item.analysis.file_hash === selectedDfm.file_hash
+      )
+    : null;
+
+  const selectedDfmSourceFile = selectedDfmWorkspace?.file || null;
+  const selectedDfmHas3D =
+    Boolean(selectedDfmSourceFile && isModelSource(selectedDfmSourceFile));
+
   const dfmProcessingCount = Object.values(dfmJobs).filter((value) => value === "processing").length;
   const bomProcessingCount = Object.values(bomJobs).filter((value) => value === "processing").length;
 
@@ -2282,41 +2585,68 @@ export default function Page() {
   return (
     <main className={`app ${sideOpen ? "" : "sidebar-collapsed"}`}>
       <aside className={`side ${sideOpen ? "" : "closed"}`}>
-        <button className="sidebar-toggle" type="button" onClick={() => setSideOpen(false)} title="Close menu" aria-label="Close menu">‹</button>
-        <div className="brand">
-          <span className="dfab-logo-placeholder" aria-label="DFAB logo placeholder">
-            <img
-              src="/dfab-logo.png"
-              alt="DFAB Logo"
-              onError={(e) => {
-                e.currentTarget.style.display = "none";
-              }}
-            />
-            <em>DFAB</em>
-          </span>
-          <div><b>AI Quotation</b><small>Manufacturing Costing</small></div>
+        <div className="sidebar-brand-row">
+          <div className="brand">
+            <span className="dfab-logo-placeholder" aria-label="DFAB logo placeholder">
+              <img
+                src="/dfab-logo.png"
+                alt="DFAB Logo"
+                onError={(e) => {
+                  e.currentTarget.style.display = "none";
+                }}
+              />
+              <em>DFAB</em>
+            </span>
+            <div><b>AI Quotation</b><small>Manufacturing Costing</small></div>
+          </div>
+          <button
+            className="sidebar-toggle sidebar-toggle-inline"
+            type="button"
+            onClick={() => setSideOpen(false)}
+            title="Close menu"
+            aria-label="Close menu"
+          >
+            ‹
+          </button>
         </div>
         <nav>
-          <button className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>Dashboard</button>
-          <button onClick={newQuote}>New Quotation</button>
-          <button className={view === "quotes" ? "active" : ""} onClick={() => setView("quotes")}>Quotation History</button>
-          <button className={view === "rates" ? "active" : ""} onClick={openRates}>Rate Master</button>
-          <button className={view === "dfm" ? "active" : ""} onClick={() => openEngineeringArtifact("dfm")}>
+          <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>Dashboard</button>
+          <div className="new-quotation-nav-row">
+            <button type="button" className="new-quotation-nav-main" onClick={newQuote}>New Quotation</button>
+            <button
+              type="button"
+              className="resume-quotation-diamond"
+              onClick={() => void resumeWorkingQuotation()}
+              title="Resume working quotation"
+              aria-label="Resume working quotation"
+            >
+              <span>◆</span>
+            </button>
+          </div>
+          <button type="button" className={view === "quotes" ? "active" : ""} onClick={() => setView("quotes")}>Quotation History</button>
+          <button type="button" className={view === "rates" ? "active" : ""} onClick={openRates}>Rate Master</button>
+          <button type="button" className={view === "dfm" ? "active" : ""} onClick={() => openEngineeringArtifact("dfm")}>
             <span>DFM Report</span>
             <span className="artifact-nav-meta">
               <i className={`artifact-nav-light ${engineeringArtifactStage}`}/>
               <em>{dfmReports.length}</em>
             </span>
           </button>
-          <button className={view === "bom" ? "active" : ""} onClick={() => openEngineeringArtifact("bom")}>
+          <button type="button" className={view === "bom" ? "active" : ""} onClick={() => openEngineeringArtifact("bom")}>
             <span>BOM</span>
             <span className="artifact-nav-meta">
               <i className={`artifact-nav-light ${engineeringArtifactStage}`}/>
               <em>{bomReports.length}</em>
             </span>
           </button>
-          <button className={view === "dataset" ? "active" : ""} onClick={() => { setView("dataset"); void refresh(); void refreshWorkspaceDatasets(); }}>Dataset Learning</button>
-          <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>Settings</button>
+          <button type="button" className={view === "dataset" ? "active" : ""} onClick={() => { setView("dataset"); void refresh(); void refreshWorkspaceDatasets(); }}>Dataset Learning</button>
+          <button
+            type="button"
+            className={`settings-nav-button ${view === "settings" ? "active" : ""}`}
+            onClick={() => setView("settings")}
+          >
+            Settings
+          </button>
         </nav>
         <div className="learn">
           <b>Continuous Dataset</b>
@@ -2374,18 +2704,21 @@ export default function Page() {
               ))}
             </div>
 
-            {(files.length > 1 || batchItems.length > 1) && step >= 2 && (
-              <div className="drawing-selector-box">
+            {allSourceFiles.length > 0 && step >= 2 && (
+              <div className="drawing-selector-box source-overview-box">
                 <div className="drawing-selector-title">
                   <div>
-                    <span>BATCH DRAWINGS</span>
+                    <span>SOURCE OVERVIEW</span>
                     <b>
-                      {batchItems.length} / {files.length || batchItems.length} drawings analyzed
+                      {batchItems.length}/{allSourceFiles.length} source file{
+                        allSourceFiles.length === 1 ? "" : "s"
+                      } analyzed · {allSourceFiles.length} total source file{
+                        allSourceFiles.length === 1 ? "" : "s"
+                      }
                     </b>
                   </div>
 
                   <div className="batch-selector-actions">
-                    <small>Click a drawing number to open its review, engineering sheet and cost.</small>
 
                     {batchFailures.length > 0 && (
                       <button
@@ -2399,23 +2732,88 @@ export default function Page() {
                           : `Retry Failed (${batchFailures.length})`}
                       </button>
                     )}
+
+                    <button
+                      type="button"
+                      className="end-process-btn"
+                      disabled={busy}
+                      onClick={() => void deleteOngoingQuotation()}
+                    >
+                      End Process
+                    </button>
                   </div>
                 </div>
 
-                <div className="drawing-selector-list">
-                  {batchItems.map((item, index) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={item.id === activeBatchId ? "active" : ""}
-                      onClick={() => selectBatchDrawing(item.id)}
-                    >
-                      <small>{index + 1}</small>
-                      <b>{item.drawing.drawing_no || "Not detected"}</b>
-                      <span>Rev {item.drawing.revision || "—"}</span>
-                    </button>
-                  ))}
+                <div className="drawing-selector-list source-selector-list">
+                  {allSourceFiles.map((selected, index) => {
+                    const sourceKey = fileKey(selected);
+                    const model = isModelSource(selected);
+
+                    const batchItem = batchItems.find(
+                      (item) => fileKey(item.file) === sourceKey
+                    );
+
+                    const failure = batchFailures.find(
+                      (item) => fileKey(item.file) === sourceKey
+                    );
+
+                    const extension =
+                      selected.name.split(".").pop()?.toUpperCase() || "FILE";
+
+                    return (
+                      <button
+                        key={sourceKey}
+                        type="button"
+                        className={`${sourceKey === activeSourceKey ? "active" : ""} ${model ? "source-model" : ""}`}
+                        onClick={() => {
+                          setActiveSourceKey(sourceKey);
+
+                          if (batchItem) {
+                            selectBatchDrawing(batchItem.id);
+                          }
+                        }}
+                      >
+                        <small>{index + 1}/{allSourceFiles.length}</small>
+
+                        <b>
+                          {batchItem?.drawing.drawing_no
+                            || selected.name.replace(/\.[^.]+$/, "")}
+                        </b>
+
+                        <span>
+                          {failure
+                            ? `${extension} · Failed`
+                            : batchItem
+                              ? batchItem.analysis.learning_source === "independent_fallback"
+                                ? `${extension} · Review Required`
+                                : model
+                                  ? `${extension} · CAD Analyzed`
+                                  : `${extension} · Analyzed`
+                              : `${extension} · Ready`}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
+
+                {activeSource && isModelSource(activeSource) && (
+                  <div className="source-cad-overview">
+                    <span>3D/CAD SOURCE</span>
+
+                    <div>
+                      <b>{activeSource.name}</b>
+                      <small>
+                        {(activeSource.name.split(".").pop() || "CAD").toUpperCase()}
+                        {" · "}
+                        {(activeSource.size / 1024 / 1024).toFixed(2)} MB
+                        {" · "}
+                        Independent CAD source
+                      </small>
+                    </div>
+
+                    <i>✓ Independent</i>
+                  </div>
+                )}
 
                 {batchFailures.length > 0 && (
                   <div className="failed-drawing-strip">
@@ -2459,31 +2857,91 @@ export default function Page() {
                         return !modelExtensions.has(ext);
                       });
 
-                      // Same picker handles everything:
-                      // PDF/Image/DXF/DWG -> quotation analysis
-                      // STEP/STP/etc. -> automatically linked to DFM.
-                      const nextDrawingFiles =
-                        selectedDrawings.length > 0
-                          ? selectedDrawings
-                          : files;
+                      // Preserve ALL mixed files across repeated chooser actions.
+                      // STEP first + PDF later => both remain visible in this session.
+                      const sourceMap = new Map(
+                        sourceFiles.map((existing) => [
+                          `${existing.name}-${existing.size}-${existing.lastModified}`,
+                          existing
+                        ])
+                      );
 
-                      const nextModel =
-                        selectedModels[0]
-                        || modelFile
-                        || null;
+                      selectedInputs.forEach((selected) => {
+                        sourceMap.set(
+                          `${selected.name}-${selected.size}-${selected.lastModified}`,
+                          selected
+                        );
+                      });
 
+                      const nextSourceFiles = Array.from(sourceMap.values());
+
+                      // Only PDF/Image/DXF/DWG-style files go through drawing analysis.
+                      // CAD/STEP sources are separately stored and linked to DFM.
+                      const drawingMap = new Map(
+                        files.map((existing) => [
+                          `${existing.name}-${existing.size}-${existing.lastModified}`,
+                          existing
+                        ])
+                      );
+
+                      selectedDrawings.forEach((selected) => {
+                        drawingMap.set(
+                          `${selected.name}-${selected.size}-${selected.lastModified}`,
+                          selected
+                        );
+                      });
+
+                      const nextDrawingFiles = Array.from(drawingMap.values());
+                      const nextModel = selectedModels.at(-1) || modelFile || null;
                       const nextFile = nextDrawingFiles[0] || null;
 
+                      setSourceFiles(nextSourceFiles);
                       setFiles(nextDrawingFiles);
                       setFile(nextFile);
                       setModelFile(nextModel);
 
-                      if (selectedDrawings.length > 0) {
-                        const sourceName = selectedDrawings[0].name.replace(/\.[^.]+$/, "");
-                        setWorkspaceDatasetName(`Dataset - ${sourceName}`);
+                      if (!activeSourceKey && nextSourceFiles[0]) {
+                        setActiveSourceKey(fileKey(nextSourceFiles[0]));
                       }
 
+                      // Instant UI response: file is accepted immediately.
+                      // Original file database storage runs in background and does
+                      // not keep Analyze Drawing disabled.
+                      selectedInputs.forEach((selected) => {
+                        const ext = selected.name.split(".").pop()?.toLowerCase() || "";
+                        const role = modelExtensions.has(ext) ? "model" : "drawing";
+                        const key = `${selected.name}-${selected.size}-${selected.lastModified}`;
+
+                        setUploadedFileStatus((current) => ({
+                          ...current,
+                          [key]: "uploaded"
+                        }));
+
+                        window.setTimeout(() => {
+                          void api
+                            .uploadWorkspaceFile(
+                              workspaceDatasetId,
+                              selected,
+                              role
+                            )
+                            .catch(() => {
+                              setUploadedFileStatus((current) => ({
+                                ...current,
+                                [key]: "failed"
+                              }));
+                            });
+                        }, 0);
+                      });
+
                       if (selectedDrawings.length > 0) {
+                        const sourceName = selectedDrawings[0].name.replace(/\.[^.]+$/, "");
+
+                        if (!file && !files.length) {
+                          setWorkspaceDatasetName(`Dataset - ${sourceName}`);
+                        }
+
+                        // New 2D drawing requires a new analysis pass, but CAD files
+                        // already uploaded to this same session are preserved.
                         setBatchItems([]);
                         batchItemsRef.current = [];
                         setBatchFailures([]);
@@ -2494,47 +2952,85 @@ export default function Page() {
                         setSummary(emptySummary);
                       }
 
-                      const drawingText =
-                        nextDrawingFiles.length > 1
-                          ? `${nextDrawingFiles.length} drawings`
-                          : nextDrawingFiles.length === 1
-                            ? nextDrawingFiles[0].name
-                            : "no 2D drawing";
-
-                      const modelText =
-                        nextModel
-                          ? ` + 3D model ${nextModel.name}`
-                          : "";
-
                       setMsg(
                         selectedInputs.length
-                          ? `${drawingText}${modelText} selected.${nextDrawingFiles.length ? " Click Analyze Drawing." : " Add a PDF/Image/DXF/DWG drawing to analyze."}`
+                          ? `${nextSourceFiles.length} source file${
+                              nextSourceFiles.length === 1 ? "" : "s"
+                            } uploaded · ${nextDrawingFiles.length} drawing file${
+                              nextDrawingFiles.length === 1 ? "" : "s"
+                            } drawing file${
+                              nextDrawingFiles.length === 1 ? "" : "s"
+                            } · all ${nextSourceFiles.length} source file${
+                              nextSourceFiles.length === 1 ? "" : "s"
+                            } will be analyzed independently.`
                           : "Upload a drawing to begin."
                       );
 
-                      // Allows choosing the same file again if needed.
                       e.target.value = "";
                     }}
                   />
                   <span>↑</span>
                   <b>
-                    {files.length > 1
-                      ? `${files.length} drawings selected${modelFile ? " + 3D model" : ""}`
-                      : file?.name
-                        ? `${file.name}${modelFile ? " + 3D model" : ""}`
-                        : modelFile
-                          ? `3D model linked · choose drawing`
-                          : "Choose drawing(s)"}
+                    {allSourceFiles.length
+                      ? `${allSourceFiles.length} source file${
+                          allSourceFiles.length === 1 ? "" : "s"
+                        } selected`
+                      : "Choose drawing(s)"}
                   </b>
                   <small>
                     PDF / Image / DXF / DWG / STEP / STP / GLB / GLTF / STL / OBJ / IGES / Parasolid
                   </small>
-                  {modelFile && (
-                    <em className="upload-linked-model">
-                      3D linked: {modelFile.name} · automatically available in DFM
-                    </em>
-                  )}
                 </label>
+
+                {allSourceFiles.length > 0 && (
+                  <div className="uploaded-source-list">
+                    {allSourceFiles.map((selected, index) => {
+                      const key = `${selected.name}-${selected.size}-${selected.lastModified}`;
+                      const status = uploadedFileStatus[key] || "uploaded";
+                      const model = isModelSource(selected);
+
+                      return (
+                        <div
+                          className={`uploaded-source-card ${model ? "model" : ""} ${status}`}
+                          key={key}
+                        >
+                          <span className="uploaded-source-check">
+                            {status === "failed" ? "!" : "✓"}
+                          </span>
+
+                          <div>
+                            <b>{selected.name}</b>
+                            <small>
+                              Source {index + 1}/{allSourceFiles.length} · {(selected.name.split(".").pop() || "FILE").toUpperCase()}
+                              {model ? " · 3D/CAD · independent quotation source" : " · drawing · independent quotation source"}
+                              {" · "}
+                              {(selected.size / 1024 / 1024).toFixed(2)} MB
+                            </small>
+                          </div>
+
+                          <div className="uploaded-source-actions">
+                            <em>
+                              {status === "failed" ? "DB sync failed" : "Uploaded"}
+                            </em>
+                            <button
+                              type="button"
+                              className="uploaded-source-remove"
+                              onClick={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                removeUploadedSource(selected);
+                              }}
+                              title={`Remove ${selected.name}`}
+                              aria-label={`Remove ${selected.name}`}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
 
                 {busy && (
                   <div className="drawing-analyze-loader" role="status" aria-live="polite">
@@ -2542,38 +3038,26 @@ export default function Page() {
                       <span/><span/><span/>
                     </div>
                     <div>
-                      <b>Reading engineering drawing…</b>
-                      <span>
-                        {analyzeProgress
-                          ? `Analyzing ${analyzeProgress} · dimensions → features → process → costing`
-                          : "Preparing drawing for AI analysis"}
-                      </span>
+                      <b>Analyzing…</b>
+                      <span>Reading engineering data and preparing output</span>
                     </div>
                     <div className="loader-track"><i/></div>
-                  </div>
-                )}
-
-                {files.length > 1 && (
-                  <div className="upload-file-strip">
-                    {files.map((selected, index) => (
-                      <span key={`${selected.name}-${index}`}>
-                        {index + 1}. {selected.name}
-                      </span>
-                    ))}
                   </div>
                 )}
 
                 <div className="actions">
                   <button
                     className="btn primary"
-                    disabled={(!file && !files.length) || busy}
+                    disabled={allSourceFiles.length === 0 || busy}
                     onClick={analyze}
                   >
                     {busy
-                      ? `Analyzing ${analyzeProgress || "..."}`
-                      : files.length > 1
-                        ? `Analyze ${files.length} Drawings`
-                        : "Analyze Drawing"}
+                      ? "Analyzing…"
+                      : allSourceFiles.length > 1
+                        ? `Analyze ${allSourceFiles.length} Sources`
+                        : allSourceFiles.length === 1
+                          ? "Analyze Source"
+                          : "Add Source to Analyze"}
                   </button>
                 </div>
               </section>
@@ -3385,6 +3869,57 @@ export default function Page() {
                 </div>
               </div>
 
+              <div className="artifact-source-switcher">
+                <div className="artifact-source-switcher-head">
+                  <span>DFM</span>
+                  <b>{allSourceFiles.length}</b>
+                </div>
+
+                <div className="artifact-source-switcher-list">
+                  {allSourceFiles.map((selected, index) => {
+                    const sourceKey = fileKey(selected);
+                    const workspace = batchItems.find(
+                      (item) => fileKey(item.file) === sourceKey
+                    );
+                    const report = workspace
+                      ? dfmReports.find(
+                          (item) => item.file_hash === workspace.analysis.file_hash
+                        )
+                      : null;
+                    const extension =
+                      selected.name.split(".").pop()?.toUpperCase() || "FILE";
+
+                    return (
+                      <button
+                        type="button"
+                        key={`dfm-${sourceKey}`}
+                        className={
+                          report && selectedDfm?.id === report.id ? "active" : ""
+                        }
+                        disabled={!report}
+                        onClick={() => {
+                          if (!report || !workspace) return;
+                          setSelectedDfmId(report.id);
+                          setActiveSourceKey(sourceKey);
+                          setActiveBatchId(workspace.id);
+                        }}
+                      >
+                        <small>{index + 1}/{allSourceFiles.length}</small>
+                        <b>
+                          {workspace?.drawing.drawing_no
+                            || selected.name.replace(/\.[^.]+$/, "")}
+                        </b>
+                        <span>
+                          {report
+                            ? `${extension} · ${report.status}`
+                            : `${extension} · Processing`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               <div className="artifact-editor artifact-editor-full">
                   {selectedDfm ? (
                     <>
@@ -3452,31 +3987,39 @@ export default function Page() {
                         </div>
                       )}
 
-                      <div className="dfm-model-grid">
-                        <div>
+                      <div className={`dfm-reference-layout ${selectedDfmHas3D ? "with-cad" : "without-cad"}`}>
+                        {selectedDfmHas3D && selectedDfmSourceFile && (
+                          <div className="dfm-cad-review-card">
+                            <div className="artifact-subhead">
+                              <div>
+                                <b>3D Model Review</b>
+                                <span>
+                                  {selectedDfmSourceFile.name}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="dfm-cad-square">
+                              <ModelViewer
+                                file={selectedDfmSourceFile}
+                                issueCount={selectedDfm.checks.filter(
+                                  (item) => item.result !== "PASS"
+                                ).length}
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="dfm-reference-card">
                           <div className="artifact-subhead">
                             <div>
-                              <b>3D Model Review</b>
+                              <b>International DFM Reference Matrix</b>
                               <span>
-                                {modelFile
-                                  ? `${modelFile.name} · linked automatically from Choose drawing(s)`
-                                  : "No 3D model linked · optional STEP / STP / GLB / GLTF can be added here"}
+                                Applicable engineering references
                               </span>
                             </div>
-                            <label className="btn secondary file-button">
-                              {modelFile ? "Replace 3D Model" : "Upload 3D Model"}
-                              <input
-                                type="file"
-                                accept=".step,.stp,.glb,.gltf,.stl,.obj,.iges,.igs,.x_t,.x_b"
-                                onChange={(e) => setModelFile(e.target.files?.[0] || null)}
-                              />
-                            </label>
                           </div>
-                          <ModelViewer file={modelFile} issueCount={selectedDfm.checks.filter((item) => item.result !== "PASS").length}/>
-                        </div>
 
-                        <div>
-                          <div className="artifact-subhead"><div><b>International DFM Reference Matrix</b><span>Feature-specific references; engineer must confirm applicability to the customer drawing</span></div></div>
                           <div className="artifact-table-wrap">
                             <table className="artifact-table reference-table">
                               <thead>
@@ -3493,7 +4036,10 @@ export default function Page() {
                                         value={item.standard}
                                         onChange={(e) => {
                                           const standards = [...selectedDfm.standards];
-                                          standards[index] = { ...standards[index], standard: e.target.value };
+                                          standards[index] = {
+                                            ...standards[index],
+                                            standard: e.target.value
+                                          };
                                           updateDfm({ ...selectedDfm, standards });
                                         }}
                                       />
@@ -3503,7 +4049,10 @@ export default function Page() {
                                         value={item.scope}
                                         onChange={(e) => {
                                           const standards = [...selectedDfm.standards];
-                                          standards[index] = { ...standards[index], scope: e.target.value };
+                                          standards[index] = {
+                                            ...standards[index],
+                                            scope: e.target.value
+                                          };
                                           updateDfm({ ...selectedDfm, standards });
                                         }}
                                       />
@@ -3658,6 +4207,55 @@ export default function Page() {
                     <span>History</span>
                     <b>{bomReports.length}</b>
                   </button>
+                </div>
+              </div>
+
+              <div className="artifact-source-switcher">
+                <div className="artifact-source-switcher-head">
+                  <span>BOM</span>
+                  <b>{allSourceFiles.length}</b>
+                </div>
+
+                <div className="artifact-source-switcher-list">
+                  {allSourceFiles.map((selected, index) => {
+                    const sourceKey = fileKey(selected);
+                    const workspace = batchItems.find(
+                      (item) => fileKey(item.file) === sourceKey
+                    );
+                    const report = workspace
+                      ? bomReports.find(
+                          (item) => item.file_hash === workspace.analysis.file_hash
+                        )
+                      : null;
+                    const extension =
+                      selected.name.split(".").pop()?.toUpperCase() || "FILE";
+
+                    return (
+                      <button
+                        type="button"
+                        key={`bom-${sourceKey}`}
+                        className={
+                          report && selectedBom?.id === report.id ? "active" : ""
+                        }
+                        disabled={!report}
+                        onClick={() => {
+                          if (!report || !workspace) return;
+                          setSelectedBomId(report.id);
+                          setActiveSourceKey(sourceKey);
+                          setActiveBatchId(workspace.id);
+                        }}
+                      >
+                        <small>{index + 1}/{allSourceFiles.length}</small>
+                        <b>
+                          {workspace?.drawing.drawing_no
+                            || selected.name.replace(/\.[^.]+$/, "")}
+                        </b>
+                        <span>
+                          {report ? `${extension} · Ready` : `${extension} · Processing`}
+                        </span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
@@ -4349,6 +4947,19 @@ function EngineeringDetails({
     { key: "quantity", label: "Qty", kind: "number" }
   ];
 
+  const assemblyColumns: EditableColumn[] = [
+    { key: "item_no", label: "Item" },
+    { key: "part_name", label: "Part / Plate" },
+    { key: "drawing_no", label: "Drawing No." },
+    { key: "quantity", label: "Qty", kind: "number" },
+    { key: "material", label: "Material" },
+    { key: "length_mm", label: "Length (mm)", kind: "number" },
+    { key: "width_mm", label: "Width (mm)", kind: "number" },
+    { key: "height_mm", label: "Height (mm)", kind: "number" },
+    { key: "thickness_mm", label: "Thickness (mm)", kind: "number" },
+    { key: "description", label: "Description" }
+  ];
+
   const processColumns: EditableColumn[] = [
     { key: "process", label: "Process" },
     { key: "reason", label: "Reason / Drawing Basis" }
@@ -4369,6 +4980,16 @@ function EngineeringDetails({
           <table>
             <thead><tr><th>Field</th><th>Value</th></tr></thead>
             <tbody>
+              <tr id="sheet-summary-drawing-type">
+                <td>Drawing Type</td>
+                <td>
+                  <input
+                    className="sheet-cell-input"
+                    value={data.drawing_type || "part"}
+                    onChange={(e) => setFeature("drawing_type", e.target.value)}
+                  />
+                </td>
+              </tr>
               <tr id="sheet-summary-material"><td>Material Family</td><td><input className="sheet-cell-input" value={data.material?.family || ""} onChange={(e) => setMaterial("family", e.target.value)}/></td></tr>
               <tr id="sheet-summary-grade"><td>Grade</td><td><input className="sheet-cell-input" value={data.material?.grade || ""} onChange={(e) => setMaterial("grade", e.target.value)}/></td></tr>
               <tr id="sheet-summary-specification"><td>Specification</td><td><input className="sheet-cell-input" value={data.material?.specification || ""} onChange={(e) => setMaterial("specification", e.target.value)}/></td></tr>
@@ -4386,6 +5007,17 @@ function EngineeringDetails({
         </div>
 
         <div className="engineering-feature-stack">
+          {(data.drawing_type === "assembly"
+            || data.drawing_type === "weldment"
+            || (data.assembly_parts || []).length > 0) && (
+            <EditableFeatureTable
+              sectionKey="assembly_parts"
+              title="Assembly Components / Plates"
+              columns={assemblyColumns}
+              items={(data.assembly_parts || []) as Record<string, unknown>[]}
+              onChange={(items) => setFeature("assembly_parts", items)}
+            />
+          )}
           <EditableFeatureTable sectionKey="dimensions" title="Dimensions" columns={dimensionsColumns} items={(data.dimensions || []) as Record<string, unknown>[]} onChange={(items) => setFeature("dimensions", items)}/>
           <EditableFeatureTable sectionKey="holes" title="Holes / Slots" columns={holesColumns} items={(data.holes || []) as Record<string, unknown>[]} onChange={(items) => setFeature("holes", items)}/>
           <EditableFeatureTable sectionKey="threads" title="Threads" columns={threadsColumns} items={(data.threads || []) as Record<string, unknown>[]} onChange={(items) => setFeature("threads", items)}/>

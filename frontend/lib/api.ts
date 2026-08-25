@@ -17,10 +17,72 @@ import type {
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 
-async function j<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(API + url, init);
-  if (!response.ok) throw new Error((await response.text()) || "Request failed");
-  return response.json();
+async function j<T>(
+  url: string,
+  init?: RequestInit,
+  timeoutMs = 45000
+): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(API + url, {
+      ...init,
+      signal: init?.signal || controller.signal
+    });
+
+    if (!response.ok) {
+      throw new Error((await response.text()) || "Request failed");
+    }
+
+    return response.json();
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Request timed out.");
+    }
+
+    throw error;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+export async function analyzeFallback(
+  file: File,
+  reason: string
+) {
+  const extension = file.name.split(".").pop()?.toUpperCase() || "FILE";
+
+  return j<AnalysisResponse>("/api/analyze-fallback", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      filename: file.name,
+      source_format: extension,
+      reason
+    })
+  }, 12000);
+}
+
+export async function analyzeCad(payload: {
+  filename: string;
+  file_hash: string;
+  format: string;
+  parser_status: string;
+  root_name: string;
+  part_count: number;
+  mesh_count: number;
+  triangle_count: number;
+  dimensions_mm: { x: number; y: number; z: number };
+  surface_area_mm2: number;
+  volume_mm3: number;
+  component_names: string[];
+}) {
+  return j<AnalysisResponse>("/api/analyze-cad", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }, 18000);
 }
 
 export async function analyzeDrawing(file: File, forceAI = true) {
@@ -29,7 +91,7 @@ export async function analyzeDrawing(file: File, forceAI = true) {
   return j<AnalysisResponse>(`/api/analyze?force_ai=${forceAI ? "true" : "false"}`, {
     method: "POST",
     body: form
-  });
+  }, 45000);
 }
 
 export async function saveReview(payload: unknown) {
@@ -309,4 +371,51 @@ export async function exportBatchPdf(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ customer, mode, items })
   }), fallback);
+}
+
+
+export async function saveWorkspaceSession(
+  sessionId: string,
+  name: string,
+  payload: Record<string, unknown>
+) {
+  return j<{ status: string; id: string; updated_at: string }>(
+    `/api/workspaces/${encodeURIComponent(sessionId)}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, payload })
+    }
+  );
+}
+
+export async function uploadWorkspaceFile(
+  sessionId: string,
+  file: File,
+  role: "drawing" | "model" = "drawing"
+) {
+  const form = new FormData();
+  form.append("role", role);
+  form.append("file", file);
+
+  return j<{
+    status: string;
+    id: string;
+    filename: string;
+    role: string;
+    size_bytes: number;
+    file_hash: string;
+  }>(
+    `/api/workspaces/${encodeURIComponent(sessionId)}/files`,
+    { method: "POST", body: form }
+  );
+}
+
+
+export async function deleteWorkspaceSession(sessionId: string) {
+  return j<{ status: string; id: string }>(
+    `/api/workspaces/${encodeURIComponent(sessionId)}`,
+    { method: "DELETE" },
+    12000
+  );
 }

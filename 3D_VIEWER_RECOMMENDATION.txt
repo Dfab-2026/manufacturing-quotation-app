@@ -1,0 +1,23 @@
+DFAB STEP/STP 3D Viewer Recommendation
+
+Current v0.9.3 works without a separate desktop CAD program:
+- STEP/STP/IGES parsing: occt-import-js / OpenCascade WASM in browser
+- 3D rendering: Three.js
+- DFM viewer: compact 300 × 300 interactive square
+
+For the production project, the recommended npm installation is:
+
+cd frontend
+npm install occt-import-js@0.0.23 three@0.185.1
+
+Why:
+- occt-import-js imports STEP/STP/IGES using OpenCascade in the browser.
+- three renders the triangulated geometry.
+- Installing locally removes dependence on public CDN availability and is
+  preferable for a production deployment.
+
+This patch still contains CDN fallback loading because the supplied patch
+archive does not contain the project's frontend/package.json.
+
+After installing the npm packages in the full project, the next hardening step
+is to replace the CDN loader in frontend/lib/cad.ts with direct package imports.
