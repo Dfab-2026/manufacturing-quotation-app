@@ -134,11 +134,14 @@ export default function ModelViewer({
           }
 
           const sourceColor = sourceMesh.color;
-          const color = sourceColor?.length >= 3
+          const hasSourceColor =
+            Array.isArray(sourceColor) && sourceColor.length >= 3;
+
+          const color = hasSourceColor
             ? new THREE.Color(
-                sourceColor[0],
-                sourceColor[1],
-                sourceColor[2]
+                Number(sourceColor[0] ?? 0.73),
+                Number(sourceColor[1] ?? 0.78),
+                Number(sourceColor[2] ?? 0.83)
               )
             : new THREE.Color(0xb9c6d3);
 
