@@ -77,6 +77,7 @@ export type AnalysisResponse = {
   drawing: DrawingDetails;
   rows: CostRow[];
   ai_raw?: AIExtraction | null;
+  summary?: QuoteSummary;
 };
 
 export type Settings = {
@@ -116,9 +117,11 @@ export type RateCatalog = {
 export type DatasetStats = {
   extractions: number;
   reviewed_samples: number;
+  training_samples: number;
   unique_files: number;
   dataset_version: number;
   new_reviewed_since_version: number;
+  new_training_since_version: number;
   training_batch_threshold: number;
   batch_ready: boolean;
   auto_dataset_capture: boolean;
@@ -128,6 +131,8 @@ export type DatasetStats = {
 export type QuoteRecord = {
   id: string;
   created_at: string;
+  updated_at?: string;
+  name?: string;
   customer: string;
   drawing_no: string;
   revision: string;

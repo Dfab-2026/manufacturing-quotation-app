@@ -10,6 +10,8 @@ from app.db import (
     latest_review_by_hash,
     load_store,
     save_store,
+    training_samples_for_export,
+    upsert_training_sample,
 )
 
 from datetime import datetime, timezone
@@ -27,7 +29,7 @@ import zipfile
 
 import pymupdf as fitz
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from openpyxl import Workbook
@@ -144,11 +146,17 @@ def default_rate_items():
         _rate("PROC-QC", "PROCESS", "Inspection & Handling", "", "job", 150, 45, "Inspection allowance"),
         _rate("PROC-WELD", "PROCESS", "General / Tack Welding", "", "job", 300, 80, "Starter rate - edit in Rate Master"),
         _rate("PROC-SAW", "PROCESS", "Saw / Raw Stock Cutting", "", "job", 200, 70, "Starter rate - edit in Rate Master"),
-        _rate("PROC-TURN", "PROCESS", "CNC Turning", "", "job", 650, 90, "Starter rate - edit in Rate Master"),
+        _rate("PROC-TURN", "PROCESS", "CNC Turning", "", "hr", 650, 90, "Starter hourly machine rate - edit in Rate Master"),
         _rate("PROC-BORE", "PROCESS", "Drilling / Boring", "", "job", 350, 85, "Starter rate - edit in Rate Master"),
         _rate("PROC-THREAD", "PROCESS", "Threading / Tapping", "", "job", 250, 90, "Starter rate - edit in Rate Master"),
         _rate("PROC-CHAMFER", "PROCESS", "Chamfering", "", "job", 120, 65, "Starter rate - edit in Rate Master"),
-        _rate("PROC-MACHINE", "PROCESS", "General Machining", "", "job", 700, 90, "Starter rate - edit in Rate Master"),
+        _rate("PROC-MACHINE", "PROCESS", "General Machining", "", "hr", 700, 90, "Starter hourly machine rate - edit in Rate Master"),
+        _rate("PROC-MILL", "PROCESS", "CNC Milling", "", "hr", 800, 90, "Starter hourly machine rate - edit in Rate Master"),
+        _rate("PROC-MANUAL-MILL", "PROCESS", "Manual Milling", "", "hr", 550, 80, "Starter hourly machine rate - edit in Rate Master"),
+        _rate("PROC-SHEAR", "PROCESS", "Shearing", "", "job", 250, 65, "Starter job rate - edit in Rate Master"),
+        _rate("PROC-PLASMA", "PROCESS", "Plasma Cutting", "", "job", 500, 75, "Starter job rate - edit in Rate Master"),
+        _rate("PROC-WATERJET", "PROCESS", "Waterjet Cutting", "", "job", 800, 75, "Starter job rate - edit in Rate Master"),
+        _rate("PROC-HAND-GRIND", "PROCESS", "Hand Grinding / Cut-off", "", "hr", 350, 70, "Starter hourly labour/machine allowance - edit in Rate Master"),
 
         _rate("LAB-FAB", "LABOUR", "Fabricator", "", "hr", 350, 65, "Skilled fabricator labour"),
         _rate("LAB-TIG", "LABOUR", "TIG Welder", "", "hr", 450, 75, "TIG welder labour"),
@@ -167,6 +175,82 @@ def default_rate_items():
     ]
 
 
+def _repair_default_rates(existing_rates: list[dict] | None) -> tuple[list[dict], int]:
+    """
+    Ensure every built-in starter Rate Master row exists.
+
+    Rules:
+    - Never overwrite a positive engineer-entered rate.
+    - Re-add a built-in row if it was missing.
+    - Fill a zero/blank built-in rate from the starter default.
+    - Fill blank metadata only.
+    - Keep all custom/user-created Rate Master rows.
+    """
+    defaults = default_rate_items()
+    rows = [
+        dict(row)
+        for row in (existing_rates or [])
+        if isinstance(row, dict)
+    ]
+
+    by_id = {
+        str(row.get("id") or ""): row
+        for row in rows
+        if row.get("id")
+    }
+
+    changed = 0
+
+    for default in defaults:
+        default_id = str(default["id"])
+        row = by_id.get(default_id)
+
+        if row is None:
+            clone = dict(default)
+            rows.append(clone)
+            by_id[default_id] = clone
+            changed += 1
+            continue
+
+        # Preserve approved/manual positive prices. Only repair missing/zero values.
+        if float(row.get("price", 0) or 0) <= 0 and float(default.get("price", 0) or 0) > 0:
+            row["price"] = default["price"]
+            row["updated_at"] = now()
+            changed += 1
+
+        for key in ("category", "name", "grade", "unit"):
+            if not str(row.get(key) or "").strip():
+                row[key] = default.get(key, "")
+                changed += 1
+
+        if row.get("active") is None:
+            row["active"] = True
+            changed += 1
+
+        if row.get("critical_score") is None:
+            row["critical_score"] = default.get("critical_score", 50)
+            changed += 1
+
+        notes = str(row.get("notes") or "").strip()
+        if not notes or notes.upper().startswith("ENTER APPROVED"):
+            row["notes"] = default.get("notes", "Starter rate - edit in Rate Master")
+            changed += 1
+
+    return rows, changed
+
+
+def ensure_default_rates() -> tuple[list[dict], int]:
+    current = load("rates", [])
+    repaired, changed = _repair_default_rates(
+        current if isinstance(current, list) else []
+    )
+
+    if changed or not isinstance(current, list):
+        save("rates", repaired)
+
+    return repaired, changed
+
+
 def ensure_data():
     current_settings = load("settings", None)
 
@@ -179,45 +263,8 @@ def ensure_data():
         }
         save("settings", merged_settings)
 
-    existing_rates = load("rates", None)
-    defaults = default_rate_items()
-
-    if not isinstance(existing_rates, list):
-        save("rates", defaults)
-    else:
-        existing_ids = {
-            row.get("id")
-            for row in existing_rates
-            if isinstance(row, dict)
-        }
-
-        merged_rates = existing_rates + [
-            row
-            for row in defaults
-            if row.get("id") not in existing_ids
-        ]
-
-        starter_by_id = {
-            row["id"]: row
-            for row in defaults
-        }
-
-        for row in merged_rates:
-            default_row = starter_by_id.get(row.get("id"))
-
-            if (
-                default_row
-                and float(row.get("price", 0) or 0) == 0
-                and float(default_row.get("price", 0) or 0) > 0
-                and str(row.get("notes", "")).upper().startswith(
-                    "ENTER APPROVED"
-                )
-            ):
-                row["price"] = default_row["price"]
-                row["notes"] = "Starter rate - edit in Rate Master"
-                row["updated_at"] = now()
-
-        save("rates", merged_rates)
+    # Always guarantee the complete built-in starter Rate Master.
+    ensure_default_rates()
 
     for name, default in [
         ("extractions", []),
@@ -241,7 +288,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.6.6")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.7.5")
 
 _allowed_origins = [
     "http://localhost:3000",
@@ -302,6 +349,18 @@ class Row(BaseModel):
 
 class CostReq(BaseModel):
     rows: list[Row]
+    # Commercial percentages are controlled in Settings.
+    # These legacy percentage fields remain accepted for backward compatibility,
+    # but the UI no longer edits them directly on the costing sheet.
+    material_wastage_pct: float | None = None
+    overhead_pct: float | None = None
+    markup_pct: float | None = None
+
+    # Engineer-editable commercial amount overrides on the cost sheet.
+    material_wastage_override: float | None = None
+    overhead_override: float | None = None
+    markup_override: float | None = None
+    selling_price_override: float | None = None
 
 
 class RateSyncReq(BaseModel):
@@ -344,6 +403,10 @@ class QuoteReq(BaseModel):
     summary: Summary
     rows: list[Row] = Field(default_factory=list)
     status: str = "Draft"
+
+
+class QuoteRenameReq(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
 
 
 class ExportReq(BaseModel):
@@ -457,47 +520,111 @@ def row_from_rate(
     )
 
 
-def calc(rows: list[Row]) -> Summary:
+def calc(
+    rows: list[Row],
+    material_wastage_pct: float | None = None,
+    overhead_pct: float | None = None,
+    markup_pct: float | None = None,
+    material_wastage_override: float | None = None,
+    overhead_override: float | None = None,
+    markup_override: float | None = None,
+    selling_price_override: float | None = None,
+) -> Summary:
+    """
+    Costing rules:
+    - Material/process/labour values come from the cost rows / Rate Master.
+    - Commercial PERCENTAGES come from Settings.
+    - Commercial AMOUNTS may be manually overridden in the cost sheet.
+    - Legacy explicit percentage inputs are accepted only for compatibility.
+    """
     settings = load("settings", defaults_settings())
+
     waste_rate = find_rate("COMMERCIAL", "Material Wastage")
     overhead_rate = find_rate("COMMERCIAL", "Factory Overhead")
     markup_rate = find_rate("COMMERCIAL", "Profit / Markup")
 
-    waste_pct = float(waste_rate.get("price")) if waste_rate else float(settings["material_wastage_pct"])
-    overhead_pct = float(overhead_rate.get("price")) if overhead_rate else float(settings["overhead_pct"])
-    markup_pct = float(markup_rate.get("price")) if markup_rate else float(settings["markup_pct"])
+    # Settings are the user-controlled source of truth for these percentages.
+    default_waste = float(settings["material_wastage_pct"])
+    default_overhead = float(settings["overhead_pct"])
+    default_markup = float(settings["markup_pct"])
 
-    direct = sum(max(0, r.costingQty) * max(0, r.rate) for r in rows)
-    material = sum(
+    # Backward-compatible API callers can still explicitly provide a percentage.
+    waste_pct = (
+        max(0.0, float(material_wastage_pct))
+        if material_wastage_pct is not None
+        else default_waste
+    )
+    overhead_pct_value = (
+        max(0.0, float(overhead_pct))
+        if overhead_pct is not None
+        else default_overhead
+    )
+    markup_pct_value = (
+        max(0.0, float(markup_pct))
+        if markup_pct is not None
+        else default_markup
+    )
+
+    direct = sum(
         max(0, r.costingQty) * max(0, r.rate)
         for r in rows
-        if r.category.upper() == "MATERIAL"
     )
+
     material_for_wastage = sum(
         max(0, r.costingQty) * max(0, r.rate)
         for r in rows
         if r.category.upper() == "MATERIAL"
         and r.id != "ai-material-stock"
     )
-    wastage = material_for_wastage * waste_pct / 100
-    overhead = (direct + wastage) * overhead_pct / 100
+
+    automatic_wastage = material_for_wastage * waste_pct / 100
+    wastage = (
+        max(0.0, float(material_wastage_override))
+        if material_wastage_override is not None
+        else automatic_wastage
+    )
+
+    automatic_overhead = (direct + wastage) * overhead_pct_value / 100
+    overhead = (
+        max(0.0, float(overhead_override))
+        if overhead_override is not None
+        else automatic_overhead
+    )
+
     manufacturing = direct + wastage + overhead
-    markup = manufacturing * markup_pct / 100
+
+    automatic_markup = manufacturing * markup_pct_value / 100
+    markup = (
+        max(0.0, float(markup_override))
+        if markup_override is not None
+        else automatic_markup
+    )
+
+    selling_price = manufacturing + markup
+
+    if selling_price_override is not None:
+        selling_price = max(0.0, float(selling_price_override))
+
     return Summary(
         direct_cost=round(direct, 2),
         material_wastage=round(wastage, 2),
         overhead=round(overhead, 2),
         manufacturing_cost=round(manufacturing, 2),
         markup=round(markup, 2),
-        selling_price=round(manufacturing + markup, 2),
+        selling_price=round(selling_price, 2),
         material_wastage_pct=round(waste_pct, 2),
-        overhead_pct=round(overhead_pct, 2),
-        markup_pct=round(markup_pct, 2),
-        material_wastage_critical=int(waste_rate.get("critical_score", 50)) if waste_rate else 50,
-        overhead_critical=int(overhead_rate.get("critical_score", 50)) if overhead_rate else 50,
-        markup_critical=int(markup_rate.get("critical_score", 50)) if markup_rate else 50,
+        overhead_pct=round(overhead_pct_value, 2),
+        markup_pct=round(markup_pct_value, 2),
+        material_wastage_critical=int(
+            waste_rate.get("critical_score", 50)
+        ) if waste_rate else 50,
+        overhead_critical=int(
+            overhead_rate.get("critical_score", 50)
+        ) if overhead_rate else 50,
+        markup_critical=int(
+            markup_rate.get("critical_score", 50)
+        ) if markup_rate else 50,
     )
-
 
 
 def clean_filename_description(filename: str) -> str:
@@ -1079,11 +1206,24 @@ def ai_confidence_label(score) -> Literal["Exact", "Estimated", "Assumed"]:
 
 
 def process_rate_id(process_name: str) -> str | None:
-    """Map AI process wording to Rate Master IDs."""
+    """Map AI process wording to Rate Master IDs, including user-added processes."""
     name = _norm(process_name)
+
+    # User-maintained Rate Master is the source of truth. If Vision AI returns
+    # the exact process name saved by the engineer, use that rate directly.
+    for rate in rates_list():
+        if (
+            rate.get("active", True)
+            and rate.get("category") == "PROCESS"
+            and _norm(str(rate.get("name") or "")) == name
+        ):
+            return str(rate.get("id") or "") or None
 
     rules = [
         (("LASER",), "PROC-LASER"),
+        (("SHEAR", "GUILLOTINE"), "PROC-SHEAR"),
+        (("PLASMA",), "PROC-PLASMA"),
+        (("WATERJET", "WATERJETCUT"), "PROC-WATERJET"),
         (("PRESSBRAKE", "BEND", "FORMING"), "PROC-BEND"),
         (("TIG",), "PROC-TIG"),
         (("MIG",), "PROC-MIG"),
@@ -1097,6 +1237,9 @@ def process_rate_id(process_name: str) -> str | None:
         (("INSPECT", "QC"), "PROC-QC"),
         (("SAW", "RAWCUT", "STOCKCUT"), "PROC-SAW"),
         (("CNCTURN", "TURNING", "LATHE"), "PROC-TURN"),
+        (("CNCMILL", "MILLING"), "PROC-MILL"),
+        (("MANUALMILL",), "PROC-MANUAL-MILL"),
+        (("HANDGRIND", "CUTOFF", "CUT-OFF"), "PROC-HAND-GRIND"),
         (("BORING", "BORE"), "PROC-BORE"),
         (("DRILL",), "PROC-BORE"),
         (("THREAD", "TAPPING", "TAP"), "PROC-THREAD"),
@@ -1151,6 +1294,35 @@ _INTERNAL_STOCK_SIZES_MM = {
         (1250.0, 2500.0),
         (1500.0, 3000.0),
         (2000.0, 4000.0),
+    ],
+    "MILDSTEEL": [
+        (500.0, 500.0),
+        (1000.0, 2000.0),
+        (1250.0, 2500.0),
+        (1500.0, 3000.0),
+    ],
+    "CARBONSTEEL": [
+        (500.0, 500.0),
+        (1000.0, 2000.0),
+        (1250.0, 2500.0),
+        (1500.0, 3000.0),
+    ],
+    "STRUCTURALSTEEL": [
+        (500.0, 500.0),
+        (1000.0, 2000.0),
+        (1250.0, 2500.0),
+        (1500.0, 3000.0),
+    ],
+    "GALVANIZEDSTEEL": [
+        (500.0, 500.0),
+        (1000.0, 2000.0),
+        (1250.0, 2500.0),
+        (1500.0, 3000.0),
+    ],
+    "BRASS": [
+        (500.0, 500.0),
+        (1000.0, 2000.0),
+        (1220.0, 2440.0),
     ],
 }
 
@@ -1288,10 +1460,24 @@ def _internal_part_length_width(
     return max(1.0, length), max(1.0, width)
 
 
-def _internal_sheet_material_quantity_kg(
+_MATERIAL_BLANK_MARGIN_MM = 100.0
+
+
+def _internal_sheet_material_basis(
     ai_data: dict,
     drawing: Drawing,
-) -> float | None:
+) -> tuple[float, float, float] | None:
+    """
+    Cost sheet/plate material from the actual extracted part envelope plus a
+    simple 100 mm allowance on BOTH overall dimensions.
+
+    Example:
+      drawing envelope = 300 x 400 mm
+      costing blank    = 400 x 500 mm
+
+    We intentionally do NOT charge a full supplier sheet here. The user can
+    still edit the resulting kg quantity/rate in the engineering cost sheet.
+    """
     if not _is_sheet_based_part(ai_data, drawing):
         return None
 
@@ -1308,50 +1494,227 @@ def _internal_sheet_material_quantity_kg(
         return None
 
     part_length, part_width = size
+    blank_length = max(1.0, part_length + _MATERIAL_BLANK_MARGIN_MM)
+    blank_width = max(1.0, part_width + _MATERIAL_BLANK_MARGIN_MM)
+
     product_qty = max(1, int(drawing.quantity or 1))
     density = _internal_density(ai_data, drawing)
-    stock_catalog = _internal_stock_catalog(ai_data, drawing)
 
-    # Unknown family: use exactly what is required.
-    if not stock_catalog:
-        total_area = part_length * part_width * product_qty
-        return round(total_area * thickness * density, 4)
+    total_area_mm2 = blank_length * blank_width * product_qty
+    total_weight_kg = total_area_mm2 * thickness * density
 
-    candidates: list[tuple[float, float, float, int]] = []
+    return (
+        round(total_weight_kg, 4),
+        round(blank_length, 1),
+        round(blank_width, 1),
+    )
 
-    for stock_length, stock_width in stock_catalog:
-        normal_fit = (
-            math.floor(stock_length / part_length)
-            * math.floor(stock_width / part_width)
-            if part_length <= stock_length and part_width <= stock_width
-            else 0
-        )
 
-        rotated_fit = (
-            math.floor(stock_length / part_width)
-            * math.floor(stock_width / part_length)
-            if part_width <= stock_length and part_length <= stock_width
-            else 0
-        )
+def _internal_sheet_material_quantity_kg(
+    ai_data: dict,
+    drawing: Drawing,
+) -> float | None:
+    basis = _internal_sheet_material_basis(ai_data, drawing)
+    return basis[0] if basis else None
 
-        fit = max(normal_fit, rotated_fit)
-        if fit <= 0:
+
+def _feature_quantity(items: list, default_each: int = 1) -> int:
+    total = 0
+    for item in items or []:
+        if not isinstance(item, dict):
             continue
+        try:
+            qty = int(item.get("quantity") or default_each)
+        except (TypeError, ValueError):
+            qty = default_each
+        total += max(0, qty)
+    return total
 
-        purchase_count = max(1, math.ceil(product_qty / fit))
-        total_area = stock_length * stock_width * purchase_count
 
-        candidates.append(
-            (total_area, stock_length, stock_width, purchase_count)
+def _max_drawing_dimension(ai_data: dict) -> float:
+    values: list[float] = []
+    for dim in ai_data.get("dimensions") or []:
+        if not isinstance(dim, dict):
+            continue
+        try:
+            value = float(dim.get("value_mm") or 0)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            values.append(value)
+    return max(values, default=100.0)
+
+
+def _is_rotational_part(ai_data: dict, drawing: Drawing) -> bool:
+    text = _norm(
+        f"{drawing.description} {' '.join(str(x) for x in (ai_data.get('notes') or []))}"
+    )
+    if any(word in text for word in [
+        "SHAFT", "BUSH", "BUSHING", "PIN", "SPINDLE", "SLEEVE",
+        "ROLLER", "CYLINDER", "CYLINDRICAL", "ROUND BAR", "ROUNDBAR",
+    ]):
+        return True
+
+    diameter_signals = 0
+    for dim in ai_data.get("dimensions") or []:
+        if not isinstance(dim, dict):
+            continue
+        label = _norm(str(dim.get("label") or dim.get("type") or ""))
+        if any(key in label for key in ["DIAMETER", "DIA", "OD", "ID"]):
+            diameter_signals += 1
+
+    return diameter_signals >= 1 and not _is_sheet_based_part(ai_data, drawing)
+
+
+def _recommended_processes(ai_data: dict, drawing: Drawing) -> list[tuple[str, str, int]]:
+    """Research-informed starting recommendations; engineer remains final authority."""
+    recommendations: list[tuple[str, str, int]] = []
+    sheet = _is_sheet_based_part(ai_data, drawing)
+    rotational = _is_rotational_part(ai_data, drawing)
+    holes = _feature_quantity(ai_data.get("holes") or [], 1)
+    threads = _feature_quantity(ai_data.get("threads") or [], 1)
+    chamfers = _feature_quantity(ai_data.get("chamfers") or [], 1)
+    bends = _feature_quantity(ai_data.get("bends") or [], 1)
+
+    if sheet:
+        recommendations.append((
+            "PROC-LASER",
+            "Uniform-thickness sheet/plate profile: default blanking recommendation; change from dropdown if your shop uses shear/plasma/waterjet/hand cutting.",
+            78,
+        ))
+        if bends:
+            recommendations.append((
+                "PROC-BEND",
+                f"{bends} bend feature(s) detected.",
+                90,
+            ))
+    elif rotational:
+        recommendations.append((
+            "PROC-TURN",
+            "Rotational/cylindrical geometry detected; turning is the default primary machining route.",
+            88,
+        ))
+        # Cross holes / non-rotational secondary features can require milling.
+        if holes >= 2 and any(
+            word in _norm(str(hole.get("type") or hole.get("callout") or ""))
+            for hole in (ai_data.get("holes") or []) if isinstance(hole, dict)
+            for word in ["SLOT", "CROSS", "SIDE", "OFFAXIS"]
+        ):
+            recommendations.append((
+                "PROC-MILL",
+                "Rotational body also has non-axis features; secondary milling may be required.",
+                70,
+            ))
+    else:
+        solid_feature_count = holes + threads + chamfers
+        if solid_feature_count or (ai_data.get("dimensions") and not sheet):
+            recommendations.append((
+                "PROC-MILL",
+                "Non-sheet prismatic/solid geometry with machined features: CNC milling is the default starting route.",
+                72,
+            ))
+
+    if threads and not sheet:
+        recommendations.append(("PROC-THREAD", f"{threads} thread feature(s) detected.", 90))
+    if chamfers and not sheet:
+        recommendations.append(("PROC-CHAMFER", f"{chamfers} chamfer feature(s) detected.", 85))
+
+    return recommendations
+
+
+_TIME_UNIT_HOURS = {
+    "SEC": 1.0 / 3600.0,
+    "SECOND": 1.0 / 3600.0,
+    "SECONDS": 1.0 / 3600.0,
+    "MIN": 1.0 / 60.0,
+    "MINUTE": 1.0 / 60.0,
+    "MINUTES": 1.0 / 60.0,
+    "HR": 1.0,
+    "HOUR": 1.0,
+    "HOURS": 1.0,
+    "SHIFT": 8.0,
+    "DAY": 8.0,
+}
+
+
+def _time_unit_hours(unit: str) -> float | None:
+    return _TIME_UNIT_HOURS.get(_norm(unit))
+
+
+def _hours_to_rate_quantity(hours: float, unit: str) -> float:
+    """Convert an engineering time estimate in hours into the Rate Master unit."""
+    hours_per_unit = _time_unit_hours(unit)
+    if hours_per_unit is None:
+        return 1.0
+    qty = max(0.0, float(hours or 0)) / hours_per_unit
+    if _norm(unit) in {"SEC", "SECOND", "SECONDS"}:
+        return round(qty)
+    if _norm(unit) in {"MIN", "MINUTE", "MINUTES"}:
+        return round(qty, 1)
+    return round(qty, 2)
+
+
+def _rate_quantity_to_hours(quantity: float, unit: str) -> float | None:
+    hours_per_unit = _time_unit_hours(unit)
+    if hours_per_unit is None:
+        return None
+    return max(0.0, float(quantity or 0)) * hours_per_unit
+
+
+def _estimated_qty_for_process(
+    rate_id: str | None,
+    unit: str,
+    ai_data: dict,
+    drawing: Drawing,
+) -> float:
+    """
+    Machine-time processes are estimated in hours internally, then converted
+    to the engineer's selected Rate Master unit (sec/min/hr/shift/day).
+    Fixed units such as job/setup remain quantity 1.
+    """
+    if _time_unit_hours(unit) is not None:
+        return _hours_to_rate_quantity(
+            _estimate_process_hours(rate_id, ai_data, drawing),
+            unit,
         )
+    return 1.0
 
-    # Larger than known formats: use exactly what is required.
-    if not candidates:
-        total_area = part_length * part_width * product_qty
-        return round(total_area * thickness * density, 4)
 
-    total_area, _, _, _ = min(candidates, key=lambda item: item[0])
-    return round(total_area * thickness * density, 4)
+def _estimated_time_note(quantity: float, unit: str) -> str:
+    if _time_unit_hours(unit) is None:
+        return ""
+    return f" · estimated {quantity:g} {unit}"
+
+
+def _estimate_process_hours(rate_id: str | None, ai_data: dict, drawing: Drawing) -> float:
+    """
+    Editable first-pass machine-hour estimate. It is intentionally deterministic,
+    based on drawing size/features, and is NOT treated as a guaranteed cycle time.
+    """
+    max_dim = max(20.0, _max_drawing_dimension(ai_data))
+    size_factor = min(4.0, max(0.5, max_dim / 100.0))
+    holes = _feature_quantity(ai_data.get("holes") or [], 1)
+    threads = _feature_quantity(ai_data.get("threads") or [], 1)
+    chamfers = _feature_quantity(ai_data.get("chamfers") or [], 1)
+    qty = max(1, int(drawing.quantity or 1))
+
+    if rate_id == "PROC-TURN":
+        hours = 0.30 + 0.18 * size_factor + 0.04 * holes + 0.08 * threads + 0.03 * chamfers
+    elif rate_id == "PROC-MILL":
+        hours = 0.45 + 0.24 * size_factor + 0.07 * holes + 0.09 * threads + 0.04 * chamfers
+    elif rate_id == "PROC-MANUAL-MILL":
+        hours = 0.55 + 0.30 * size_factor + 0.09 * holes + 0.10 * threads + 0.05 * chamfers
+    elif rate_id == "PROC-MACHINE":
+        hours = 0.45 + 0.25 * size_factor + 0.06 * holes + 0.08 * threads + 0.04 * chamfers
+    elif rate_id == "PROC-HAND-GRIND":
+        hours = 0.25 + 0.08 * size_factor
+    else:
+        return 1.0
+
+    # Round to quarter-hours so the starting estimate is practical to edit.
+    total = max(0.25, hours * qty)
+    return round(total * 4) / 4
+
 
 def _add_labour_rows(rows: list[Row]) -> None:
     process_ids = {
@@ -1373,22 +1736,30 @@ def _add_labour_rows(rows: list[Row]) -> None:
             return
         labour_added.add(rate_id)
 
+        saved_labour = rate_by_id(rate_id)
+        labour_unit = str(saved_labour.get("unit") or "hr") if saved_labour else "hr"
+        labour_qty = (
+            _hours_to_rate_quantity(hours, labour_unit)
+            if _time_unit_hours(labour_unit) is not None
+            else 1.0
+        )
+
         rows.append(
             row_from_rate(
                 row_id,
                 "LABOUR",
                 item,
-                description,
-                hours,
+                description + _estimated_time_note(labour_qty, labour_unit),
+                labour_qty,
                 "Estimated",
                 rate_id,
-                "hr",
+                labour_unit,
                 fallback_critical=70,
             )
         )
 
     fabrication_ids = {"PROC-LASER", "PROC-BEND", "PROC-STUD", "PROC-SAW"}
-    machining_ids = {"PROC-TURN", "PROC-BORE", "PROC-THREAD", "PROC-CHAMFER", "PROC-MACHINE"}
+    machining_ids = {"PROC-TURN", "PROC-MILL", "PROC-MANUAL-MILL", "PROC-BORE", "PROC-THREAD", "PROC-CHAMFER", "PROC-MACHINE"}
     finishing_ids = {"PROC-GRIND", "PROC-DEBURR", "PROC-POLISH", "PROC-PASS", "PROC-COAT"}
 
     if process_ids & fabrication_ids:
@@ -1410,13 +1781,20 @@ def _add_labour_rows(rows: list[Row]) -> None:
         )
 
     if process_ids & machining_ids:
+        machine_hours = sum(
+            _rate_quantity_to_hours(row.costingQty, row.unit) or 0.0
+            for row in rows
+            if row.category == "PROCESS"
+            and row.rateId in machining_ids
+        )
         machining_count = len(process_ids & machining_ids)
+        estimated_labour = machine_hours if machine_hours > 0 else max(0.75, machining_count * 0.75)
         add_labour(
             "lab-machinist",
             "LAB-MACH",
             "Machinist",
-            max(1.0, round(machining_count * 0.75, 2)),
-            "Default machining labour allowance",
+            round(estimated_labour, 2),
+            "Machinist time follows estimated machining hours; editable before quotation",
         )
 
     if "PROC-TIG" in process_ids:
@@ -1483,9 +1861,22 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
     ))
 
     if drawing.material != "Not detected":
-        internal_material_qty = _internal_sheet_material_quantity_kg(
+        internal_material_basis = _internal_sheet_material_basis(
             ai_data,
             drawing,
+        )
+        internal_material_qty = (
+            internal_material_basis[0]
+            if internal_material_basis
+            else None
+        )
+        material_basis_note = (
+            f"{max(1, drawing.quantity)} part(s) · "
+            f"costing blank {internal_material_basis[1]:g} × "
+            f"{internal_material_basis[2]:g} mm each "
+            f"(drawing envelope + {_MATERIAL_BLANK_MARGIN_MM:g} mm)"
+            if internal_material_basis
+            else f"{max(1, drawing.quantity)} part(s)"
         )
 
         rate_id = material_rate.get("id") if material_rate else None
@@ -1506,7 +1897,7 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
                 "ai-material-stock" if internal_material_qty is not None else "ai-material",
                 "MATERIAL",
                 material_name,
-                f"{max(1, drawing.quantity)} part(s)",
+                material_basis_note,
                 costing_qty,
                 material_row_conf,
                 rate_id,
@@ -1538,19 +1929,59 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
         confidence = ai_confidence_label(process.get("confidence"))
         reason = str(process.get("reason") or "").strip()
 
+        process_unit = saved_rate.get("unit", "job") if saved_rate else "job"
+        process_qty = (
+            _estimated_qty_for_process(rate_id, process_unit, ai_data, drawing)
+            if saved_rate
+            else 1
+        )
+        qty_note = (
+            (reason or "Detected by Vision AI")
+            + _estimated_time_note(process_qty, process_unit)
+        )
+
         rows.append(
             row_from_rate(
                 f"ai-process-{index}",
                 "PROCESS",
                 saved_rate.get("name") if saved_rate else name,
-                reason or "Detected by Vision AI",
-                1,
+                qty_note,
+                process_qty,
                 confidence,
                 rate_id if saved_rate else None,
-                saved_rate.get("unit", "job") if saved_rate else "job",
+                process_unit,
                 fallback_rate=0,
                 fallback_critical=100 if not saved_rate else int(saved_rate.get("critical_score", 80)),
                 fallback_source="RATE MISSING - add process rate in Rate Master" if not saved_rate else "Rate Master",
+            )
+        )
+
+    # Research-informed default process recommendation. The AI-extracted process
+    # remains preferred; these rows only fill gaps and are editable/dropdown-selectable.
+    for rec_index, (rec_rate_id, rec_reason, rec_conf) in enumerate(
+        _recommended_processes(ai_data, drawing),
+        start=1,
+    ):
+        if rec_rate_id in seen:
+            continue
+        saved_rate = rate_by_id(rec_rate_id)
+        if not saved_rate:
+            continue
+        seen.add(rec_rate_id)
+        unit = str(saved_rate.get("unit") or "job")
+        qty = _estimated_qty_for_process(rec_rate_id, unit, ai_data, drawing)
+        drawing_note = rec_reason + _estimated_time_note(qty, unit)
+        rows.append(
+            row_from_rate(
+                f"recommended-process-{rec_index}",
+                "PROCESS",
+                str(saved_rate.get("name") or rec_rate_id),
+                drawing_note,
+                qty,
+                ai_confidence_label(rec_conf),
+                rec_rate_id,
+                unit,
+                fallback_critical=int(saved_rate.get("critical_score", 80)),
             )
         )
 
@@ -1780,7 +2211,7 @@ def root():
     return {
         "service": "dfab-quotation-api",
         "status": "ok",
-        "version": "0.6.6",
+        "version": "0.7.5",
     }
 
 
@@ -1790,7 +2221,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.6.6",
+        "version": "0.7.5",
         "database": "connected" if connected else "unavailable",
     }
 
@@ -1819,43 +2250,127 @@ def put_settings(value: Settings):
 
 @app.get("/api/rates", response_model=list[RateItem])
 def get_rates():
-    return rates_list()
+    repaired, _ = ensure_default_rates()
+    return repaired
+
+
+@app.post("/api/rates/restore-defaults", response_model=list[RateItem])
+def restore_default_rates():
+    """
+    Restore all built-in starter rows and starter values where a built-in
+    row is missing/zero. Positive engineer-entered rates and custom rows stay unchanged.
+    """
+    repaired, _ = ensure_default_rates()
+    return repaired
 
 
 @app.get("/api/rate-catalog")
 def rate_catalog():
+    rows = rates_list()
+
     materials: dict[str, list[str]] = {}
-    for row in rates_list():
+    for row in rows:
         if row.get("category") == "MATERIAL":
-            materials.setdefault(row.get("name", "Material"), [])
-            grade = row.get("grade", "")
-            if grade and grade not in materials[row.get("name", "Material")]:
-                materials[row.get("name", "Material")].append(grade)
+            material_name = str(row.get("name") or "Material")
+            materials.setdefault(material_name, [])
+            grade = str(row.get("grade") or "")
+            if grade and grade not in materials[material_name]:
+                materials[material_name].append(grade)
+
+    base_processes = [
+        "Laser Cutting",
+        "Shearing",
+        "Plasma Cutting",
+        "Waterjet Cutting",
+        "Press Brake Forming",
+        "CNC Turning",
+        "CNC Milling",
+        "Manual Milling",
+        "General Machining",
+        "Saw / Raw Stock Cutting",
+        "Drilling / Boring",
+        "Threading / Tapping",
+        "Chamfering",
+        "TIG Welding",
+        "MIG Welding",
+        "General / Tack Welding",
+        "Stud Welding",
+        "Grinding & Flush",
+        "Hand Grinding / Cut-off",
+        "Deburring",
+        "Polishing",
+        "Passivation",
+        "Powder Coating",
+        "Inspection & Handling",
+    ]
+
+    base_labour = [
+        "Fabricator",
+        "Machinist",
+        "Machine Operator",
+        "TIG Welder",
+        "MIG Welder",
+        "Welder / Fabricator",
+        "Finishing Operator",
+        "QC / Handling",
+    ]
+
+    # sec/min/hr/job are deliberately explicit because the selected Rate Master
+    # unit directly controls how auto-estimated quantities are converted/costed.
+    base_units = [
+        "sec",
+        "min",
+        "hr",
+        "shift",
+        "day",
+        "job",
+        "setup",
+        "each",
+        "piece",
+        "kg",
+        "g",
+        "ton",
+        "mm",
+        "m",
+        "m2",
+        "m3",
+        "hole",
+        "stud",
+        "bend",
+        "cut",
+        "weld",
+        "%",
+    ]
+
+    def unique(values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        result: list[str] = []
+        for value in values:
+            clean = str(value or "").strip()
+            key = clean.casefold()
+            if clean and key not in seen:
+                seen.add(key)
+                result.append(clean)
+        return result
+
+    saved_processes = [
+        str(row.get("name") or "")
+        for row in rows
+        if row.get("category") == "PROCESS"
+    ]
+    saved_labour = [
+        str(row.get("name") or "")
+        for row in rows
+        if row.get("category") == "LABOUR"
+    ]
+    saved_units = [str(row.get("unit") or "") for row in rows]
+
     return {
         "materials": materials,
-        "processes": [
-            "Laser Cutting",
-            "Press Brake Forming",
-            "TIG Welding",
-            "MIG Welding",
-            "Stud Welding",
-            "Grinding & Flush",
-            "Deburring",
-            "Drilling",
-            "Polishing",
-            "Passivation",
-            "Powder Coating",
-            "Inspection & Handling",
-        ],
-        "labour": [
-            "Fabricator",
-            "TIG Welder",
-            "MIG Welder",
-            "Finishing Operator",
-            "QC / Handling",
-        ],
+        "processes": unique(base_processes + saved_processes),
+        "labour": unique(base_labour + saved_labour),
         "commercial": ["Material Wastage", "Factory Overhead", "Profit / Markup"],
-        "units": ["kg", "job", "m", "m2", "stud", "hole", "hr", "each", "%"],
+        "units": unique(base_units + saved_units),
     }
 
 
@@ -2044,15 +2559,40 @@ def delete_rate(rate_id: str):
 @app.post("/api/rates/apply", response_model=list[Row])
 def apply_saved_rates(value: CostReq):
     updated: list[Row] = []
+
     for row in value.rows:
         saved = rate_by_id(row.rateId)
+
         if saved:
+            old_unit = str(row.unit or "")
+            new_unit = str(saved.get("unit") or old_unit)
+
+            # Preserve the same predicted duration when the engineer changes
+            # hr -> min -> sec (or back) in Rate Master.
+            old_hours = _rate_quantity_to_hours(row.costingQty, old_unit)
+            if old_hours is not None and _time_unit_hours(new_unit) is not None:
+                row.costingQty = _hours_to_rate_quantity(old_hours, new_unit)
+            elif _time_unit_hours(new_unit) is None and old_hours is not None:
+                # Switching a timed rate to a fixed per-job/per-setup unit.
+                row.costingQty = 1.0
+
+            row.category = str(saved.get("category") or row.category)
+            saved_name = str(saved.get("name") or row.item)
+            saved_grade = str(saved.get("grade") or "")
+
+            row.item = (
+                f"{saved_name} — {saved_grade}"
+                if row.category == "MATERIAL" and saved_grade
+                else saved_name
+            )
             row.rate = float(saved.get("price", row.rate))
-            row.unit = saved.get("unit", row.unit)
+            row.unit = new_unit
             row.criticalScore = int(saved.get("critical_score", row.criticalScore))
             row.rateSource = "Rate Master"
             row.cost = row.costingQty * row.rate
+
         updated.append(row)
+
     return updated
 
 
@@ -2205,6 +2745,7 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
         "preview_image": preview_image,
         "drawing": drawing,
         "rows": rows,
+        "summary": calc(rows),
         "ai_raw": ai_raw,
     }
 
@@ -2230,7 +2771,16 @@ def review(value: ReviewReq):
 
 @app.post("/api/calculate", response_model=Summary)
 def calculate(value: CostReq):
-    return calc(value.rows)
+    return calc(
+        value.rows,
+        material_wastage_pct=value.material_wastage_pct,
+        overhead_pct=value.overhead_pct,
+        markup_pct=value.markup_pct,
+        material_wastage_override=value.material_wastage_override,
+        overhead_override=value.overhead_override,
+        markup_override=value.markup_override,
+        selling_price_override=value.selling_price_override,
+    )
 
 
 @app.get("/api/dataset/stats")
@@ -2242,13 +2792,20 @@ def dataset_stats():
         {
             "version": 1,
             "reviewed_at_version": 0,
+            "training_at_version": 0,
         },
     )
 
     reviewed = counts["reviews"]
+    training_samples = counts.get("training_samples", 0)
+
     new_reviewed = max(
         0,
         reviewed - meta.get("reviewed_at_version", 0),
+    )
+    new_training = max(
+        0,
+        training_samples - meta.get("training_at_version", 0),
     )
 
     threshold = max(
@@ -2259,38 +2816,144 @@ def dataset_stats():
     return {
         "extractions": counts["extractions"],
         "reviewed_samples": reviewed,
+        "training_samples": training_samples,
         "unique_files": counts["unique_files"],
         "dataset_version": meta.get("version", 1),
         "new_reviewed_since_version": new_reviewed,
+        "new_training_since_version": new_training,
         "training_batch_threshold": threshold,
-        "batch_ready": new_reviewed >= threshold,
+        "batch_ready": new_training >= threshold,
         "auto_dataset_capture": settings["auto_dataset_capture"],
         "learn_from_corrections": settings["learn_from_corrections"],
     }
 
 
+@app.post("/api/dataset/training")
+async def add_training_sample(
+    file: UploadFile = File(...),
+    extraction_id: str = Form(""),
+    file_hash: str = Form(""),
+    customer: str = Form(""),
+    drawing_json: str = Form("{}"),
+    rows_json: str = Form("[]"),
+    summary_json: str = Form("{}"),
+    ai_raw_json: str = Form("{}"),
+):
+    """
+    Add a quotation-approved drawing to the curated Training Dataset.
+    This endpoint is called ONLY after the user explicitly clicks
+    'Send to Training' after quotation download.
+    """
+    content = await file.read()
+
+    if not content:
+        raise HTTPException(status_code=400, detail="Training drawing file is empty.")
+
+    actual_hash = sha256(content).hexdigest()
+
+    try:
+        drawing = json.loads(drawing_json or "{}")
+        rows = json.loads(rows_json or "[]")
+        summary = json.loads(summary_json or "{}")
+        ai_raw = json.loads(ai_raw_json or "{}")
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail="Invalid training metadata JSON.") from exc
+
+    # The uploaded original file is authoritative.
+    final_hash = actual_hash
+    if file_hash and file_hash != actual_hash:
+        # Do not reject: browser/file metadata may come from an earlier upload
+        # object, but record the actual bytes hash as the dataset key.
+        pass
+
+    record = {
+        "id": f"TRN-{final_hash[:16].upper()}",
+        "created_at": now(),
+        "filename": Path(file.filename or "drawing.bin").name,
+        "content_type": file.content_type or "application/octet-stream",
+        "file_hash": final_hash,
+        "source_file_hash": file_hash,
+        "extraction_id": extraction_id,
+        "customer": customer,
+        "drawing": drawing,
+        "rows": rows,
+        "summary": summary,
+        "ai_raw": ai_raw,
+        "file_size": len(content),
+        "training_source": "quotation_download_confirmation",
+    }
+
+    _, total = upsert_training_sample(record, content)
+
+    return {
+        "status": "saved",
+        "id": record["id"],
+        "drawing_no": str(drawing.get("drawing_no") or ""),
+        "training_samples": total,
+    }
+
+
 @app.get("/api/dataset/export")
 def export_dataset():
-    reviews = load("reviews", [])
-    lines = "".join(
-        json.dumps(
-            {
-                "input": {
-                    "file_hash": r["file_hash"],
-                    "extraction_id": r["extraction_id"],
-                },
-                "target": {"drawing": r["drawing"], "rows": r["rows"]},
-            },
-            ensure_ascii=False,
+    """
+    Export ONLY explicitly approved training samples.
+    ZIP contains original drawing files plus JSONL target data.
+    """
+    samples = training_samples_for_export()
+    out = BytesIO()
+
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+        jsonl_lines: list[str] = []
+
+        for index, (payload, file_content, filename) in enumerate(samples, 1):
+            safe_name = re.sub(
+                r"[^A-Za-z0-9._-]+",
+                "_",
+                Path(filename or f"drawing_{index}.bin").name,
+            ).strip("._") or f"drawing_{index}.bin"
+
+            sample_id = str(payload.get("id") or f"sample_{index}")
+            archive_name = f"drawings/{index:04d}_{sample_id}_{safe_name}"
+
+            if file_content:
+                archive.writestr(archive_name, file_content)
+
+            jsonl_lines.append(
+                json.dumps(
+                    {
+                        "input": {
+                            "training_id": sample_id,
+                            "file_hash": payload.get("file_hash", ""),
+                            "original_file": archive_name,
+                            "filename": payload.get("filename", filename),
+                            "content_type": payload.get("content_type", ""),
+                            "extraction_id": payload.get("extraction_id", ""),
+                            "ai_raw": payload.get("ai_raw", {}),
+                        },
+                        "target": {
+                            "drawing": payload.get("drawing", {}),
+                            "rows": payload.get("rows", []),
+                            "summary": payload.get("summary", {}),
+                            "customer": payload.get("customer", ""),
+                        },
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        archive.writestr(
+            "training_dataset.jsonl",
+            ("\n".join(jsonl_lines) + ("\n" if jsonl_lines else "")).encode("utf-8"),
         )
-        + "\n"
-        for r in reviews
-    )
-    out = BytesIO(lines.encode("utf-8"))
+
+    out.seek(0)
+
     return StreamingResponse(
         out,
-        media_type="application/x-ndjson",
-        headers={"Content-Disposition": 'attachment; filename="reviewed_training_dataset.jsonl"'},
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="quotation_training_dataset.zip"'
+        },
     )
 
 
@@ -2322,6 +2985,11 @@ def add_quote(value: QuoteReq):
         "id": "Q-" + datetime.now().strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:5].upper(),
         "created_at": now(),
         "customer": value.customer,
+        "name": (
+            f"{value.drawing.drawing_no} - {value.customer}"
+            if value.drawing.drawing_no
+            else f"Quotation - {value.customer}"
+        ),
         "drawing_no": value.drawing.drawing_no,
         "revision": value.drawing.revision,
         "description": value.drawing.description,
@@ -2351,6 +3019,11 @@ def add_batch_quote(value: BatchSaveReq):
                 "id": "Q-" + datetime.now().strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:5].upper(),
                 "created_at": now(),
                 "customer": value.customer,
+                "name": (
+                    f"{item.drawing.drawing_no} - {value.customer}"
+                    if item.drawing.drawing_no
+                    else f"Quotation - {value.customer}"
+                ),
                 "drawing_no": item.drawing.drawing_no,
                 "revision": item.drawing.revision,
                 "description": item.drawing.description,
@@ -2371,6 +3044,7 @@ def add_batch_quote(value: BatchSaveReq):
             "id": "Q-" + datetime.now().strftime("%Y%m%d") + "-" + uuid.uuid4().hex[:5].upper(),
             "created_at": now(),
             "customer": value.customer,
+            "name": f"Merged {len(value.items)} Drawings - {value.customer}",
             "drawing_no": f"{len(value.items)} DRAWINGS",
             "revision": "MULTI",
             "description": "Merged quotation: " + ", ".join(drawing_numbers[:8]),
@@ -2404,6 +3078,40 @@ def add_batch_quote(value: BatchSaveReq):
 @app.get("/api/quotations")
 def quotations():
     return load("quotations", [])
+
+
+@app.put("/api/quotations/{quote_id}/rename")
+def rename_quotation(quote_id: str, value: QuoteRenameReq):
+    rows = load("quotations", [])
+    clean_name = value.name.strip()
+
+    for row in rows:
+        if row.get("id") == quote_id:
+            row["name"] = clean_name
+            row["updated_at"] = now()
+            save("quotations", rows)
+            return row
+
+    raise HTTPException(status_code=404, detail="Quotation not found.")
+
+
+@app.delete("/api/quotations/{quote_id}")
+def delete_quotation(quote_id: str):
+    rows = load("quotations", [])
+    next_rows = [
+        row
+        for row in rows
+        if row.get("id") != quote_id
+    ]
+
+    if len(next_rows) == len(rows):
+        raise HTTPException(status_code=404, detail="Quotation not found.")
+
+    save("quotations", next_rows)
+    return {
+        "status": "deleted",
+        "id": quote_id,
+    }
 
 
 @app.post("/api/export/excel")

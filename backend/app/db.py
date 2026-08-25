@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     Float,
     Integer,
+    LargeBinary,
     String,
     Text,
     create_engine,
@@ -166,6 +167,22 @@ class CostRowRecord(Base):
     unit: Mapped[str] = mapped_column(String(30), default="")
     rate: Mapped[float] = mapped_column(Float, default=0)
     cost: Mapped[float] = mapped_column(Float, default=0)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+
+
+class TrainingSampleRecord(Base):
+    __tablename__ = "training_samples"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    created_at: Mapped[str] = mapped_column(String(64), default="", index=True)
+    filename: Mapped[str] = mapped_column(Text, default="")
+    content_type: Mapped[str] = mapped_column(String(120), default="")
+    file_hash: Mapped[str] = mapped_column(String(128), default="", unique=True, index=True)
+    extraction_id: Mapped[str] = mapped_column(String(80), default="", index=True)
+    drawing_no: Mapped[str] = mapped_column(String(120), default="", index=True)
+    customer: Mapped[str] = mapped_column(Text, default="")
+    file_size: Mapped[int] = mapped_column(Integer, default=0)
+    file_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
     payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
 
 
@@ -823,6 +840,84 @@ def latest_review_by_hash(file_hash: str) -> dict | None:
         return row.payload if row else None
 
 
+def upsert_training_sample(item: dict, file_content: bytes) -> tuple[dict, int]:
+    """
+    Curated training store. One source drawing hash maps to one current approved
+    training sample, so repeatedly sending the same drawing updates it instead
+    of overweighting the dataset with duplicates.
+    """
+    if not isinstance(item, dict):
+        raise ValueError("Training sample payload is invalid.")
+
+    file_hash = str(item.get("file_hash") or "")
+    if not file_hash:
+        raise ValueError("Training sample file_hash is required.")
+
+    sample_id = str(item.get("id") or f"TRN-{file_hash[:16].upper()}")
+    drawing = item.get("drawing") or {}
+
+    with SessionLocal.begin() as session:
+        row = session.scalars(
+            select(TrainingSampleRecord)
+            .where(TrainingSampleRecord.file_hash == file_hash)
+            .limit(1)
+        ).first()
+
+        values = {
+            "id": sample_id,
+            "created_at": str(item.get("created_at") or ""),
+            "filename": str(item.get("filename") or ""),
+            "content_type": str(item.get("content_type") or ""),
+            "file_hash": file_hash,
+            "extraction_id": str(item.get("extraction_id") or ""),
+            "drawing_no": str(drawing.get("drawing_no") or ""),
+            "customer": str(item.get("customer") or ""),
+            "file_size": len(file_content or b""),
+            "file_content": file_content,
+            "payload": item,
+        }
+
+        if row is None:
+            row = TrainingSampleRecord(**values)
+            session.add(row)
+        else:
+            # Preserve the original stable DB id while replacing the approved target.
+            values["id"] = row.id
+            for key, value in values.items():
+                setattr(row, key, value)
+
+        _upsert_drawing(
+            session,
+            drawing,
+            file_hash,
+            str(item.get("created_at") or ""),
+        )
+
+    with SessionLocal() as session:
+        count = int(
+            session.scalar(
+                select(func.count()).select_from(TrainingSampleRecord)
+            ) or 0
+        )
+
+    return item, count
+
+
+def training_samples_for_export() -> list[tuple[dict, bytes, str]]:
+    with SessionLocal() as session:
+        rows = session.scalars(
+            select(TrainingSampleRecord).order_by(
+                TrainingSampleRecord.created_at,
+                TrainingSampleRecord.id,
+            )
+        ).all()
+
+        return [
+            (row.payload, bytes(row.file_content or b""), row.filename)
+            for row in rows
+        ]
+
+
 def dataset_counts_fast() -> dict:
     """Small aggregate queries used by the dashboard instead of loading all JSON payloads."""
     with SessionLocal() as session:
@@ -835,6 +930,11 @@ def dataset_counts_fast() -> dict:
             "reviews": int(
                 session.scalar(
                     select(func.count()).select_from(ReviewRecord)
+                ) or 0
+            ),
+            "training_samples": int(
+                session.scalar(
+                    select(func.count()).select_from(TrainingSampleRecord)
                 ) or 0
             ),
             "unique_files": int(
@@ -862,6 +962,9 @@ def database_stats() -> dict:
             ) or 0,
             "reviews": session.scalar(
                 select(func.count()).select_from(ReviewRecord)
+            ) or 0,
+            "training_samples": session.scalar(
+                select(func.count()).select_from(TrainingSampleRecord)
             ) or 0,
             "revisions": session.scalar(
                 select(func.count()).select_from(RevisionRecord)

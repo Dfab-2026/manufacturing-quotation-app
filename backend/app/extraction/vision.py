@@ -174,7 +174,12 @@ Important:
 - Capture studs/fasteners.
 - Capture welding instructions and tack/full weld notes.
 - Capture deburr, grinding, polishing, passivation and surface-treatment notes.
-- Infer manufacturing processes only when the drawing strongly supports them.
+- Recommend likely manufacturing processes from geometry as well as explicit notes.
+- For a uniform-thickness sheet/plate profile, consider sheet-metal blanking such as laser cutting; bends imply press-brake forming.
+- For rotationally symmetric shafts/pins/bushes/cylindrical solids, prefer CNC turning as the primary machining route.
+- For prismatic/block-like solid parts with pockets, flats, slots or multi-face features, prefer CNC milling.
+- Holes can imply drilling/boring, threads can imply tapping/threading, and chamfers can imply chamfering.
+- If more than one process is plausible, include the most likely sequence with a short reason.
 - Never invent material price, process rate, labour hours or quotation cost.
 - Never use the filename as a substitute for reading the drawing.
 - Use confidence 0-100 for extracted values.

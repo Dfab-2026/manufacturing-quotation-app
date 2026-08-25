@@ -1523,3 +1523,374 @@ h1 { margin: 3px 0 0; font-size: 32px; }
     grid-column: 2;
   }
 }
+
+
+/* v0.7.0 editable commercial summary */
+.summary-inline-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+.summary-inline-edit input {
+  width: 68px;
+  padding: 5px 7px;
+  border: 1px solid #cfd7e3;
+  border-radius: 6px;
+  background: #fff;
+}
+.summary-final-input {
+  width: 100%;
+  min-width: 130px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255,255,255,.65);
+  border-radius: 7px;
+  background: rgba(255,255,255,.96);
+  color: #17365d;
+  font-weight: 800;
+}
+
+
+/* v0.7.2 Rate Master dropdown controls */
+.select-plus {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 38px;
+  gap: 7px;
+  align-items: center;
+}
+.select-plus select { min-width: 0; }
+.option-plus {
+  width: 38px;
+  height: 42px;
+  border: 1px solid #9db7d3;
+  border-radius: 9px;
+  background: #edf5ff;
+  color: #174a7e;
+  font-size: 22px;
+  font-weight: 900;
+  cursor: pointer;
+}
+.option-plus:hover { background: #dfeeff; }
+
+.custom-option-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 10px;
+  align-items: end;
+  padding: 12px;
+  margin: 12px 0;
+  border: 1px dashed #9db7d3;
+  border-radius: 10px;
+  background: white;
+}
+.custom-option-row label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 800;
+}
+.custom-option-row input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #cdd7e3;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.btn.compact { min-height: 40px; padding: 8px 13px; }
+
+.rate-source-note {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 12px 0 2px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  background: #eef7f0;
+  color: #315b3c;
+  font-size: 12px;
+}
+.rate-source-note span { color: #587160; }
+
+.rate-table select.rate-select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid #d3dce7;
+  border-radius: 7px;
+  padding: 7px 28px 7px 8px;
+  background: white;
+  color: var(--ink);
+}
+.rate-table .unit-select { min-width: 88px; }
+.rate-na { color: #9aa6b2; display: inline-block; padding: 7px 4px; }
+
+@media (max-width: 760px) {
+  .custom-option-row { grid-template-columns: 1fr; }
+}
+
+
+/* v0.7.3 starter Rate Master restore */
+.rate-heading-actions {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+
+/* v0.7.4 — fixed left navigation while the costing page scrolls */
+.side {
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  align-self: start;
+  overflow-y: auto;
+  z-index: 30;
+}
+
+/* Engineering-style analysis animation */
+.drawing-analyze-loader {
+  margin-top: 14px;
+  border: 1px solid #c9d8e8;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f8fbff, #edf5ff);
+  padding: 14px 16px;
+  display: grid;
+  grid-template-columns: 52px minmax(0, 1fr);
+  gap: 12px 14px;
+  align-items: center;
+  overflow: hidden;
+}
+.drawing-analyze-loader > div:nth-child(2) {
+  display: grid;
+  gap: 4px;
+}
+.drawing-analyze-loader b {
+  color: #17365d;
+  font-size: 14px;
+}
+.drawing-analyze-loader span {
+  color: #607188;
+  font-size: 12px;
+}
+.loader-gear {
+  width: 48px;
+  height: 48px;
+  border: 4px solid #d4e3f3;
+  border-top-color: #24568e;
+  border-radius: 50%;
+  position: relative;
+  animation: aq-spin 1s linear infinite;
+}
+.loader-gear span {
+  position: absolute;
+  inset: 8px;
+  border: 2px dashed #5b80aa;
+  border-radius: 50%;
+}
+.loader-gear span:nth-child(2) {
+  inset: 15px;
+  border-style: solid;
+  border-color: #9eb8d3;
+}
+.loader-gear span:nth-child(3) {
+  inset: 20px;
+  background: #24568e;
+  border: 0;
+}
+.loader-track {
+  grid-column: 1 / -1;
+  height: 5px;
+  background: #dbe7f3;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.loader-track i {
+  display: block;
+  width: 38%;
+  height: 100%;
+  border-radius: inherit;
+  background: #24568e;
+  animation: aq-progress 1.15s ease-in-out infinite;
+}
+@keyframes aq-spin {
+  to { transform: rotate(360deg); }
+}
+@keyframes aq-progress {
+  0% { transform: translateX(-110%); }
+  100% { transform: translateX(360%); }
+}
+
+/* Explicit post-download Training Dataset confirmation */
+.training-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(12, 31, 52, .42);
+  backdrop-filter: blur(3px);
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+.training-modal {
+  width: min(560px, 100%);
+  background: white;
+  border: 1px solid #ced9e6;
+  border-radius: 18px;
+  box-shadow: 0 24px 70px rgba(16, 42, 74, .24);
+  padding: 22px;
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  gap: 14px;
+}
+.training-modal-icon {
+  width: 52px;
+  height: 52px;
+  border-radius: 15px;
+  background: #17365d;
+  color: white;
+  display: grid;
+  place-items: center;
+  font-weight: 900;
+  letter-spacing: .04em;
+}
+.training-modal h3 {
+  margin: 4px 0 7px;
+  font-size: 23px;
+}
+.training-modal p:not(.eyebrow) {
+  margin: 0;
+  color: #617086;
+  line-height: 1.45;
+}
+.training-includes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  margin-top: 14px;
+}
+.training-includes span {
+  border: 1px solid #dfe8f1;
+  background: #f7fafc;
+  border-radius: 8px;
+  padding: 8px;
+  color: #41556e;
+  font-size: 12px;
+}
+.training-modal-actions {
+  grid-column: 1 / -1;
+  border-top: 1px solid #e1e8ef;
+  padding-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 9px;
+}
+
+@media (max-width: 760px) {
+  .side {
+    position: relative;
+    height: auto;
+    overflow: visible;
+  }
+  .training-includes {
+    grid-template-columns: 1fr;
+  }
+}
+
+
+/* v0.7.5 — commercial percentages are Settings-controlled; amounts editable */
+.summary-amount-input {
+  width: min(170px, 100%);
+  border: 1px solid #cdd8e4;
+  border-radius: 8px;
+  background: #fff;
+  padding: 8px 10px;
+  font-size: 17px;
+  font-weight: 900;
+  color: #17365d;
+}
+.summary > div small {
+  line-height: 1.35;
+}
+
+/* v0.7.5 — Quotation History */
+.quote-history-wrap {
+  overflow-x: auto;
+  border: 1px solid #dce5ee;
+  border-radius: 12px;
+  background: #fff;
+}
+.quote-history-table {
+  min-width: 1080px;
+}
+.qh-row {
+  display: grid;
+  grid-template-columns: 1.65fr 1.2fr 1.05fr 1.15fr .75fr .9fr 1.05fr;
+  gap: 10px;
+  align-items: center;
+  padding: 11px 13px;
+  border-top: 1px solid #e8eef4;
+}
+.qh-row:first-child {
+  border-top: 0;
+}
+.qh-head {
+  background: #f5f8fb;
+  color: #5f6f82;
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+.qh-row > span {
+  min-width: 0;
+  color: #34495f;
+  font-size: 13px;
+}
+.qh-row > span b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.qh-row > span small {
+  display: block;
+  margin-top: 3px;
+  color: #8090a2;
+  font-size: 11px;
+}
+.history-status {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 5px 8px;
+  background: #edf5ff;
+  color: #24568e;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+}
+.history-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* Stronger visual hint that Cost Qty is an engineering quantity. */
+.neat-grid .ag-cell[col-id="costingQty"] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* =========================================================
+   SAME EMOJI CURSOR FOR ALL PLACES
+   Cursor everywhere = 🔧
+   ========================================================= */
+
+html,
+body,
+*,
+*::before,
+*::after {
+  cursor: url("data:image/svg+xml;charset=UTF-8,<svg xmlns='http://www.w3.org/2000/svg' width='34' height='34' viewBox='0 0 34 34'><text x='2' y='27' font-size='27'>🔧</text></svg>") 9 8, auto !important;
+}
+

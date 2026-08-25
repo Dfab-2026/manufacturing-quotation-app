@@ -38,11 +38,22 @@ export async function saveReview(payload: unknown) {
   });
 }
 
-export async function calculateQuote(rows: CostRow[]) {
+export async function calculateQuote(
+  rows: CostRow[],
+  commercial?: {
+    material_wastage_pct?: number;
+    overhead_pct?: number;
+    markup_pct?: number;
+    material_wastage_override?: number | null;
+    overhead_override?: number | null;
+    markup_override?: number | null;
+    selling_price_override?: number | null;
+  }
+) {
   return j<QuoteSummary>("/api/calculate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rows })
+    body: JSON.stringify({ rows, ...(commercial || {}) })
   });
 }
 
@@ -56,6 +67,11 @@ export async function saveSettings(value: Settings) {
 }
 
 export async function getRates() { return j<RateItem[]>("/api/rates"); }
+export async function restoreDefaultRates() {
+  return j<RateItem[]>("/api/rates/restore-defaults", {
+    method: "POST"
+  });
+}
 export async function getRateCatalog() { return j<RateCatalog>("/api/rate-catalog"); }
 export async function addRate(value: RateItem) {
   return j<RateItem>("/api/rates", {
@@ -104,6 +120,36 @@ export async function syncCostRowRate(
 }
 
 export async function getDatasetStats() { return j<DatasetStats>("/api/dataset/stats"); }
+export async function sendTrainingSample(payload: {
+  file: File;
+  extractionId: string;
+  fileHash: string;
+  customer: string;
+  drawing: DrawingDetails;
+  rows: CostRow[];
+  summary: QuoteSummary;
+  aiRaw?: unknown;
+}) {
+  const form = new FormData();
+  form.append("file", payload.file);
+  form.append("extraction_id", payload.extractionId || "");
+  form.append("file_hash", payload.fileHash || "");
+  form.append("customer", payload.customer || "");
+  form.append("drawing_json", JSON.stringify(payload.drawing));
+  form.append("rows_json", JSON.stringify(payload.rows));
+  form.append("summary_json", JSON.stringify(payload.summary));
+  form.append("ai_raw_json", JSON.stringify(payload.aiRaw || {}));
+
+  return j<{
+    status: string;
+    id: string;
+    drawing_no: string;
+    training_samples: number;
+  }>("/api/dataset/training", {
+    method: "POST",
+    body: form
+  });
+}
 export async function getQuotes() { return j<QuoteRecord[]>("/api/quotations"); }
 export async function saveQuote(payload: unknown) {
   return j<QuoteRecord>("/api/quotations", {
@@ -111,6 +157,20 @@ export async function saveQuote(payload: unknown) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
+}
+export async function renameQuote(id: string, name: string) {
+  return j<QuoteRecord>(`/api/quotations/${encodeURIComponent(id)}/rename`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name })
+  });
+}
+
+export async function deleteQuote(id: string) {
+  return j<{ status: string; id: string }>(
+    `/api/quotations/${encodeURIComponent(id)}`,
+    { method: "DELETE" }
+  );
 }
 export async function getRevisions(drawingNo: string) {
   return j<RevisionRecord[]>(`/api/revisions/${encodeURIComponent(drawingNo)}`);
@@ -155,7 +215,7 @@ export async function exportPdf(drawing: DrawingDetails, rows: CostRow[], summar
 }
 
 export async function exportDataset() {
-  await dl(await fetch(API + "/api/dataset/export"), "training_dataset.jsonl");
+  await dl(await fetch(API + "/api/dataset/export"), "quotation_training_dataset.zip");
 }
 
 

@@ -40,7 +40,7 @@ type BatchFailure = {
 };
 
 
-const BATCH_ANALYZE_CONCURRENCY = 1;
+const BATCH_ANALYZE_CONCURRENCY = 2;
 
 const emptySummary: QuoteSummary = {
   direct_cost: 0,
@@ -63,6 +63,11 @@ const money = (value: number) =>
     currency: "INR",
     maximumFractionDigits: 2
   }).format(value || 0);
+
+const rateChoiceLabel = (rate: RateItem) =>
+  rate.category === "MATERIAL" && rate.grade
+    ? `${rate.name} — ${rate.grade}`
+    : rate.name;
 
 function criticalLabel(score: number, medium = 40, high = 70) {
   if (score >= high) return "High";
@@ -228,6 +233,90 @@ function blankRate(): RateItem {
   };
 }
 
+const ACTIVE_DRAFT_DB = "dfab-manufacturing-quotation";
+const ACTIVE_DRAFT_STORE = "workflow";
+const ACTIVE_DRAFT_KEY = "active-quotation-v075";
+
+type CommercialAmountOverrides = {
+  material_wastage: number | null;
+  overhead: number | null;
+  markup: number | null;
+};
+
+type PersistedWorkflowDraft = {
+  view: View;
+  step: number;
+  file: File | null;
+  files: File[];
+  batchItems: BatchWorkspace[];
+  activeBatchId: string;
+  quoteMode: BatchQuoteMode;
+  analysis: AnalysisResponse | null;
+  drawing: DrawingDetails | null;
+  rows: CostRow[];
+  summary: QuoteSummary;
+  finalPriceOverride: number | null;
+  commercialAmountOverrides: CommercialAmountOverrides;
+  customer: string;
+  savedAt: string;
+};
+
+function openDraftDatabase(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(ACTIVE_DRAFT_DB, 1);
+
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(ACTIVE_DRAFT_STORE)) {
+        db.createObjectStore(ACTIVE_DRAFT_STORE);
+      }
+    };
+
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function saveWorkflowDraft(value: PersistedWorkflowDraft) {
+  const db = await openDraftDatabase();
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_DRAFT_STORE, "readwrite");
+    tx.objectStore(ACTIVE_DRAFT_STORE).put(value, ACTIVE_DRAFT_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  db.close();
+}
+
+async function loadWorkflowDraft(): Promise<PersistedWorkflowDraft | null> {
+  const db = await openDraftDatabase();
+
+  const value = await new Promise<PersistedWorkflowDraft | null>((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_DRAFT_STORE, "readonly");
+    const request = tx.objectStore(ACTIVE_DRAFT_STORE).get(ACTIVE_DRAFT_KEY);
+    request.onsuccess = () => resolve((request.result as PersistedWorkflowDraft) || null);
+    request.onerror = () => reject(request.error);
+  });
+
+  db.close();
+  return value;
+}
+
+async function clearWorkflowDraft() {
+  const db = await openDraftDatabase();
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_DRAFT_STORE, "readwrite");
+    tx.objectStore(ACTIVE_DRAFT_STORE).delete(ACTIVE_DRAFT_KEY);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  db.close();
+}
+
 export default function Page() {
   const [view, setView] = useState<View>("dashboard");
   const [sideOpen, setSideOpen] = useState(true);
@@ -240,12 +329,23 @@ export default function Page() {
   const [activeBatchId, setActiveBatchId] = useState("");
   const [quoteMode, setQuoteMode] = useState<BatchQuoteMode>("merge");
   const [analyzeProgress, setAnalyzeProgress] = useState("");
+  const [trainingPromptItems, setTrainingPromptItems] = useState<BatchWorkspace[]>([]);
+  const [trainingBusy, setTrainingBusy] = useState(false);
 
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [drawing, setDrawing] = useState<DrawingDetails | null>(null);
   const [rows, setRows] = useState<CostRow[]>([]);
   const [summary, setSummary] = useState<QuoteSummary>(emptySummary);
+  const [finalPriceOverride, setFinalPriceOverride] = useState<number | null>(null);
+  const [commercialAmountOverrides, setCommercialAmountOverrides] = useState<CommercialAmountOverrides>({
+    material_wastage: null,
+    overhead: null,
+    markup: null
+  });
   const [customer, setCustomer] = useState("Sample Customer");
+  const [draftHydrated, setDraftHydrated] = useState(false);
+  const historyReadyRef = useRef(false);
+  const restoringHistoryRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("Ready.");
   const [fileUrl, setFileUrl] = useState("");
@@ -261,6 +361,8 @@ export default function Page() {
   const [showAddRate, setShowAddRate] = useState(false);
   const [draftRate, setDraftRate] = useState<RateItem>(blankRate());
   const [customGrade, setCustomGrade] = useState("");
+  const [customRateField, setCustomRateField] = useState<"material" | "process" | "labour" | "other" | "unit" | null>(null);
+  const [customRateValue, setCustomRateValue] = useState("");
 
   const mediumCritical = settings?.critical_medium_threshold ?? 40;
   const highCritical = settings?.critical_high_threshold ?? 70;
@@ -303,6 +405,190 @@ export default function Page() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  // Restore the exact quotation workflow position and edited data after refresh/reopen.
+  useEffect(() => {
+    let cancelled = false;
+
+    void loadWorkflowDraft()
+      .then((saved) => {
+        if (cancelled || !saved) return;
+
+        setView(saved.view || "workflow");
+        setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
+        setFile(saved.file || null);
+        setFiles(saved.files || (saved.file ? [saved.file] : []));
+        setBatchItems(saved.batchItems || []);
+        batchItemsRef.current = saved.batchItems || [];
+        setActiveBatchId(saved.activeBatchId || "");
+        setQuoteMode(saved.quoteMode || "merge");
+        setAnalysis(saved.analysis || null);
+        setDrawing(saved.drawing || null);
+        setRows(saved.rows || []);
+        setSummary(saved.summary || emptySummary);
+        setFinalPriceOverride(saved.finalPriceOverride ?? null);
+        setCommercialAmountOverrides(
+          saved.commercialAmountOverrides || {
+            material_wastage: null,
+            overhead: null,
+            markup: null
+          }
+        );
+        setCustomer(saved.customer || "Sample Customer");
+
+        if (saved.drawing || saved.analysis) {
+          setMsg(
+            `Previous quotation restored at Step ${saved.step || 1}. Last auto-save: ${
+              saved.savedAt ? new Date(saved.savedAt).toLocaleString() : "saved"
+            }.`
+          );
+        }
+      })
+      .catch(() => {
+        // IndexedDB can be blocked by browser privacy settings; app still works normally.
+      })
+      .finally(() => {
+        if (!cancelled) setDraftHydrated(true);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Auto-save the complete in-progress workflow, including the uploaded File objects.
+  useEffect(() => {
+    if (!draftHydrated) return;
+
+    const timer = window.setTimeout(() => {
+      const activeBatch = batchItemsRef.current.length
+        ? batchItemsRef.current.map((item) =>
+            item.id === activeBatchId && analysis && drawing
+              ? {
+                  ...item,
+                  file: file || item.file,
+                  analysis,
+                  drawing,
+                  rows,
+                  summary
+                }
+              : item
+          )
+        : batchItems;
+
+      void saveWorkflowDraft({
+        view,
+        step,
+        file,
+        files,
+        batchItems: activeBatch,
+        activeBatchId,
+        quoteMode,
+        analysis,
+        drawing,
+        rows,
+        summary,
+        finalPriceOverride,
+        commercialAmountOverrides,
+        customer,
+        savedAt: new Date().toISOString()
+      }).catch(() => {
+        // Non-blocking auto-save. The current workflow remains usable.
+      });
+    }, 220);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    draftHydrated,
+    view,
+    step,
+    file,
+    files,
+    batchItems,
+    activeBatchId,
+    quoteMode,
+    analysis,
+    drawing,
+    rows,
+    summary,
+    finalPriceOverride,
+    commercialAmountOverrides,
+    customer
+  ]);
+
+  // Keep browser/system Back inside the application and return to the previous
+  // app view/step instead of dropping the whole quotation session.
+  useEffect(() => {
+    if (!draftHydrated || historyReadyRef.current) return;
+
+    history.replaceState(
+      { dfabGuard: true },
+      "",
+      window.location.href
+    );
+    history.pushState(
+      { dfabApp: true, view, step },
+      "",
+      window.location.href
+    );
+    historyReadyRef.current = true;
+  }, [draftHydrated]);
+
+  useEffect(() => {
+    if (!draftHydrated || !historyReadyRef.current) return;
+
+    if (restoringHistoryRef.current) {
+      restoringHistoryRef.current = false;
+      return;
+    }
+
+    history.pushState(
+      { dfabApp: true, view, step },
+      "",
+      window.location.href
+    );
+  }, [draftHydrated, view, step]);
+
+  useEffect(() => {
+    if (!draftHydrated) return;
+
+    const onPopState = (event: PopStateEvent) => {
+      const state = event.state as {
+        dfabApp?: boolean;
+        dfabGuard?: boolean;
+        view?: View;
+        step?: number;
+      } | null;
+
+      if (state?.dfabApp) {
+        restoringHistoryRef.current = true;
+        setView(state.view || "dashboard");
+        setStep(Math.min(4, Math.max(1, Number(state.step || 1))));
+        return;
+      }
+
+      // Reached the guard state: stay inside the app.
+      const targetView: View = view === "workflow" && step > 1
+        ? "workflow"
+        : "dashboard";
+      const targetStep = view === "workflow" && step > 1
+        ? step - 1
+        : 1;
+
+      restoringHistoryRef.current = true;
+      setView(targetView);
+      setStep(targetStep);
+
+      history.pushState(
+        { dfabApp: true, view: targetView, step: targetStep },
+        "",
+        window.location.href
+      );
+    };
+
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, [draftHydrated, view, step]);
+
   useEffect(() => {
     if (!file) {
       setFileUrl("");
@@ -314,6 +600,7 @@ export default function Page() {
   }, [file]);
 
   const newQuote = () => {
+    void clearWorkflowDraft().catch(() => undefined);
     setView("workflow");
     setStep(1);
     setFile(null);
@@ -324,10 +611,18 @@ export default function Page() {
     setActiveBatchId("");
     setQuoteMode("merge");
     setAnalyzeProgress("");
+    setTrainingPromptItems([]);
+    setTrainingBusy(false);
     setAnalysis(null);
     setDrawing(null);
     setRows([]);
     setSummary(emptySummary);
+    setFinalPriceOverride(null);
+    setCommercialAmountOverrides({
+      material_wastage: null,
+      overhead: null,
+      markup: null
+    });
     setMsg("Upload a drawing to begin.");
   };
 
@@ -370,6 +665,7 @@ export default function Page() {
     setDrawing(target.drawing);
     setRows(target.rows);
     setSummary(target.summary);
+    setFinalPriceOverride(null);
     setMsg(`Showing drawing ${target.drawing.drawing_no || target.file.name}.`);
   };
 
@@ -432,7 +728,7 @@ export default function Page() {
 
       try {
         const result = await api.analyzeDrawing(selected, true);
-        const itemSummary = await api.calculateQuote(result.rows);
+        const itemSummary = result.summary || await api.calculateQuote(result.rows);
 
         return {
           id: `${result.file_hash}-${originalIndex}`,
@@ -449,7 +745,7 @@ export default function Page() {
             : "Analyze failed";
 
         if (attempt < 2) {
-          await wait(3500);
+          await wait(1200);
         }
       }
     }
@@ -564,18 +860,106 @@ export default function Page() {
     }
   };
 
-  const recalc = useCallback(async (nextRows: CostRow[]) => {
+  const recalc = useCallback(async (
+    nextRows: CostRow[],
+    overrides?: {
+      material_wastage_override?: number | null;
+      overhead_override?: number | null;
+      markup_override?: number | null;
+      selling_price_override?: number | null;
+    }
+  ) => {
     const updated = nextRows.map((row) => ({
       ...row,
       cost: (+row.costingQty || 0) * (+row.rate || 0)
     }));
     setRows(updated);
+
+    const commercialValues = overrides || {
+      material_wastage_override: commercialAmountOverrides.material_wastage,
+      overhead_override: commercialAmountOverrides.overhead,
+      markup_override: commercialAmountOverrides.markup,
+      selling_price_override: finalPriceOverride
+    };
+
     try {
-      setSummary(await api.calculateQuote(updated));
+      setSummary(
+        await api.calculateQuote(updated, commercialValues)
+      );
     } catch {
       setMsg("Could not recalculate. Check backend connection.");
     }
-  }, []);
+  }, [
+    commercialAmountOverrides.material_wastage,
+    commercialAmountOverrides.overhead,
+    commercialAmountOverrides.markup,
+    finalPriceOverride
+  ]);
+
+  const updateCommercial = async (
+    field: "material_wastage" | "overhead" | "markup" | "selling_price",
+    rawValue: string
+  ) => {
+    const parsed = rawValue.trim() === ""
+      ? null
+      : Math.max(0, Number(rawValue) || 0);
+
+    if (field === "selling_price") {
+      setFinalPriceOverride(parsed);
+
+      await recalc(rows, {
+        material_wastage_override: commercialAmountOverrides.material_wastage,
+        overhead_override: commercialAmountOverrides.overhead,
+        markup_override: commercialAmountOverrides.markup,
+        selling_price_override: parsed
+      });
+      return;
+    }
+
+    // Editing any commercial amount releases the final-price override so the
+    // final selling price follows the new amount.
+    setFinalPriceOverride(null);
+
+    const nextOverrides: CommercialAmountOverrides = {
+      ...commercialAmountOverrides,
+      [field]: parsed
+    };
+
+    setCommercialAmountOverrides(nextOverrides);
+
+    await recalc(rows, {
+      material_wastage_override: nextOverrides.material_wastage,
+      overhead_override: nextOverrides.overhead,
+      markup_override: nextOverrides.markup,
+      selling_price_override: null
+    });
+  };
+
+
+  const saveAppSettings = async () => {
+    if (!settings) return;
+
+    try {
+      const saved = await api.saveSettings(settings);
+      setSettings(saved);
+
+      if (rows.length) {
+        setSummary(
+          await api.calculateQuote(rows, {
+            material_wastage_override: commercialAmountOverrides.material_wastage,
+            overhead_override: commercialAmountOverrides.overhead,
+            markup_override: commercialAmountOverrides.markup,
+            selling_price_override: finalPriceOverride
+          })
+        );
+      }
+
+      setMsg("Settings saved and applied to the current costing sheet.");
+      void refresh();
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Settings save failed.");
+    }
+  };
 
   const analyze = async () => {
     const selectedFiles = files.length
@@ -588,6 +972,12 @@ export default function Page() {
     setDrawing(null);
     setRows([]);
     setSummary(emptySummary);
+    setFinalPriceOverride(null);
+    setCommercialAmountOverrides({
+      material_wastage: null,
+      overhead: null,
+      markup: null
+    });
     setBatchItems([]);
     batchItemsRef.current = [];
     setBatchFailures([]);
@@ -683,7 +1073,7 @@ export default function Page() {
         );
       }
 
-      await refresh();
+      void refresh();
     } finally {
       setAnalyzeProgress("");
       setBusy(false);
@@ -695,16 +1085,21 @@ export default function Page() {
     snapshotActiveBatch();
     setBusy(true);
     try {
-      await api.saveReview({
-        extraction_id: analysis.extraction_id,
-        file_hash: analysis.file_hash,
-        drawing,
-        rows
-      });
-      await api.saveRevision({ drawing, note: "Reviewed extraction saved" });
-      await refresh();
+      await Promise.all([
+        api.saveReview({
+          extraction_id: analysis.extraction_id,
+          file_hash: analysis.file_hash,
+          drawing,
+          rows
+        }),
+        api.saveRevision({
+          drawing,
+          note: "Reviewed extraction saved"
+        })
+      ]);
       setStep(3);
       setMsg("Review saved. Continue with engineering and costing.");
+      void refresh();
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "Save failed");
     } finally {
@@ -719,9 +1114,34 @@ export default function Page() {
     const edited = { ...event.data };
     const field = String(event.colDef.field || "");
 
+    if (field === "item") {
+      const selectedRate = rates.find(
+        (rate) => rate.active && rateChoiceLabel(rate) === edited.item
+      );
+
+      if (selectedRate) {
+        edited.category = selectedRate.category;
+        edited.rateId = selectedRate.id;
+        edited.unit = selectedRate.unit;
+        edited.rate = Number(selectedRate.price || 0);
+        edited.cost = Number(edited.costingQty || 0) * edited.rate;
+        edited.rateSource = "Rate Master";
+        edited.criticalScore = selectedRate.critical_score;
+
+        await recalc(
+          rows.map((row) => row.id === edited.id ? edited : row)
+        );
+        setMsg(`${rateChoiceLabel(selectedRate)} selected from Rate Master.`);
+        return;
+      }
+    }
+
+    if (field === "category") {
+      await recalc(rows.map((row) => row.id === edited.id ? edited : row));
+      return;
+    }
+
     const shouldSyncRate = [
-      "category",
-      "item",
       "unit",
       "rate",
       "cost"
@@ -844,15 +1264,26 @@ export default function Page() {
       field: "category",
       headerName: "Category",
       editable: true,
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: { values: ["MATERIAL", "PROCESS", "LABOUR", "OTHER"] },
       minWidth: 115,
       maxWidth: 145
     },
     {
       field: "item",
-      headerName: "Item / Process",
+      headerName: "Material / Process / Labour",
       editable: true,
-      minWidth: 230,
-      flex: 1.5
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: (p: { data?: CostRow }) => {
+        const category = String(p.data?.category || "PROCESS").toUpperCase();
+        const values = rates
+          .filter((rate) => rate.active && rate.category === category)
+          .map(rateChoiceLabel);
+        const current = String(p.data?.item || "");
+        return { values: Array.from(new Set([current, ...values].filter(Boolean))) };
+      },
+      minWidth: 250,
+      flex: 1.7
     },
     {
       field: "drawingQty",
@@ -864,15 +1295,36 @@ export default function Page() {
       field: "costingQty",
       headerName: "Cost Qty",
       editable: true,
-      minWidth: 105,
-      valueParser: (p) => Number(p.newValue) || 0
+      minWidth: 118,
+      valueParser: (p) => Number(p.newValue) || 0,
+      valueFormatter: (p) => {
+        const value = Number(p.value || 0);
+        const category = String(p.data?.category || "").toUpperCase();
+        const unit = String(p.data?.unit || "");
+
+        if (category === "MATERIAL" && unit.toLowerCase() === "kg") {
+          return `${Number(value.toFixed(4))} kg`;
+        }
+
+        return String(Number(value.toFixed(4)));
+      }
     },
     {
       field: "unit",
       headerName: "Unit",
       editable: true,
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: (p: { data?: CostRow }) => {
+        const current = String(p.data?.unit || "");
+        const values = Array.from(new Set([
+          current,
+          ...(catalog?.units || []),
+          ...rates.map((rate) => rate.unit)
+        ].filter(Boolean)));
+        return { values };
+      },
       minWidth: 80,
-      maxWidth: 100
+      maxWidth: 105
     },
     {
       field: "rate",
@@ -880,7 +1332,10 @@ export default function Page() {
       editable: true,
       minWidth: 115,
       valueParser: (p) => Number(p.newValue) || 0,
-      valueFormatter: (p) => money(Number(p.value || 0))
+      valueFormatter: (p) =>
+        Number(p.value || 0) === 0 && String(p.data?.rateSource || "").startsWith("RATE MISSING")
+          ? ""
+          : money(Number(p.value || 0))
     },
     {
       field: "rateSource",
@@ -904,7 +1359,10 @@ export default function Page() {
         p.data.criticalScore = 100;
         return true;
       },
-      valueFormatter: (p) => money(Number(p.value || 0))
+      valueFormatter: (p) =>
+        Number(p.value || 0) === 0 && String(p.data?.rateSource || "").startsWith("RATE MISSING")
+          ? ""
+          : money(Number(p.value || 0))
     },
     {
       headerName: "Action",
@@ -924,7 +1382,7 @@ export default function Page() {
         </button>
       )
     }
-  ], [rows]);
+  ], [rows, rates, catalog]);
 
   const saveQuotation = async (status = "Draft") => {
     if (!drawing) return;
@@ -960,6 +1418,101 @@ export default function Page() {
     );
   };
 
+  const recordDownloadedQuotation = async () => {
+    if (!drawing) return;
+
+    const items = currentBatchPayload();
+
+    try {
+      if (items.length <= 1) {
+        const saved = await api.saveQuote({
+          customer,
+          drawing,
+          rows,
+          summary,
+          status: "Downloaded"
+        });
+        setQuotes((current) => [
+          ...current.filter((quote) => quote.id !== saved.id),
+          saved
+        ]);
+      } else {
+        const saved = await api.saveBatchQuote(
+          customer,
+          quoteMode,
+          items,
+          "Downloaded"
+        );
+        setQuotes((current) => [
+          ...current,
+          ...saved.records.filter(
+            (incoming) => !current.some((quote) => quote.id === incoming.id)
+          )
+        ]);
+      }
+    } catch (error) {
+      setMsg(
+        error instanceof Error
+          ? `Quotation downloaded, but history save failed: ${error.message}`
+          : "Quotation downloaded, but history save failed."
+      );
+    }
+  };
+
+  const renameSavedQuote = async (quote: QuoteRecord) => {
+    const currentName = quote.name || quote.description || quote.id;
+    const nextName = window.prompt("Rename quotation", currentName)?.trim();
+
+    if (!nextName || nextName === currentName) return;
+
+    try {
+      const updated = await api.renameQuote(quote.id, nextName);
+      setQuotes((current) =>
+        current.map((item) => item.id === quote.id ? updated : item)
+      );
+      setMsg(`Quotation renamed to "${nextName}".`);
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Rename failed.");
+    }
+  };
+
+  const deleteSavedQuote = async (quote: QuoteRecord) => {
+    const label = quote.name || quote.description || quote.id;
+
+    if (!window.confirm(`Delete "${label}" from Quotation History?`)) {
+      return;
+    }
+
+    try {
+      await api.deleteQuote(quote.id);
+      setQuotes((current) => current.filter((item) => item.id !== quote.id));
+      setMsg(`Quotation ${quote.id} deleted from history.`);
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Delete failed.");
+    }
+  };
+
+  const trainingCandidates = (): BatchWorkspace[] => {
+    const current = snapshotActiveBatch();
+
+    if (current.length) {
+      return current.filter((item) => item.file && item.analysis && item.drawing);
+    }
+
+    if (file && analysis && drawing) {
+      return [{
+        id: activeBatchId || `${analysis.file_hash}-single`,
+        file,
+        analysis,
+        drawing,
+        rows,
+        summary
+      }];
+    }
+
+    return [];
+  };
+
   const generateQuotation = async () => {
     if (!drawing) return;
 
@@ -972,14 +1525,55 @@ export default function Page() {
         summary,
         customer
       );
-      return;
+    } else {
+      await api.exportBatchPdf(
+        customer,
+        quoteMode,
+        items
+      );
     }
 
-    await api.exportBatchPdf(
-      customer,
-      quoteMode,
-      items
-    );
+    // PDF/ZIP download finishes first. Then immediately ask for explicit
+    // Training Dataset approval and persist this download in Quotation History.
+    setTrainingPromptItems(trainingCandidates());
+    void recordDownloadedQuotation();
+  };
+
+  const sendCurrentQuotationToTraining = async () => {
+    if (!trainingPromptItems.length || trainingBusy) return;
+
+    setTrainingBusy(true);
+
+    try {
+      const results = await Promise.allSettled(
+        trainingPromptItems.map((item) =>
+          api.sendTrainingSample({
+            file: item.file,
+            extractionId: item.analysis.extraction_id,
+            fileHash: item.analysis.file_hash,
+            customer,
+            drawing: item.drawing,
+            rows: item.rows,
+            summary: item.summary,
+            aiRaw: item.analysis.ai_raw || {}
+          })
+        )
+      );
+
+      const saved = results.filter((result) => result.status === "fulfilled").length;
+      const failed = results.length - saved;
+
+      setTrainingPromptItems([]);
+      void refresh();
+
+      setMsg(
+        failed
+          ? `${saved} drawing(s) sent to Training Dataset; ${failed} failed to save.`
+          : `${saved} drawing(s) sent to Training Dataset with original drawing + final reviewed costing.`
+      );
+    } finally {
+      setTrainingBusy(false);
+    }
   };
 
   const openRates = () => {
@@ -987,6 +1581,21 @@ export default function Page() {
     setRateTab("MATERIAL");
     setRateSearch("");
     void refresh();
+  };
+
+  const restoreStarterRates = async () => {
+    setBusy(true);
+    try {
+      const restored = await api.restoreDefaultRates();
+      setRates(restored);
+      setCatalog(await api.getRateCatalog());
+      setRateSearch("");
+      setMsg(`Starter Rate Master restored: ${restored.length} total rate rows available.`);
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Could not restore starter rates.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const filteredRates = rates.filter((rate) => {
@@ -1003,8 +1612,10 @@ export default function Page() {
   const saveRateRow = async (rate: RateItem) => {
     try {
       const saved = await api.updateRate(rate);
-      updateRateLocal(saved.id, saved);
-      setMsg(`${saved.name}${saved.grade ? ` / ${saved.grade}` : ""} rate saved.`);
+      const nextRates = rates.map((item) => item.id === saved.id ? saved : item);
+      setRates(nextRates);
+      await reflectRateMasterInSheet(nextRates);
+      setMsg(`${saved.name}${saved.grade ? ` / ${saved.grade}` : ""} saved and applied to linked costing rows.`);
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "Rate save failed.");
     }
@@ -1021,9 +1632,86 @@ export default function Page() {
   };
 
   const materialNames = Object.keys(catalog?.materials || {});
+
+  const processOptions = Array.from(new Set([
+    ...(catalog?.processes || []),
+    ...rates.filter((rate) => rate.category === "PROCESS").map((rate) => rate.name)
+  ].filter(Boolean)));
+
+  const labourOptions = Array.from(new Set([
+    ...(catalog?.labour || []),
+    ...rates.filter((rate) => rate.category === "LABOUR").map((rate) => rate.name)
+  ].filter(Boolean)));
+
+  const otherOptions = Array.from(new Set(
+    rates
+      .filter((rate) => rate.category === "OTHER")
+      .map((rate) => rate.name)
+      .filter(Boolean)
+  ));
+
+  const unitOptions = Array.from(new Set([
+    ...(catalog?.units || []),
+    ...rates.map((rate) => rate.unit),
+    draftRate.unit
+  ].filter(Boolean)));
+
   const gradeOptions = draftRate.category === "MATERIAL"
-    ? (catalog?.materials[draftRate.name] || [])
+    ? Array.from(new Set([
+        ...(catalog?.materials[draftRate.name] || []),
+        draftRate.grade !== "__CUSTOM__" ? draftRate.grade : ""
+      ].filter(Boolean)))
     : [];
+
+  const startCustomRateOption = (
+    field: "material" | "process" | "labour" | "other" | "unit"
+  ) => {
+    setCustomRateField(field);
+    setCustomRateValue("");
+  };
+
+  const confirmCustomRateOption = () => {
+    const value = customRateValue.trim();
+    if (!value || !customRateField) return;
+
+    if (customRateField === "unit") {
+      setDraftRate((current) => ({ ...current, unit: value }));
+    } else if (customRateField === "material") {
+      setDraftRate((current) => ({
+        ...current,
+        name: value,
+        grade: "__CUSTOM__"
+      }));
+      setCustomGrade("");
+    } else {
+      setDraftRate((current) => ({ ...current, name: value }));
+    }
+
+    setCustomRateField(null);
+    setCustomRateValue("");
+  };
+
+  const reflectRateMasterInSheet = async (nextRates?: RateItem[]) => {
+    try {
+      if (rows.length) {
+        const linked = await api.applySavedRates(rows);
+        await recalc(linked);
+      }
+
+      const nextCatalog = await api.getRateCatalog();
+      setCatalog(nextCatalog);
+
+      if (nextRates) {
+        setRates(nextRates);
+      }
+    } catch (error) {
+      setMsg(
+        error instanceof Error
+          ? `Rate saved, but sheet refresh failed: ${error.message}`
+          : "Rate saved, but sheet refresh failed."
+      );
+    }
+  };
 
   const addRate = async () => {
     const grade = draftRate.grade === "__CUSTOM__" ? customGrade.trim() : draftRate.grade;
@@ -1033,12 +1721,16 @@ export default function Page() {
     if (!payload.unit.trim()) return setMsg("Enter a unit.");
     try {
       const saved = await api.addRate(payload);
-      setRates((current) => [...current, saved]);
+      const nextRates = [...rates, saved];
+      setRates(nextRates);
+      await reflectRateMasterInSheet(nextRates);
       setDraftRate(blankRate());
       setCustomGrade("");
+      setCustomRateField(null);
+      setCustomRateValue("");
       setShowAddRate(false);
       setRateTab(saved.category);
-      setMsg("New rate added to Rate Master.");
+      setMsg("New rate added. It is now available to automatic costing and sheet dropdowns.");
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "Could not add rate.");
     }
@@ -1085,7 +1777,7 @@ export default function Page() {
             <div className="cards four">
               <article><small>Total Quotations</small><b>{quotes.length}</b><span>Saved records</span></article>
               <article><small>Rate Master</small><b>{rates.filter(r => r.active).length}</b><span>Active saved rates</span></article>
-              <article><small>Reviewed Samples</small><b>{stats?.reviewed_samples ?? 0}</b><span>Engineer-corrected dataset</span></article>
+              <article><small>Training Samples</small><b>{stats?.training_samples ?? 0}</b><span>Explicitly approved after quotation</span></article>
               <article><small>Dataset Version</small><b>v{stats?.dataset_version ?? 1}</b><span>{stats?.batch_ready ? "Training batch ready" : "Collecting reviewed samples"}</span></article>
             </div>
             <div className="panel">
@@ -1093,7 +1785,11 @@ export default function Page() {
                 <div><p className="eyebrow">START</p><h2>Drawing → Costing → Quotation</h2><p>Cost rows pull rates and criticality directly from the Rate Master.</p></div>
                 <button className="btn primary" onClick={newQuote}>Upload New Drawing</button>
               </div>
-              <Recent quotes={quotes} />
+              <Recent
+                quotes={quotes}
+                onRename={renameSavedQuote}
+                onDelete={deleteSavedQuote}
+              />
             </div>
           </section>
         )}
@@ -1211,6 +1907,23 @@ export default function Page() {
                   </b>
                   <small>PDF / Image / DXF / DWG · single or multiple files</small>
                 </label>
+
+                {busy && (
+                  <div className="drawing-analyze-loader" role="status" aria-live="polite">
+                    <div className="loader-gear" aria-hidden="true">
+                      <span/><span/><span/>
+                    </div>
+                    <div>
+                      <b>Reading engineering drawing…</b>
+                      <span>
+                        {analyzeProgress
+                          ? `Analyzing ${analyzeProgress} · dimensions → features → process → costing`
+                          : "Preparing drawing for AI analysis"}
+                      </span>
+                    </div>
+                    <div className="loader-track"><i/></div>
+                  </div>
+                )}
 
                 {files.length > 1 && (
                   <div className="upload-file-strip">
@@ -1360,7 +2073,12 @@ export default function Page() {
                     defaultColDef={{ sortable: true, resizable: true }}
                   />
                 </div></div>
-                <SummaryView summary={summary} medium={mediumCritical} high={highCritical}/>
+                <SummaryView
+                  summary={summary}
+                  commercialAmountOverrides={commercialAmountOverrides}
+                  finalPriceOverride={finalPriceOverride}
+                  onChange={updateCommercial}
+                />
               </section>
             )}
 
@@ -1541,8 +2259,9 @@ export default function Page() {
 
                     <SummaryView
                       summary={summary}
-                      medium={mediumCritical}
-                      high={highCritical}
+                      commercialAmountOverrides={commercialAmountOverrides}
+                      finalPriceOverride={finalPriceOverride}
+                      onChange={updateCommercial}
                     />
                   </div>
                 )}
@@ -1552,14 +2271,30 @@ export default function Page() {
         )}
 
         {view === "quotes" && (
-          <section className="panel"><div className="heading"><p className="eyebrow">HISTORY</p><h2>Quotation History</h2><p>Saved draft and released quotation records.</p></div><Recent quotes={quotes}/></section>
+          <section className="panel">
+            <div className="heading">
+              <p className="eyebrow">HISTORY</p>
+              <h2>Quotation History</h2>
+              <p>Downloaded and manually saved quotations with date/time, rename and delete controls.</p>
+            </div>
+            <Recent
+              quotes={quotes}
+              onRename={renameSavedQuote}
+              onDelete={deleteSavedQuote}
+            />
+          </section>
         )}
 
         {view === "rates" && (
           <section className="panel rate-panel">
             <div className="heading row">
               <div><p className="eyebrow">ADMIN · COST CONTROL</p><h2>Rate Master</h2><p>Select material + grade or any process/labour item, edit its rate, and set its criticality.</p></div>
-              <button className="btn primary" onClick={() => { setDraftRate(blankRate()); setCustomGrade(""); setShowAddRate(true); }}>+ Add Rate</button>
+              <div className="rate-heading-actions">
+                <button className="btn secondary" disabled={busy} onClick={() => void restoreStarterRates()}>
+                  Restore Starter Defaults
+                </button>
+                <button className="btn primary" onClick={() => { setDraftRate(blankRate()); setCustomGrade(""); setCustomRateField(null); setCustomRateValue(""); setShowAddRate(true); }}>+ Add Rate</button>
+              </div>
             </div>
 
             <div className="rate-stats">
@@ -1586,65 +2321,410 @@ export default function Page() {
 
             {showAddRate && (
               <div className="add-rate-card">
-                <div className="add-rate-title"><div><b>Add New Rate</b><span>Saved items become available to future costing rows.</span></div><button className="icon-btn" onClick={() => setShowAddRate(false)}>×</button></div>
+                <div className="add-rate-title">
+                  <div>
+                    <b>Add New Rate</b>
+                    <span>Choose from dropdowns. Use + only when you need a new material, process, labour type or unit.</span>
+                  </div>
+                  <button className="icon-btn" onClick={() => setShowAddRate(false)}>×</button>
+                </div>
+
                 <div className="add-rate-grid">
-                  <label>Category<select value={draftRate.category} onChange={(e) => {
-                    const category = e.target.value as RateItem["category"];
-                    if (category === "MATERIAL") setDraftRate({ ...draftRate, category, name: materialNames[0] || "Stainless Steel", grade: catalog?.materials[materialNames[0] || "Stainless Steel"]?.[0] || "", unit: "kg" });
-                    else if (category === "PROCESS") setDraftRate({ ...draftRate, category, name: catalog?.processes[0] || "Laser Cutting", grade: "", unit: "job" });
-                    else if (category === "LABOUR") setDraftRate({ ...draftRate, category, name: catalog?.labour[0] || "Fabricator", grade: "", unit: "hr" });
-                    else if (category === "COMMERCIAL") setDraftRate({ ...draftRate, category, name: catalog?.commercial[0] || "Material Wastage", grade: "", unit: "%" });
-                    else setDraftRate({ ...draftRate, category, name: "Packing", grade: "", unit: "job" });
-                  }}><option value="MATERIAL">Material</option><option value="PROCESS">Process</option><option value="LABOUR">Labour</option><option value="COMMERCIAL">Commercial</option><option value="OTHER">Other</option></select></label>
+                  <label>
+                    Category
+                    <select value={draftRate.category} onChange={(e) => {
+                      const category = e.target.value as RateItem["category"];
+                      setCustomRateField(null);
+                      setCustomRateValue("");
+
+                      if (category === "MATERIAL") {
+                        const name = materialNames[0] || "Stainless Steel";
+                        setDraftRate({
+                          ...draftRate,
+                          category,
+                          name,
+                          grade: catalog?.materials[name]?.[0] || "",
+                          unit: "kg"
+                        });
+                      } else if (category === "PROCESS") {
+                        setDraftRate({
+                          ...draftRate,
+                          category,
+                          name: processOptions[0] || "Laser Cutting",
+                          grade: "",
+                          unit: "job"
+                        });
+                      } else if (category === "LABOUR") {
+                        setDraftRate({
+                          ...draftRate,
+                          category,
+                          name: labourOptions[0] || "Fabricator",
+                          grade: "",
+                          unit: "hr"
+                        });
+                      } else if (category === "COMMERCIAL") {
+                        setDraftRate({
+                          ...draftRate,
+                          category,
+                          name: catalog?.commercial[0] || "Material Wastage",
+                          grade: "",
+                          unit: "%"
+                        });
+                      } else {
+                        setDraftRate({
+                          ...draftRate,
+                          category,
+                          name: otherOptions[0] || "Packing",
+                          grade: "",
+                          unit: "job"
+                        });
+                      }
+                    }}>
+                      <option value="MATERIAL">Material</option>
+                      <option value="PROCESS">Process</option>
+                      <option value="LABOUR">Labour</option>
+                      <option value="COMMERCIAL">Commercial</option>
+                      <option value="OTHER">Other</option>
+                    </select>
+                  </label>
 
                   {draftRate.category === "MATERIAL" ? (
                     <>
-                      <label>Material Name<select value={draftRate.name} onChange={(e) => { const name = e.target.value; setDraftRate({ ...draftRate, name, grade: catalog?.materials[name]?.[0] || "" }); }}>
-                        {materialNames.map((name) => <option key={name} value={name}>{name}</option>)}
-                      </select></label>
-                      <label>Grade<select value={draftRate.grade} onChange={(e) => setDraftRate({ ...draftRate, grade: e.target.value })}>
-                        {gradeOptions.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
-                        <option value="__CUSTOM__">+ Custom Grade</option>
-                      </select></label>
-                      {draftRate.grade === "__CUSTOM__" && <label>Custom Grade<input value={customGrade} onChange={(e) => setCustomGrade(e.target.value)} placeholder="e.g. EN 1.4404"/></label>}
+                      <label>
+                        Material Name
+                        <div className="select-plus">
+                          <select
+                            value={draftRate.name}
+                            onChange={(e) => {
+                              const name = e.target.value;
+                              setDraftRate({
+                                ...draftRate,
+                                name,
+                                grade: catalog?.materials[name]?.[0] || "__CUSTOM__"
+                              });
+                            }}
+                          >
+                            {Array.from(new Set([draftRate.name, ...materialNames].filter(Boolean))).map((name) => (
+                              <option key={name} value={name}>{name}</option>
+                            ))}
+                          </select>
+                          <button type="button" className="option-plus" title="Add material" onClick={() => startCustomRateOption("material")}>+</button>
+                        </div>
+                      </label>
+
+                      <label>
+                        Grade
+                        <select value={draftRate.grade} onChange={(e) => setDraftRate({ ...draftRate, grade: e.target.value })}>
+                          {gradeOptions.map((grade) => <option key={grade} value={grade}>{grade}</option>)}
+                          <option value="__CUSTOM__">+ New Grade</option>
+                        </select>
+                      </label>
+
+                      {draftRate.grade === "__CUSTOM__" && (
+                        <label>
+                          New Grade
+                          <input value={customGrade} onChange={(e) => setCustomGrade(e.target.value)} placeholder="e.g. EN 1.4404"/>
+                        </label>
+                      )}
                     </>
                   ) : draftRate.category === "PROCESS" ? (
-                    <label>Process<select value={draftRate.name} onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value })}>{catalog?.processes.map((name) => <option key={name}>{name}</option>)}</select></label>
+                    <label>
+                      Process
+                      <div className="select-plus">
+                        <select value={draftRate.name} onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value })}>
+                          {Array.from(new Set([draftRate.name, ...processOptions].filter(Boolean))).map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                        <button type="button" className="option-plus" title="Add process" onClick={() => startCustomRateOption("process")}>+</button>
+                      </div>
+                    </label>
                   ) : draftRate.category === "LABOUR" ? (
-                    <label>Labour Type<select value={draftRate.name} onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value })}>{catalog?.labour.map((name) => <option key={name}>{name}</option>)}</select></label>
+                    <label>
+                      Labour Type
+                      <div className="select-plus">
+                        <select value={draftRate.name} onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value })}>
+                          {Array.from(new Set([draftRate.name, ...labourOptions].filter(Boolean))).map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                        <button type="button" className="option-plus" title="Add labour type" onClick={() => startCustomRateOption("labour")}>+</button>
+                      </div>
+                    </label>
                   ) : draftRate.category === "COMMERCIAL" ? (
-                    <label>Commercial Cost<select value={draftRate.name} onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value, unit: "%" })}>{catalog?.commercial.map((name) => <option key={name}>{name}</option>)}</select></label>
+                    <label>
+                      Commercial Cost
+                      <select
+                        value={draftRate.name}
+                        onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value, unit: "%" })}
+                      >
+                        {catalog?.commercial.map((name) => <option key={name}>{name}</option>)}
+                      </select>
+                    </label>
                   ) : (
-                    <label>Item Name<input value={draftRate.name} onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value })}/></label>
+                    <label>
+                      Other Cost
+                      <div className="select-plus">
+                        <select value={draftRate.name} onChange={(e) => setDraftRate({ ...draftRate, name: e.target.value })}>
+                          {Array.from(new Set([draftRate.name, ...otherOptions].filter(Boolean))).map((name) => (
+                            <option key={name} value={name}>{name}</option>
+                          ))}
+                        </select>
+                        <button type="button" className="option-plus" title="Add other cost type" onClick={() => startCustomRateOption("other")}>+</button>
+                      </div>
+                    </label>
                   )}
 
-                  <label>Unit<select value={draftRate.unit} onChange={(e) => setDraftRate({ ...draftRate, unit: e.target.value })}>{catalog?.units.map((unit) => <option key={unit}>{unit}</option>)}</select></label>
-                  <label>Rate / Price<input type="number" min="0" step="0.01" value={draftRate.price} onChange={(e) => setDraftRate({ ...draftRate, price: +e.target.value })}/></label>
-                  <label>Critical Score (0–100)<input type="number" min="0" max="100" value={draftRate.critical_score} onChange={(e) => setDraftRate({ ...draftRate, critical_score: Math.max(0, Math.min(100, +e.target.value)) })}/></label>
-                  <label className="wide">Notes<input value={draftRate.notes} onChange={(e) => setDraftRate({ ...draftRate, notes: e.target.value })} placeholder="Supplier/source/validity note"/></label>
+                  <label>
+                    Unit
+                    <div className="select-plus">
+                      <select value={draftRate.unit} onChange={(e) => setDraftRate({ ...draftRate, unit: e.target.value })}>
+                        {Array.from(new Set([draftRate.unit, ...unitOptions].filter(Boolean))).map((unit) => (
+                          <option key={unit} value={unit}>{unit}</option>
+                        ))}
+                      </select>
+                      <button type="button" className="option-plus" title="Add unit" onClick={() => startCustomRateOption("unit")}>+</button>
+                    </div>
+                  </label>
+
+                  <label>
+                    Rate / Price
+                    <input type="number" min="0" step="0.01" value={draftRate.price} onChange={(e) => setDraftRate({ ...draftRate, price: +e.target.value })}/>
+                  </label>
+
+                  <label>
+                    Critical Score (0–100)
+                    <input type="number" min="0" max="100" value={draftRate.critical_score} onChange={(e) => setDraftRate({ ...draftRate, critical_score: Math.max(0, Math.min(100, +e.target.value)) })}/>
+                  </label>
+
+                  <label className="wide">
+                    Notes
+                    <input value={draftRate.notes} onChange={(e) => setDraftRate({ ...draftRate, notes: e.target.value })} placeholder="Supplier/source/validity note"/>
+                  </label>
                 </div>
-                <div className="actions"><button className="btn secondary" onClick={() => setShowAddRate(false)}>Cancel</button><button className="btn primary" onClick={addRate}>Add to Rate Master</button></div>
+
+                {customRateField && customRateField !== "material" && (
+                  <div className="custom-option-row">
+                    <label>
+                      {customRateField === "process"
+                        ? "New Process"
+                        : customRateField === "labour"
+                          ? "New Labour Type"
+                          : customRateField === "unit"
+                            ? "New Unit"
+                            : "New Other Cost"}
+                      <input
+                        autoFocus
+                        value={customRateValue}
+                        onChange={(e) => setCustomRateValue(e.target.value)}
+                        placeholder={
+                          customRateField === "unit"
+                            ? "e.g. cycle"
+                            : "Enter new option"
+                        }
+                      />
+                    </label>
+                    <button type="button" className="btn secondary compact" onClick={() => { setCustomRateField(null); setCustomRateValue(""); }}>Cancel</button>
+                    <button type="button" className="btn primary compact" onClick={confirmCustomRateOption}>Add Option</button>
+                  </div>
+                )}
+
+                {customRateField === "material" && (
+                  <div className="custom-option-row">
+                    <label>
+                      New Material
+                      <input
+                        autoFocus
+                        value={customRateValue}
+                        onChange={(e) => setCustomRateValue(e.target.value)}
+                        placeholder="e.g. Tool Steel"
+                      />
+                    </label>
+                    <button type="button" className="btn secondary compact" onClick={() => { setCustomRateField(null); setCustomRateValue(""); }}>Cancel</button>
+                    <button type="button" className="btn primary compact" onClick={confirmCustomRateOption}>Add Option</button>
+                  </div>
+                )}
+
+                <div className="rate-source-note">
+                  <b>Rate Master = costing source.</b>
+                  <span>After Save, linked engineering cost rows automatically receive this unit, rate and amount.</span>
+                </div>
+
+                <div className="actions">
+                  <button className="btn secondary" onClick={() => setShowAddRate(false)}>Cancel</button>
+                  <button className="btn primary" onClick={addRate}>Add to Rate Master</button>
+                </div>
               </div>
             )}
 
             <div className="rate-table-wrap">
               <table className="rate-table">
-                <thead><tr><th>Category</th><th>Material / Item</th><th>Grade</th><th>Unit</th><th>Rate</th><th>Critical Score</th><th>Active</th><th>Notes</th><th>Actions</th></tr></thead>
+                <thead>
+                  <tr>
+                    <th>Category</th>
+                    <th>Material / Process / Labour</th>
+                    <th>Grade</th>
+                    <th>Unit</th>
+                    <th>Rate</th>
+                    <th>Critical Score</th>
+                    <th>Active</th>
+                    <th>Notes</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
                 <tbody>
-                  {filteredRates.map((rate) => (
-                    <tr key={rate.id}>
-                      <td><span className={`category-pill ${rate.category.toLowerCase()}`}>{rate.category}</span></td>
-                      <td><input value={rate.name} onChange={(e) => updateRateLocal(rate.id, { name: e.target.value })}/></td>
-                      <td><input value={rate.grade} placeholder="—" onChange={(e) => updateRateLocal(rate.id, { grade: e.target.value })}/></td>
-                      <td><input className="small-input" value={rate.unit} onChange={(e) => updateRateLocal(rate.id, { unit: e.target.value })}/></td>
-                      <td><input className="price-input" type="number" min="0" step="0.01" value={rate.price} onChange={(e) => updateRateLocal(rate.id, { price: +e.target.value })}/></td>
-                      <td><div className="score-edit"><input type="number" min="0" max="100" value={rate.critical_score} onChange={(e) => updateRateLocal(rate.id, { critical_score: Math.max(0, Math.min(100, +e.target.value)) })}/><span className={`score-badge ${criticalName(rate.critical_score).toLowerCase()}`}>{criticalName(rate.critical_score)}</span></div></td>
-                      <td><label className="switch"><input type="checkbox" checked={rate.active} onChange={(e) => updateRateLocal(rate.id, { active: e.target.checked })}/><span/></label></td>
-                      <td><input value={rate.notes} onChange={(e) => updateRateLocal(rate.id, { notes: e.target.value })}/></td>
-                      <td><div className="row-actions"><button className="mini save" onClick={() => saveRateRow(rate)}>Save</button><button className="mini delete" onClick={() => removeRate(rate.id)}>Delete</button></div></td>
-                    </tr>
-                  ))}
-                  {!filteredRates.length && <tr><td colSpan={9} className="empty-cell">No matching rates.</td></tr>}
+                  {filteredRates.map((rate) => {
+                    const rowNameOptions =
+                      rate.category === "MATERIAL"
+                        ? Array.from(new Set([rate.name, ...materialNames].filter(Boolean)))
+                        : rate.category === "PROCESS"
+                          ? Array.from(new Set([rate.name, ...processOptions].filter(Boolean)))
+                          : rate.category === "LABOUR"
+                            ? Array.from(new Set([rate.name, ...labourOptions].filter(Boolean)))
+                            : rate.category === "COMMERCIAL"
+                              ? Array.from(new Set([rate.name, ...(catalog?.commercial || [])].filter(Boolean)))
+                              : Array.from(new Set([rate.name, ...otherOptions].filter(Boolean)));
+
+                    const rowGradeOptions =
+                      rate.category === "MATERIAL"
+                        ? Array.from(new Set([
+                            rate.grade,
+                            ...(catalog?.materials[rate.name] || [])
+                          ].filter(Boolean)))
+                        : [];
+
+                    const rowUnitOptions = Array.from(new Set([
+                      rate.unit,
+                      ...unitOptions
+                    ].filter(Boolean)));
+
+                    return (
+                      <tr key={rate.id}>
+                        <td><span className={`category-pill ${rate.category.toLowerCase()}`}>{rate.category}</span></td>
+
+                        <td>
+                          <select
+                            className="rate-select"
+                            value={rate.name}
+                            disabled={rate.category === "COMMERCIAL"}
+                            title={rate.category === "COMMERCIAL" ? "Managed in Settings" : undefined}
+                            onChange={(e) => {
+                              const nextName = e.target.value;
+                              const patch: Partial<RateItem> = { name: nextName };
+
+                              if (rate.category === "MATERIAL") {
+                                const grades = catalog?.materials[nextName] || [];
+                                if (grades.length && !grades.includes(rate.grade)) {
+                                  patch.grade = grades[0];
+                                }
+                              }
+
+                              updateRateLocal(rate.id, patch);
+                            }}
+                          >
+                            {rowNameOptions.map((name) => (
+                              <option key={name} value={name}>{name}</option>
+                            ))}
+                          </select>
+                        </td>
+
+                        <td>
+                          {rate.category === "MATERIAL" ? (
+                            <select
+                              className="rate-select"
+                              value={rate.grade}
+                              onChange={(e) => updateRateLocal(rate.id, { grade: e.target.value })}
+                            >
+                              {rowGradeOptions.map((grade) => (
+                                <option key={grade} value={grade}>{grade}</option>
+                              ))}
+                            </select>
+                          ) : (
+                            <span className="rate-na">—</span>
+                          )}
+                        </td>
+
+                        <td>
+                          <select
+                            className="rate-select unit-select"
+                            value={rate.unit}
+                            disabled={rate.category === "COMMERCIAL"}
+                            title={rate.category === "COMMERCIAL" ? "Managed in Settings" : undefined}
+                            onChange={(e) => updateRateLocal(rate.id, { unit: e.target.value })}
+                          >
+                            {rowUnitOptions.map((unit) => (
+                              <option key={unit} value={unit}>{unit}</option>
+                            ))}
+                          </select>
+                        </td>
+
+                        <td>
+                          <input
+                            className="price-input"
+                            type="number"
+                            min="0"
+                            step="0.01"
+                            value={rate.price}
+                            disabled={rate.category === "COMMERCIAL"}
+                            title={rate.category === "COMMERCIAL" ? "Commercial percentages are edited only in Settings" : undefined}
+                            onChange={(e) => updateRateLocal(rate.id, { price: +e.target.value })}
+                          />
+                        </td>
+
+                        <td>
+                          <div className="score-edit">
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              value={rate.critical_score}
+                              onChange={(e) => updateRateLocal(rate.id, {
+                                critical_score: Math.max(0, Math.min(100, +e.target.value))
+                              })}
+                            />
+                            <span className={`score-badge ${criticalName(rate.critical_score).toLowerCase()}`}>
+                              {criticalName(rate.critical_score)}
+                            </span>
+                          </div>
+                        </td>
+
+                        <td>
+                          <label className="switch">
+                            <input
+                              type="checkbox"
+                              checked={rate.active}
+                              onChange={(e) => updateRateLocal(rate.id, { active: e.target.checked })}
+                            />
+                            <span/>
+                          </label>
+                        </td>
+
+                        <td>
+                          <input value={rate.notes} onChange={(e) => updateRateLocal(rate.id, { notes: e.target.value })}/>
+                        </td>
+
+                        <td>
+                          <div className="row-actions">
+                            {rate.category === "COMMERCIAL" ? (
+                              <button
+                                className="mini save"
+                                onClick={() => setView("settings")}
+                                title="Commercial percentages are managed only in Settings"
+                              >
+                                Settings
+                              </button>
+                            ) : (
+                              <button className="mini save" onClick={() => saveRateRow(rate)}>Save</button>
+                            )}
+                            <button className="mini delete" onClick={() => removeRate(rate.id)}>Delete</button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {!filteredRates.length && (
+                    <tr><td colSpan={9} className="empty-cell">No matching rates.</td></tr>
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1654,16 +2734,75 @@ export default function Page() {
 
         {view === "dataset" && (
           <section className="panel">
-            <div className="heading row"><div><p className="eyebrow">CONTINUOUS LEARNING</p><h2>Dataset Learning</h2><p>Every extraction is captured; reviewed corrections become supervised training samples.</p></div><button className="btn secondary" onClick={() => api.exportDataset()}>Export JSONL Dataset</button></div>
-            <div className="cards four"><article><small>Extractions</small><b>{stats?.extractions ?? 0}</b></article><article><small>Reviewed</small><b>{stats?.reviewed_samples ?? 0}</b></article><article><small>Unique Files</small><b>{stats?.unique_files ?? 0}</b></article><article><small>Dataset Version</small><b>v{stats?.dataset_version ?? 1}</b></article></div>
-            <div className="notice"><b>{stats?.batch_ready ? "Training batch is ready." : "Collecting reviewed samples."}</b><span>Reviewed since current version: {stats?.new_reviewed_since_version ?? 0} / {stats?.training_batch_threshold ?? 25}</span><span>Corrections are reused immediately for identical drawing hashes. Model-weight retraining remains a validated batch step after the real AI extractor is connected.</span></div>
+            <div className="heading row">
+              <div>
+                <p className="eyebrow">CURATED LEARNING</p>
+                <h2>Training Dataset</h2>
+                <p>Only drawings explicitly approved with “Send to Training” after quotation download are stored as training samples.</p>
+              </div>
+              <button className="btn secondary" onClick={() => api.exportDataset()}>Export Training Dataset ZIP</button>
+            </div>
+            <div className="cards four">
+              <article><small>Extractions</small><b>{stats?.extractions ?? 0}</b><span>Processing history</span></article>
+              <article><small>Reviewed</small><b>{stats?.reviewed_samples ?? 0}</b><span>Engineer review history</span></article>
+              <article><small>Training Samples</small><b>{stats?.training_samples ?? 0}</b><span>Approved drawings only</span></article>
+              <article><small>Dataset Version</small><b>v{stats?.dataset_version ?? 1}</b><span>Curated training set</span></article>
+            </div>
+            <div className="notice">
+              <b>{stats?.batch_ready ? "Training batch is ready." : "Collecting approved training samples."}</b>
+              <span>Approved since current version: {stats?.new_training_since_version ?? 0} / {stats?.training_batch_threshold ?? 25}</span>
+              <span>Each approved sample stores the original drawing, AI extraction, final reviewed drawing data, cost rows and quotation summary.</span>
+            </div>
           </section>
         )}
 
         {view === "settings" && settings && (
-          <SettingsEditor value={settings} setValue={setSettings} save={async () => { await api.saveSettings(settings); await refresh(); setMsg("Settings saved."); }}/>
+          <SettingsEditor
+            value={settings}
+            setValue={setSettings}
+            save={() => void saveAppSettings()}
+          />
         )}
       </section>
+
+      {trainingPromptItems.length > 0 && (
+        <div className="training-modal-backdrop" role="presentation">
+          <div className="training-modal" role="dialog" aria-modal="true" aria-labelledby="training-modal-title">
+            <div className="training-modal-icon">AI</div>
+            <div>
+              <p className="eyebrow">QUOTATION DOWNLOADED</p>
+              <h3 id="training-modal-title">Send to Training?</h3>
+              <p>
+                Add {trainingPromptItems.length === 1
+                  ? "this drawing"
+                  : `${trainingPromptItems.length} drawings`} to the curated Training Dataset.
+              </p>
+              <div className="training-includes">
+                <span>✓ Original drawing file</span>
+                <span>✓ AI extracted features</span>
+                <span>✓ Your final reviewed values</span>
+                <span>✓ Final costing & quotation summary</span>
+              </div>
+            </div>
+            <div className="training-modal-actions">
+              <button
+                className="btn secondary"
+                disabled={trainingBusy}
+                onClick={() => setTrainingPromptItems([])}
+              >
+                Not Now
+              </button>
+              <button
+                className="btn primary"
+                disabled={trainingBusy}
+                onClick={() => void sendCurrentQuotationToTraining()}
+              >
+                {trainingBusy ? "Sending…" : "Send to Training"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }
@@ -2108,29 +3247,144 @@ function EngineeringDetails({
   );
 }
 
-function SummaryView({ summary }: { summary: QuoteSummary; medium: number; high: number }) {
+function SummaryView({
+  summary,
+  commercialAmountOverrides,
+  finalPriceOverride,
+  onChange
+}: {
+  summary: QuoteSummary;
+  commercialAmountOverrides: CommercialAmountOverrides;
+  finalPriceOverride: number | null;
+  onChange: (
+    field: "material_wastage" | "overhead" | "markup" | "selling_price",
+    value: string
+  ) => void;
+}) {
   return (
-    <div className="summary clean-summary">
-      <div><span>Direct Cost</span><b>{money(summary.direct_cost)}</b><small>Cost rows above</small></div>
-      <div><span>Material Wastage</span><b>{money(summary.material_wastage)}</b><small>{summary.material_wastage_pct}%</small></div>
-      <div><span>Overhead</span><b>{money(summary.overhead)}</b><small>{summary.overhead_pct}%</small></div>
-      <div className="blue"><span>Manufacturing Cost</span><b>{money(summary.manufacturing_cost)}</b><small>Calculated total</small></div>
-      <div><span>Markup</span><b>{money(summary.markup)}</b><small>{summary.markup_pct}%</small></div>
-      <div className="green"><span>Selling Price</span><b>{money(summary.selling_price)}</b><small>Before tax / transport</small></div>
+    <div className="summary clean-summary editable-summary">
+      <div>
+        <span>Direct Cost</span>
+        <b>{money(summary.direct_cost)}</b>
+        <small>Material + Process + Labour rows</small>
+      </div>
+
+      <div>
+        <span>Material Wastage</span>
+        <input
+          className="summary-amount-input"
+          type="number"
+          min="0"
+          step="0.01"
+          value={commercialAmountOverrides.material_wastage ?? summary.material_wastage}
+          onChange={(e) => void onChange("material_wastage", e.target.value)}
+        />
+        <small>{Number(summary.material_wastage_pct || 0)}% from Settings · amount editable</small>
+      </div>
+
+      <div>
+        <span>Overhead</span>
+        <input
+          className="summary-amount-input"
+          type="number"
+          min="0"
+          step="0.01"
+          value={commercialAmountOverrides.overhead ?? summary.overhead}
+          onChange={(e) => void onChange("overhead", e.target.value)}
+        />
+        <small>{Number(summary.overhead_pct || 0)}% from Settings · amount editable</small>
+      </div>
+
+      <div className="blue">
+        <span>Manufacturing Cost</span>
+        <b>{money(summary.manufacturing_cost)}</b>
+        <small>Calculated total</small>
+      </div>
+
+      <div>
+        <span>Markup</span>
+        <input
+          className="summary-amount-input"
+          type="number"
+          min="0"
+          step="0.01"
+          value={commercialAmountOverrides.markup ?? summary.markup}
+          onChange={(e) => void onChange("markup", e.target.value)}
+        />
+        <small>{Number(summary.markup_pct || 0)}% from Settings · amount editable</small>
+      </div>
+
+      <div className="green">
+        <span>Final Selling Price</span>
+        <input
+          className="summary-final-input"
+          type="number"
+          min="0"
+          step="0.01"
+          value={finalPriceOverride ?? summary.selling_price}
+          onChange={(e) => void onChange("selling_price", e.target.value)}
+        />
+        <small>Editable final quotation price</small>
+      </div>
     </div>
   );
 }
 
-function Recent({ quotes }: { quotes: QuoteRecord[] }) {
+
+
+function Recent({
+  quotes,
+  onRename,
+  onDelete
+}: {
+  quotes: QuoteRecord[];
+  onRename: (quote: QuoteRecord) => void;
+  onDelete: (quote: QuoteRecord) => void;
+}) {
   return (
-    <div className="table">
-      <div className="tr th"><span>Quote ID</span><span>Drawing</span><span>Revision</span><span>Customer</span><span>Status</span><span>Amount</span></div>
-      {quotes.length ? quotes.slice().reverse().map((quote) => (
-        <div className="tr" key={quote.id}><span>{quote.id}</span><span>{quote.drawing_no}</span><span>{quote.revision}</span><span>{quote.customer}</span><span>{quote.status}</span><span>{money(quote.selling_price)}</span></div>
-      )) : <div className="empty">No saved quotations yet.</div>}
+    <div className="quote-history-wrap">
+      <div className="quote-history-table">
+        <div className="qh-row qh-head">
+          <span>Name</span>
+          <span>Date & Time</span>
+          <span>Drawing</span>
+          <span>Customer</span>
+          <span>Status</span>
+          <span>Amount</span>
+          <span>Actions</span>
+        </div>
+
+        {quotes.length ? quotes.slice().reverse().map((quote) => (
+          <div className="qh-row" key={quote.id}>
+            <span>
+              <b>{quote.name || quote.description || quote.id}</b>
+              <small>{quote.id}</small>
+            </span>
+            <span>{new Date(quote.created_at).toLocaleString()}</span>
+            <span>
+              <b>{quote.drawing_no}</b>
+              <small>Rev {quote.revision || "—"}</small>
+            </span>
+            <span>{quote.customer}</span>
+            <span><i className="history-status">{quote.status}</i></span>
+            <span><b>{money(quote.selling_price)}</b></span>
+            <span className="history-actions">
+              <button type="button" className="mini save" onClick={() => onRename(quote)}>
+                Rename
+              </button>
+              <button type="button" className="mini delete" onClick={() => onDelete(quote)}>
+                Delete
+              </button>
+            </span>
+          </div>
+        )) : (
+          <div className="empty">No saved quotations yet.</div>
+        )}
+      </div>
     </div>
   );
 }
+
 
 function RevisionList({ rows }: { rows: RevisionRecord[] }) {
   return (
