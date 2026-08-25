@@ -1,0 +1,17 @@
+Manufacturing Quotation App v0.9.8
+
+Vercel frontend build fix.
+
+Build error fixed:
+components/ModelViewer.tsx
+Type error: 'sourceColor.length' is possibly 'undefined'.
+
+Change:
+- replaced optional-chain length check with an explicit Array.isArray(...) guard
+- sourceColor is now safely narrowed before indexing [0], [1], [2]
+- no UI/workflow/DFM/BOM/costing behavior changed
+
+Deploy:
+- replace frontend/components/ModelViewer.tsx (or replace the patch files)
+- commit and push frontend
+- Vercel should rebuild automatically

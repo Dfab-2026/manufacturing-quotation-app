@@ -1,0 +1,22 @@
+Manufacturing Quotation App v0.9.9
+
+Exact Vercel frontend type error fixed:
+
+frontend/lib/cad.ts
+Type error:
+Expected 2 arguments, but got 3.
+
+Cause:
+withTimeout(...) in this code version accepts:
+  withTimeout(promise, milliseconds)
+
+but readCadMesh(...) called:
+  withTimeout(promise, 9000, "CAD geometry parser")
+
+Fix:
+Removed the unsupported third argument.
+
+No UI, workflow, DFM, BOM, costing, cursor, or database behavior changed.
+
+For this specific fix you only need to replace:
+frontend/lib/cad.ts

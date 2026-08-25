@@ -296,7 +296,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.9.7")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.10.0")
 
 _allowed_origins = [
     "http://localhost:3000",
@@ -2706,7 +2706,7 @@ def root():
     return {
         "service": "dfab-quotation-api",
         "status": "ok",
-        "version": "0.9.7",
+        "version": "0.10.0",
     }
 
 
@@ -2716,7 +2716,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.9.7",
+        "version": "0.10.0",
         "database": "connected" if connected else "unavailable",
     }
 

@@ -1,0 +1,19 @@
+Manufacturing Quotation App v0.10.0
+
+Exact Vercel error fixed:
+
+frontend/lib/cad.ts:632
+parser_status was inferred as generic `string`, which made the async result
+incompatible with Promise<CadGeometrySummary>.
+
+Fix:
+- inspectCadFile async promise explicitly typed as Promise<CadGeometrySummary>
+- async IIFE explicitly returns Promise<CadGeometrySummary>
+- parser_status values kept as literal types with `as const`
+
+This patch passed a strict semantic TypeScript check on frontend/lib/cad.ts.
+
+For this exact build error replace only:
+frontend/lib/cad.ts
+
+No UI/DFM/BOM/workflow/costing/database changes.

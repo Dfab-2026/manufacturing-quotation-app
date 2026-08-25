@@ -492,7 +492,8 @@ export async function inspectCadFile(
   const cached = cadSummaryCache.get(file);
   if (cached) return cached;
 
-  const promise = (async () => {
+  const promise: Promise<CadGeometrySummary> = (
+    async (): Promise<CadGeometrySummary> => {
     const extension = file.name.split(".").pop()?.toLowerCase() || "";
     const hash = await sha256Hex(file);
 
@@ -509,7 +510,7 @@ export async function inspectCadFile(
       filename: file.name,
       file_hash: hash,
       format: extension.toUpperCase() || "CAD",
-      parser_status: "metadata_only",
+      parser_status: "metadata_only" as const,
       root_name: file.name.replace(/\.[^.]+$/, ""),
       part_count: 1,
       mesh_count: 0,
@@ -526,7 +527,7 @@ export async function inspectCadFile(
     result = await withTimeout(readCadMesh(file), 6500);
   } catch {
     return {
-      filename: file.name, file_hash: hash, format: extension.toUpperCase(), parser_status: "metadata_only",
+      filename: file.name, file_hash: hash, format: extension.toUpperCase(), parser_status: "metadata_only" as const,
       root_name: file.name.replace(/\.[^.]+$/, ""), part_count: 1, mesh_count: 0, triangle_count: 0,
       dimensions_mm: { x: 0, y: 0, z: 0 }, surface_area_mm2: 0, volume_mm3: 0, component_names: []
     };
@@ -611,7 +612,7 @@ export async function inspectCadFile(
     filename: file.name,
     file_hash: hash,
     format: extension.toUpperCase(),
-    parser_status: "parsed",
+    parser_status: "parsed" as const,
     root_name: String(result.root?.name || "").trim(),
     part_count: Math.max(1, hierarchy.partCount || meshes.length || 1),
     mesh_count: meshes.length,
