@@ -2,8 +2,10 @@ import type {
   AnalysisResponse,
   BatchQuoteItem,
   BatchQuoteMode,
+  BomReport,
   CostRow,
   DatasetStats,
+  DfmReport,
   DrawingDetails,
   QuoteRecord,
   QuoteSummary,
@@ -117,6 +119,62 @@ export async function syncCostRowRate(
       material_specification: material?.specification || ""
     })
   });
+}
+
+export async function generateDfm(payload: {
+  fileHash: string;
+  filename: string;
+  drawing: DrawingDetails;
+  rows: CostRow[];
+  aiRaw?: unknown;
+}) {
+  return j<DfmReport>("/api/dfm/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      file_hash: payload.fileHash,
+      filename: payload.filename,
+      drawing: payload.drawing,
+      rows: payload.rows,
+      ai_raw: payload.aiRaw || {}
+    })
+  });
+}
+
+export async function generateBom(payload: {
+  fileHash: string;
+  filename: string;
+  drawing: DrawingDetails;
+  rows: CostRow[];
+  aiRaw?: unknown;
+}) {
+  return j<BomReport>("/api/bom/generate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      file_hash: payload.fileHash,
+      filename: payload.filename,
+      drawing: payload.drawing,
+      rows: payload.rows,
+      ai_raw: payload.aiRaw || {}
+    })
+  });
+}
+
+export async function exportDfm(report: DfmReport) {
+  await dl(await fetch(API + "/api/dfm/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(report)
+  }), "dfm-report.pdf");
+}
+
+export async function exportBomPdf(report: BomReport) {
+  await dl(await fetch(API + "/api/bom/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(report)
+  }), "bom.pdf");
 }
 
 export async function getDatasetStats() { return j<DatasetStats>("/api/dataset/stats"); }

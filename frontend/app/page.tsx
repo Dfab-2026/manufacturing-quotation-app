@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
+import ModelViewer from "@/components/ModelViewer";
 import type { CellValueChangedEvent, ColDef } from "ag-grid-community";
 import * as api from "@/lib/api";
 import type {
@@ -9,8 +10,10 @@ import type {
   AnalysisResponse,
   BatchQuoteItem,
   BatchQuoteMode,
+  BomReport,
   CostRow,
   DatasetStats,
+  DfmReport,
   DrawingDetails,
   QuoteRecord,
   QuoteSummary,
@@ -20,7 +23,7 @@ import type {
   Settings
 } from "@/lib/types";
 
-type View = "dashboard" | "workflow" | "quotes" | "rates" | "dataset" | "settings";
+type View = "dashboard" | "workflow" | "quotes" | "rates" | "dfm" | "bom" | "dataset" | "settings";
 type RateTab = "MATERIAL" | "PROCESS" | "LABOUR" | "OTHER" | "COMMERCIAL" | "ALL";
 
 
@@ -41,6 +44,10 @@ type BatchFailure = {
 
 
 const BATCH_ANALYZE_CONCURRENCY = 2;
+const DFM_HISTORY_KEY = "dfab-dfm-history-v080";
+const BOM_HISTORY_KEY = "dfab-bom-history-v080";
+type ArtifactJobState = "processing" | "ready" | "review" | "attention" | "failed";
+
 
 const emptySummary: QuoteSummary = {
   direct_cost: 0,
@@ -235,7 +242,12 @@ function blankRate(): RateItem {
 
 const ACTIVE_DRAFT_DB = "dfab-manufacturing-quotation";
 const ACTIVE_DRAFT_STORE = "workflow";
-const ACTIVE_DRAFT_KEY = "active-quotation-v075";
+const WORKSPACE_DATASET_STORE = "workspace-datasets";
+const ACTIVE_DRAFT_KEY = "active-quotation-v085";
+
+function createWorkspaceDatasetId() {
+  return `dataset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
 
 type CommercialAmountOverrides = {
   material_wastage: number | null;
@@ -258,17 +270,40 @@ type PersistedWorkflowDraft = {
   finalPriceOverride: number | null;
   commercialAmountOverrides: CommercialAmountOverrides;
   customer: string;
+  modelFile?: File | null;
+  datasetId: string;
+  datasetName: string;
+  batchFailures?: BatchFailure[];
+  dfmReports?: DfmReport[];
+  bomReports?: BomReport[];
+  selectedDfmId?: string;
+  selectedBomId?: string;
   savedAt: string;
+};
+
+type WorkspaceDatasetSummary = {
+  datasetId: string;
+  datasetName: string;
+  savedAt: string;
+  step: number;
+  view: View;
+  drawingNo: string;
+  fileCount: number;
+  hasDfm: boolean;
+  hasBom: boolean;
 };
 
 function openDraftDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(ACTIVE_DRAFT_DB, 1);
+    const request = indexedDB.open(ACTIVE_DRAFT_DB, 2);
 
     request.onupgradeneeded = () => {
       const db = request.result;
       if (!db.objectStoreNames.contains(ACTIVE_DRAFT_STORE)) {
         db.createObjectStore(ACTIVE_DRAFT_STORE);
+      }
+      if (!db.objectStoreNames.contains(WORKSPACE_DATASET_STORE)) {
+        db.createObjectStore(WORKSPACE_DATASET_STORE);
       }
     };
 
@@ -317,6 +352,95 @@ async function clearWorkflowDraft() {
   db.close();
 }
 
+
+async function saveWorkspaceDataset(value: PersistedWorkflowDraft) {
+  if (!value.datasetId) return;
+  const db = await openDraftDatabase();
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(WORKSPACE_DATASET_STORE, "readwrite");
+    tx.objectStore(WORKSPACE_DATASET_STORE).put(value, value.datasetId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  db.close();
+}
+
+async function loadWorkspaceDataset(datasetId: string): Promise<PersistedWorkflowDraft | null> {
+  if (!datasetId) return null;
+  const db = await openDraftDatabase();
+
+  const value = await new Promise<PersistedWorkflowDraft | null>((resolve, reject) => {
+    const tx = db.transaction(WORKSPACE_DATASET_STORE, "readonly");
+    const request = tx.objectStore(WORKSPACE_DATASET_STORE).get(datasetId);
+    request.onsuccess = () => resolve((request.result as PersistedWorkflowDraft) || null);
+    request.onerror = () => reject(request.error);
+  });
+
+  db.close();
+  return value;
+}
+
+async function loadLatestWorkspaceDataset(): Promise<PersistedWorkflowDraft | null> {
+  const db = await openDraftDatabase();
+
+  const values = await new Promise<PersistedWorkflowDraft[]>((resolve, reject) => {
+    const tx = db.transaction(WORKSPACE_DATASET_STORE, "readonly");
+    const request = tx.objectStore(WORKSPACE_DATASET_STORE).getAll();
+    request.onsuccess = () => resolve((request.result as PersistedWorkflowDraft[]) || []);
+    request.onerror = () => reject(request.error);
+  });
+
+  db.close();
+
+  return values
+    .filter((item) => item?.datasetId)
+    .sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")))[0]
+    || null;
+}
+
+async function listWorkspaceDatasetSummaries(): Promise<WorkspaceDatasetSummary[]> {
+  const db = await openDraftDatabase();
+
+  const values = await new Promise<PersistedWorkflowDraft[]>((resolve, reject) => {
+    const tx = db.transaction(WORKSPACE_DATASET_STORE, "readonly");
+    const request = tx.objectStore(WORKSPACE_DATASET_STORE).getAll();
+    request.onsuccess = () => resolve((request.result as PersistedWorkflowDraft[]) || []);
+    request.onerror = () => reject(request.error);
+  });
+
+  db.close();
+
+  return values
+    .filter((item) => item?.datasetId)
+    .map((item) => ({
+      datasetId: item.datasetId,
+      datasetName: item.datasetName || "Quotation Dataset",
+      savedAt: item.savedAt || "",
+      step: item.step || 1,
+      view: item.view || "workflow",
+      drawingNo: item.drawing?.drawing_no || item.analysis?.drawing?.drawing_no || "",
+      fileCount: item.files?.length || (item.file ? 1 : 0),
+      hasDfm: Boolean(item.dfmReports?.length),
+      hasBom: Boolean(item.bomReports?.length)
+    }))
+    .sort((a, b) => String(b.savedAt || "").localeCompare(String(a.savedAt || "")));
+}
+
+async function deleteWorkspaceDataset(datasetId: string) {
+  const db = await openDraftDatabase();
+
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(WORKSPACE_DATASET_STORE, "readwrite");
+    tx.objectStore(WORKSPACE_DATASET_STORE).delete(datasetId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+
+  db.close();
+}
+
 export default function Page() {
   const [view, setView] = useState<View>("dashboard");
   const [sideOpen, setSideOpen] = useState(true);
@@ -343,6 +467,18 @@ export default function Page() {
     markup: null
   });
   const [customer, setCustomer] = useState("Sample Customer");
+  const [dfmReports, setDfmReports] = useState<DfmReport[]>([]);
+  const [bomReports, setBomReports] = useState<BomReport[]>([]);
+  const [dfmJobs, setDfmJobs] = useState<Record<string, ArtifactJobState>>({});
+  const [bomJobs, setBomJobs] = useState<Record<string, ArtifactJobState>>({});
+  const [selectedDfmId, setSelectedDfmId] = useState("");
+  const [selectedBomId, setSelectedBomId] = useState("");
+  const [modelFile, setModelFile] = useState<File | null>(null);
+  const [showDfmHistory, setShowDfmHistory] = useState(false);
+  const [showBomHistory, setShowBomHistory] = useState(false);
+  const [workspaceDatasetId, setWorkspaceDatasetId] = useState(() => createWorkspaceDatasetId());
+  const [workspaceDatasetName, setWorkspaceDatasetName] = useState("Untitled Quotation Dataset");
+  const [workspaceDatasets, setWorkspaceDatasets] = useState<WorkspaceDatasetSummary[]>([]);
   const [draftHydrated, setDraftHydrated] = useState(false);
   const historyReadyRef = useRef(false);
   const restoringHistoryRef = useRef(false);
@@ -405,39 +541,122 @@ export default function Page() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+
+  // Use DFAB's website icon as both the sidebar brand source and browser tab icon.
+  useEffect(() => {
+    document.title = "DFAB AI Quotation";
+
+    let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!icon) {
+      icon = document.createElement("link");
+      icon.rel = "icon";
+      document.head.appendChild(icon);
+    }
+    icon.href = "/dfab-logo.png";
+
+    let apple = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]');
+    if (!apple) {
+      apple = document.createElement("link");
+      apple.rel = "apple-touch-icon";
+      document.head.appendChild(apple);
+    }
+    apple.href = "/dfab-logo.png";
+  }, []);
+
+  const refreshWorkspaceDatasets = useCallback(async () => {
+    try {
+      setWorkspaceDatasets(await listWorkspaceDatasetSummaries());
+    } catch {
+      setWorkspaceDatasets([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshWorkspaceDatasets();
+  }, [refreshWorkspaceDatasets]);
+
+  useEffect(() => {
+    try {
+      const savedDfm = JSON.parse(localStorage.getItem(DFM_HISTORY_KEY) || "[]") as DfmReport[];
+      const savedBom = JSON.parse(localStorage.getItem(BOM_HISTORY_KEY) || "[]") as BomReport[];
+      setDfmReports(savedDfm);
+      setBomReports(savedBom);
+      setSelectedDfmId(savedDfm.at(-1)?.id || "");
+      setSelectedBomId(savedBom.at(-1)?.id || "");
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try { localStorage.setItem(DFM_HISTORY_KEY, JSON.stringify(dfmReports)); } catch {}
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [dfmReports]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      try { localStorage.setItem(BOM_HISTORY_KEY, JSON.stringify(bomReports)); } catch {}
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [bomReports]);
+
+  const applyPersistedWorkflow = (
+    saved: PersistedWorkflowDraft,
+    restoreNavigation = true
+  ) => {
+    if (restoreNavigation) {
+      setView(saved.view || "workflow");
+      setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
+    }
+
+    setFile(saved.file || null);
+    setFiles(saved.files || (saved.file ? [saved.file] : []));
+    setBatchItems(saved.batchItems || []);
+    batchItemsRef.current = saved.batchItems || [];
+    setBatchFailures(saved.batchFailures || []);
+    setActiveBatchId(saved.activeBatchId || "");
+    setQuoteMode(saved.quoteMode || "merge");
+    setAnalysis(saved.analysis || null);
+    setDrawing(saved.drawing || null);
+    setRows(saved.rows || []);
+    setSummary(saved.summary || emptySummary);
+    setFinalPriceOverride(saved.finalPriceOverride ?? null);
+    setCommercialAmountOverrides(
+      saved.commercialAmountOverrides || {
+        material_wastage: null,
+        overhead: null,
+        markup: null
+      }
+    );
+    setCustomer(saved.customer || "Sample Customer");
+    setModelFile(saved.modelFile || null);
+    setWorkspaceDatasetId(saved.datasetId || createWorkspaceDatasetId());
+    setWorkspaceDatasetName(saved.datasetName || "Quotation Dataset");
+
+    if (saved.dfmReports?.length) {
+      setDfmReports(saved.dfmReports);
+      setSelectedDfmId(saved.selectedDfmId || saved.dfmReports.at(-1)?.id || "");
+    }
+    if (saved.bomReports?.length) {
+      setBomReports(saved.bomReports);
+      setSelectedBomId(saved.selectedBomId || saved.bomReports.at(-1)?.id || "");
+    }
+  };
+
   // Restore the exact quotation workflow position and edited data after refresh/reopen.
   useEffect(() => {
     let cancelled = false;
 
     void loadWorkflowDraft()
+      .then(async (saved) => saved || await loadLatestWorkspaceDataset())
       .then((saved) => {
         if (cancelled || !saved) return;
 
-        setView(saved.view || "workflow");
-        setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
-        setFile(saved.file || null);
-        setFiles(saved.files || (saved.file ? [saved.file] : []));
-        setBatchItems(saved.batchItems || []);
-        batchItemsRef.current = saved.batchItems || [];
-        setActiveBatchId(saved.activeBatchId || "");
-        setQuoteMode(saved.quoteMode || "merge");
-        setAnalysis(saved.analysis || null);
-        setDrawing(saved.drawing || null);
-        setRows(saved.rows || []);
-        setSummary(saved.summary || emptySummary);
-        setFinalPriceOverride(saved.finalPriceOverride ?? null);
-        setCommercialAmountOverrides(
-          saved.commercialAmountOverrides || {
-            material_wastage: null,
-            overhead: null,
-            markup: null
-          }
-        );
-        setCustomer(saved.customer || "Sample Customer");
+        applyPersistedWorkflow(saved, true);
 
-        if (saved.drawing || saved.analysis) {
+        if (saved.drawing || saved.analysis || saved.files?.length) {
           setMsg(
-            `Previous quotation restored at Step ${saved.step || 1}. Last auto-save: ${
+            `Workspace dataset restored at Step ${saved.step || 1}. Last auto-save: ${
               saved.savedAt ? new Date(saved.savedAt).toLocaleString() : "saved"
             }.`
           );
@@ -457,7 +676,7 @@ export default function Page() {
 
   // Auto-save the complete in-progress workflow, including the uploaded File objects.
   useEffect(() => {
-    if (!draftHydrated) return;
+    if (!draftHydrated || busy) return;
 
     const timer = window.setTimeout(() => {
       const activeBatch = batchItemsRef.current.length
@@ -475,7 +694,7 @@ export default function Page() {
           )
         : batchItems;
 
-      void saveWorkflowDraft({
+      const snapshot: PersistedWorkflowDraft = {
         view,
         step,
         file,
@@ -490,11 +709,28 @@ export default function Page() {
         finalPriceOverride,
         commercialAmountOverrides,
         customer,
+        modelFile,
+        datasetId: workspaceDatasetId,
+        datasetName: workspaceDatasetName,
+        batchFailures,
+        dfmReports,
+        bomReports,
+        selectedDfmId,
+        selectedBomId,
         savedAt: new Date().toISOString()
-      }).catch(() => {
-        // Non-blocking auto-save. The current workflow remains usable.
-      });
-    }, 220);
+      };
+
+      void Promise.all([
+        saveWorkflowDraft(snapshot),
+        saveWorkspaceDataset(snapshot)
+      ])
+        .then(() => {
+          void refreshWorkspaceDatasets();
+        })
+        .catch(() => {
+          // Non-blocking auto-save. The current workflow remains usable.
+        });
+    }, 1200);
 
     return () => window.clearTimeout(timer);
   }, [
@@ -512,7 +748,17 @@ export default function Page() {
     summary,
     finalPriceOverride,
     commercialAmountOverrides,
-    customer
+    customer,
+    modelFile,
+    workspaceDatasetId,
+    workspaceDatasetName,
+    batchFailures,
+    dfmReports,
+    bomReports,
+    selectedDfmId,
+    selectedBomId,
+    busy,
+    refreshWorkspaceDatasets
   ]);
 
   // Keep browser/system Back inside the application and return to the previous
@@ -526,7 +772,7 @@ export default function Page() {
       window.location.href
     );
     history.pushState(
-      { dfabApp: true, view, step },
+      { dfabApp: true, view, step, datasetId: workspaceDatasetId },
       "",
       window.location.href
     );
@@ -542,7 +788,7 @@ export default function Page() {
     }
 
     history.pushState(
-      { dfabApp: true, view, step },
+      { dfabApp: true, view, step, datasetId: workspaceDatasetId },
       "",
       window.location.href
     );
@@ -557,12 +803,27 @@ export default function Page() {
         dfabGuard?: boolean;
         view?: View;
         step?: number;
+        datasetId?: string;
       } | null;
 
       if (state?.dfabApp) {
         restoringHistoryRef.current = true;
-        setView(state.view || "dashboard");
-        setStep(Math.min(4, Math.max(1, Number(state.step || 1))));
+        const targetView = state.view || "dashboard";
+        const targetStep = Math.min(4, Math.max(1, Number(state.step || 1)));
+
+        if (targetView === "workflow" && state.datasetId) {
+          void loadWorkspaceDataset(state.datasetId)
+            .then((saved) => {
+              if (saved) applyPersistedWorkflow(saved, false);
+            })
+            .finally(() => {
+              setView(targetView);
+              setStep(targetStep);
+            });
+        } else {
+          setView(targetView);
+          setStep(targetStep);
+        }
         return;
       }
 
@@ -579,7 +840,7 @@ export default function Page() {
       setStep(targetStep);
 
       history.pushState(
-        { dfabApp: true, view: targetView, step: targetStep },
+        { dfabApp: true, view: targetView, step: targetStep, datasetId: workspaceDatasetId },
         "",
         window.location.href
       );
@@ -613,6 +874,11 @@ export default function Page() {
     setAnalyzeProgress("");
     setTrainingPromptItems([]);
     setTrainingBusy(false);
+    setModelFile(null);
+    setShowDfmHistory(false);
+    setShowBomHistory(false);
+    setWorkspaceDatasetId(createWorkspaceDatasetId());
+    setWorkspaceDatasetName("Untitled Quotation Dataset");
     setAnalysis(null);
     setDrawing(null);
     setRows([]);
@@ -711,6 +977,75 @@ export default function Page() {
   const wait = (milliseconds: number) =>
     new Promise((resolve) => window.setTimeout(resolve, milliseconds));
 
+  const acceptParallelArtifacts = (workspace: BatchWorkspace) => {
+    const key = workspace.analysis.file_hash || workspace.id;
+    const embeddedDfm = workspace.analysis.dfm;
+    const embeddedBom = workspace.analysis.bom;
+
+    if (embeddedDfm) {
+      setDfmReports((current) => [
+        ...current.filter((item) => item.file_hash !== embeddedDfm.file_hash),
+        embeddedDfm
+      ]);
+      setSelectedDfmId(embeddedDfm.id);
+      setDfmJobs((current) => ({
+        ...current,
+        [key]:
+          embeddedDfm.status === "ATTENTION"
+            ? "attention"
+            : embeddedDfm.status === "REVIEW"
+              ? "review"
+              : "ready"
+      }));
+    } else {
+      setDfmJobs((current) => ({ ...current, [key]: "processing" }));
+      void api.generateDfm({
+        fileHash: workspace.analysis.file_hash,
+        filename: workspace.file.name,
+        drawing: workspace.drawing,
+        rows: workspace.rows,
+        aiRaw: workspace.analysis.ai_raw || {}
+      }).then((report) => {
+        setDfmReports((current) => [
+          ...current.filter((item) => item.file_hash !== report.file_hash),
+          report
+        ]);
+        setSelectedDfmId(report.id);
+        setDfmJobs((current) => ({ ...current, [key]: "ready" }));
+      }).catch(() => {
+        setDfmJobs((current) => ({ ...current, [key]: "failed" }));
+      });
+    }
+
+    if (embeddedBom) {
+      setBomReports((current) => [
+        ...current.filter((item) => item.file_hash !== embeddedBom.file_hash),
+        embeddedBom
+      ]);
+      setSelectedBomId(embeddedBom.id);
+      setBomJobs((current) => ({ ...current, [key]: "ready" }));
+    } else {
+      setBomJobs((current) => ({ ...current, [key]: "processing" }));
+      void api.generateBom({
+        fileHash: workspace.analysis.file_hash,
+        filename: workspace.file.name,
+        drawing: workspace.drawing,
+        rows: workspace.rows,
+        aiRaw: workspace.analysis.ai_raw || {}
+      }).then((report) => {
+        setBomReports((current) => [
+          ...current.filter((item) => item.file_hash !== report.file_hash),
+          report
+        ]);
+        setSelectedBomId(report.id);
+        setBomJobs((current) => ({ ...current, [key]: "ready" }));
+      }).catch(() => {
+        setBomJobs((current) => ({ ...current, [key]: "failed" }));
+      });
+    }
+  };
+
+
   const analyzeOneWithRetry = async (
     selected: File,
     originalIndex: number,
@@ -730,7 +1065,7 @@ export default function Page() {
         const result = await api.analyzeDrawing(selected, true);
         const itemSummary = result.summary || await api.calculateQuote(result.rows);
 
-        return {
+        const workspace: BatchWorkspace = {
           id: `${result.file_hash}-${originalIndex}`,
           file: selected,
           analysis: result,
@@ -738,14 +1073,33 @@ export default function Page() {
           rows: result.rows,
           summary: itemSummary
         };
+
+        acceptParallelArtifacts(workspace);
+        return workspace;
       } catch (error) {
         lastError =
           error instanceof Error
             ? error.message
             : "Analyze failed";
 
+        const upper = lastError.toUpperCase();
+        const rateLimited =
+          upper.includes("429")
+          || upper.includes("RESOURCE_EXHAUSTED")
+          || upper.includes("RATE LIMIT");
+
+        const retryableServiceError =
+          upper.includes("503")
+          || upper.includes("UNAVAILABLE")
+          || upper.includes("TIMEOUT")
+          || upper.includes("DEADLINE_EXCEEDED");
+
+        if (rateLimited || !retryableServiceError) {
+          break;
+        }
+
         if (attempt < 2) {
-          await wait(1200);
+          await wait(600);
         }
       }
     }
@@ -1650,11 +2004,50 @@ export default function Page() {
       .filter(Boolean)
   ));
 
-  const unitOptions = Array.from(new Set([
-    ...(catalog?.units || []),
-    ...rates.map((rate) => rate.unit),
-    draftRate.unit
+  const materialUnitOptions = Array.from(new Set([
+    draftRate.category === "MATERIAL" ? draftRate.unit : "",
+    "kg", "g", "ton", "sheet", "piece"
   ].filter(Boolean)));
+
+  const processUnitOptions = Array.from(new Set([
+    draftRate.category === "PROCESS" ? draftRate.unit : "",
+    "sec", "min", "hr"
+  ].filter(Boolean)));
+
+  const labourUnitOptions = Array.from(new Set([
+    draftRate.category === "LABOUR" ? draftRate.unit : "",
+    "sec", "min", "hr", "day", "shift", "part-time", "overtime"
+  ].filter(Boolean)));
+
+  const otherUnitOptions = Array.from(new Set([
+    draftRate.category === "OTHER" ? draftRate.unit : "",
+    "job", "each", "piece"
+  ].filter(Boolean)));
+
+  const unitOptions =
+    draftRate.category === "MATERIAL"
+      ? materialUnitOptions
+      : draftRate.category === "PROCESS"
+        ? processUnitOptions
+        : draftRate.category === "LABOUR"
+          ? labourUnitOptions
+          : draftRate.category === "COMMERCIAL"
+            ? ["%"]
+            : otherUnitOptions;
+
+  const rateRowUnitOptions = (rate: RateItem) =>
+    Array.from(new Set([
+      rate.unit,
+      ...(rate.category === "MATERIAL"
+        ? ["kg", "g", "ton", "sheet", "piece"]
+        : rate.category === "PROCESS"
+          ? ["sec", "min", "hr"]
+          : rate.category === "LABOUR"
+            ? ["sec", "min", "hr", "day", "shift", "part-time", "overtime"]
+            : rate.category === "COMMERCIAL"
+              ? ["%"]
+              : ["job", "each", "piece"])
+    ].filter(Boolean)));
 
   const gradeOptions = draftRate.category === "MATERIAL"
     ? Array.from(new Set([
@@ -1736,12 +2129,171 @@ export default function Page() {
     }
   };
 
+  const hasActiveDrawing =
+    Boolean(file)
+    || files.length > 0
+    || Boolean(analysis)
+    || batchItems.length > 0;
+
+  const engineeringArtifactStage: "red" | "yellow" | "green" =
+    !hasActiveDrawing
+      ? "red"
+      : step >= 3 && rows.length > 0
+        ? "green"
+        : "yellow";
+
+  const saveCurrentWorkspaceNow = async (navigationView: View = view) => {
+    const activeBatch = batchItemsRef.current.length
+      ? batchItemsRef.current.map((item) =>
+          item.id === activeBatchId && analysis && drawing
+            ? {
+                ...item,
+                file: file || item.file,
+                analysis,
+                drawing,
+                rows,
+                summary
+              }
+            : item
+        )
+      : batchItems;
+
+    const snapshot: PersistedWorkflowDraft = {
+      view: navigationView,
+      step,
+      file,
+      files,
+      batchItems: activeBatch,
+      activeBatchId,
+      quoteMode,
+      analysis,
+      drawing,
+      rows,
+      summary,
+      finalPriceOverride,
+      commercialAmountOverrides,
+      customer,
+      modelFile,
+      datasetId: workspaceDatasetId,
+      datasetName: workspaceDatasetName,
+      batchFailures,
+      dfmReports,
+      bomReports,
+      selectedDfmId,
+      selectedBomId,
+      savedAt: new Date().toISOString()
+    };
+
+    await Promise.all([
+      saveWorkflowDraft(snapshot),
+      saveWorkspaceDataset(snapshot)
+    ]);
+  };
+
+  const openEngineeringArtifact = (target: "dfm" | "bom") => {
+    // Save the exact quotation/cost-sheet state before leaving the workflow.
+    void saveCurrentWorkspaceNow(view === "workflow" ? "workflow" : view)
+      .catch(() => undefined)
+      .finally(() => setView(target));
+  };
+
+  const restoreWorkspaceDataset = async (datasetId: string) => {
+    const saved = await loadWorkspaceDataset(datasetId);
+    if (!saved) return;
+
+    applyPersistedWorkflow(saved, true);
+    setMsg(
+      `${saved.datasetName || "Workspace dataset"} restored. Last saved ${
+        saved.savedAt ? new Date(saved.savedAt).toLocaleString() : ""
+      }.`
+    );
+    await saveWorkflowDraft(saved);
+  };
+
+  const removeWorkspaceDataset = async (datasetId: string) => {
+    if (!window.confirm("Delete this saved workspace dataset?")) return;
+    await deleteWorkspaceDataset(datasetId);
+    await refreshWorkspaceDatasets();
+  };
+
+  const selectedDfm = dfmReports.find((item) => item.id === selectedDfmId) || dfmReports.at(-1) || null;
+  const selectedBom = bomReports.find((item) => item.id === selectedBomId) || bomReports.at(-1) || null;
+  const dfmProcessingCount = Object.values(dfmJobs).filter((value) => value === "processing").length;
+  const bomProcessingCount = Object.values(bomJobs).filter((value) => value === "processing").length;
+
+  const selectedDfmPassCount = selectedDfm?.checks.filter((item) => item.result === "PASS").length || 0;
+  const selectedDfmReviewCount = selectedDfm?.checks.filter((item) => item.result === "REVIEW").length || 0;
+  const selectedDfmFailCount = selectedDfm?.checks.filter((item) => item.result === "FAIL").length || 0;
+  const selectedDfmAttentionCount = selectedDfmReviewCount + selectedDfmFailCount;
+
+  const selectedBomMaterialCount = selectedBom?.items.filter((item) =>
+    item.category === "Raw Material" || item.category === "Manufactured Part"
+  ).length || 0;
+
+  const selectedBomStandardCount = selectedBom?.items.filter((item) =>
+    item.category === "Standard Part" || item.category === "Purchased Part"
+  ).length || 0;
+
+  const selectedBomMissingCount = selectedBom?.items.filter((item) =>
+    !String(item.description || "").trim()
+    || !String(item.unit || "").trim()
+    || Number(item.quantity || 0) <= 0
+    || (
+      item.category === "Raw Material"
+      && !String(item.material || "").trim()
+    )
+  ).length || 0;
+
+  const selectedBomTotalCost = selectedBom?.items.reduce(
+    (sum, item) => sum + Number(item.total_cost || 0),
+    0
+  ) || 0;
+
+  const updateDfm = (next: DfmReport) => {
+    setDfmReports((current) => current.map((item) => item.id === next.id ? next : item));
+  };
+
+  const updateBom = (next: BomReport) => {
+    setBomReports((current) => current.map((item) => item.id === next.id ? next : item));
+  };
+
+  const renameDfm = (report: DfmReport) => {
+    const name = window.prompt("Rename DFM report", report.name)?.trim();
+    if (name) updateDfm({ ...report, name });
+  };
+
+  const renameBom = (report: BomReport) => {
+    const name = window.prompt("Rename BOM", report.name)?.trim();
+    if (name) updateBom({ ...report, name });
+  };
+
+  const deleteDfm = (report: DfmReport) => {
+    if (!window.confirm(`Delete "${report.name}"?`)) return;
+    setDfmReports((current) => current.filter((item) => item.id !== report.id));
+    if (selectedDfmId === report.id) setSelectedDfmId("");
+  };
+
+  const deleteBom = (report: BomReport) => {
+    if (!window.confirm(`Delete "${report.name}"?`)) return;
+    setBomReports((current) => current.filter((item) => item.id !== report.id));
+    if (selectedBomId === report.id) setSelectedBomId("");
+  };
+
   return (
     <main className={`app ${sideOpen ? "" : "sidebar-collapsed"}`}>
       <aside className={`side ${sideOpen ? "" : "closed"}`}>
         <button className="sidebar-toggle" type="button" onClick={() => setSideOpen(false)} title="Close menu" aria-label="Close menu">‹</button>
         <div className="brand">
-          <span>AQ</span>
+          <span className="dfab-logo-placeholder" aria-label="DFAB logo placeholder">
+            <img
+              src="/dfab-logo.png"
+              alt="DFAB Logo"
+              onError={(e) => {
+                e.currentTarget.style.display = "none";
+              }}
+            />
+            <em>DFAB</em>
+          </span>
           <div><b>AI Quotation</b><small>Manufacturing Costing</small></div>
         </div>
         <nav>
@@ -1749,7 +2301,21 @@ export default function Page() {
           <button onClick={newQuote}>New Quotation</button>
           <button className={view === "quotes" ? "active" : ""} onClick={() => setView("quotes")}>Quotation History</button>
           <button className={view === "rates" ? "active" : ""} onClick={openRates}>Rate Master</button>
-          <button className={view === "dataset" ? "active" : ""} onClick={() => { setView("dataset"); void refresh(); }}>Dataset Learning</button>
+          <button className={view === "dfm" ? "active" : ""} onClick={() => openEngineeringArtifact("dfm")}>
+            <span>DFM Report</span>
+            <span className="artifact-nav-meta">
+              <i className={`artifact-nav-light ${engineeringArtifactStage}`}/>
+              <em>{dfmReports.length}</em>
+            </span>
+          </button>
+          <button className={view === "bom" ? "active" : ""} onClick={() => openEngineeringArtifact("bom")}>
+            <span>BOM</span>
+            <span className="artifact-nav-meta">
+              <i className={`artifact-nav-light ${engineeringArtifactStage}`}/>
+              <em>{bomReports.length}</em>
+            </span>
+          </button>
+          <button className={view === "dataset" ? "active" : ""} onClick={() => { setView("dataset"); void refresh(); void refreshWorkspaceDatasets(); }}>Dataset Learning</button>
           <button className={view === "settings" ? "active" : ""} onClick={() => setView("settings")}>Settings</button>
         </nav>
         <div className="learn">
@@ -1874,38 +2440,100 @@ export default function Page() {
                   <input
                     type="file"
                     multiple
-                    accept=".pdf,.png,.jpg,.jpeg,.dxf,.dwg"
+                    accept=".pdf,.png,.jpg,.jpeg,.dxf,.dwg,.step,.stp,.glb,.gltf,.stl,.obj,.iges,.igs,.x_t,.x_b"
                     onChange={(e) => {
-                      const nextFiles = Array.from(e.target.files || []);
-                      const nextFile = nextFiles[0] || null;
+                      const selectedInputs = Array.from(e.target.files || []);
 
-                      setFiles(nextFiles);
+                      const modelExtensions = new Set([
+                        "step", "stp", "glb", "gltf", "stl", "obj",
+                        "iges", "igs", "x_t", "x_b"
+                      ]);
+
+                      const selectedModels = selectedInputs.filter((selected) => {
+                        const ext = selected.name.split(".").pop()?.toLowerCase() || "";
+                        return modelExtensions.has(ext);
+                      });
+
+                      const selectedDrawings = selectedInputs.filter((selected) => {
+                        const ext = selected.name.split(".").pop()?.toLowerCase() || "";
+                        return !modelExtensions.has(ext);
+                      });
+
+                      // Same picker handles everything:
+                      // PDF/Image/DXF/DWG -> quotation analysis
+                      // STEP/STP/etc. -> automatically linked to DFM.
+                      const nextDrawingFiles =
+                        selectedDrawings.length > 0
+                          ? selectedDrawings
+                          : files;
+
+                      const nextModel =
+                        selectedModels[0]
+                        || modelFile
+                        || null;
+
+                      const nextFile = nextDrawingFiles[0] || null;
+
+                      setFiles(nextDrawingFiles);
                       setFile(nextFile);
-                      setBatchItems([]);
-                      batchItemsRef.current = [];
-                      setBatchFailures([]);
-                      setActiveBatchId("");
-                      setAnalysis(null);
-                      setDrawing(null);
-                      setRows([]);
-                      setSummary(emptySummary);
+                      setModelFile(nextModel);
+
+                      if (selectedDrawings.length > 0) {
+                        const sourceName = selectedDrawings[0].name.replace(/\.[^.]+$/, "");
+                        setWorkspaceDatasetName(`Dataset - ${sourceName}`);
+                      }
+
+                      if (selectedDrawings.length > 0) {
+                        setBatchItems([]);
+                        batchItemsRef.current = [];
+                        setBatchFailures([]);
+                        setActiveBatchId("");
+                        setAnalysis(null);
+                        setDrawing(null);
+                        setRows([]);
+                        setSummary(emptySummary);
+                      }
+
+                      const drawingText =
+                        nextDrawingFiles.length > 1
+                          ? `${nextDrawingFiles.length} drawings`
+                          : nextDrawingFiles.length === 1
+                            ? nextDrawingFiles[0].name
+                            : "no 2D drawing";
+
+                      const modelText =
+                        nextModel
+                          ? ` + 3D model ${nextModel.name}`
+                          : "";
 
                       setMsg(
-                        nextFiles.length > 1
-                          ? `${nextFiles.length} drawings selected. Click Analyze Drawings.`
-                          : nextFile
-                            ? `Selected ${nextFile.name}. Click Analyze Drawing.`
-                            : "Upload a drawing to begin."
+                        selectedInputs.length
+                          ? `${drawingText}${modelText} selected.${nextDrawingFiles.length ? " Click Analyze Drawing." : " Add a PDF/Image/DXF/DWG drawing to analyze."}`
+                          : "Upload a drawing to begin."
                       );
+
+                      // Allows choosing the same file again if needed.
+                      e.target.value = "";
                     }}
                   />
                   <span>↑</span>
                   <b>
                     {files.length > 1
-                      ? `${files.length} drawings selected`
-                      : file?.name || "Choose drawing(s)"}
+                      ? `${files.length} drawings selected${modelFile ? " + 3D model" : ""}`
+                      : file?.name
+                        ? `${file.name}${modelFile ? " + 3D model" : ""}`
+                        : modelFile
+                          ? `3D model linked · choose drawing`
+                          : "Choose drawing(s)"}
                   </b>
-                  <small>PDF / Image / DXF / DWG · single or multiple files</small>
+                  <small>
+                    PDF / Image / DXF / DWG / STEP / STP / GLB / GLTF / STL / OBJ / IGES / Parasolid
+                  </small>
+                  {modelFile && (
+                    <em className="upload-linked-model">
+                      3D linked: {modelFile.name} · automatically available in DFM
+                    </em>
+                  )}
                 </label>
 
                 {busy && (
@@ -1969,22 +2597,29 @@ export default function Page() {
                 <div className="review">
                   <div className="paperbox">
                     <div className="drawing-snapshot">
-                      {analysis?.preview_image
-                        ? <img src={analysis.preview_image} alt="First-page drawing snapshot"/>
+                      {fileUrl && file?.type === "application/pdf"
+                        ? (
+                          <iframe
+                            src={`${fileUrl}#toolbar=0&navpanes=0&view=FitH`}
+                            title="Uploaded engineering drawing"
+                          />
+                        )
                         : fileUrl && file && file.type.startsWith("image/")
                           ? <img src={fileUrl} alt="Uploaded drawing"/>
-                          : (
-                            <div className="drawing-outline" aria-label="Drawing outline preview">
-                              <div className="outline-title">DRAWING PREVIEW</div>
-                              <div className="outline-main">
-                                <i/><i/><i/><i/>
+                          : analysis?.preview_image
+                            ? <img src={analysis.preview_image} alt="Drawing snapshot"/>
+                            : (
+                              <div className="drawing-outline" aria-label="Drawing outline preview">
+                                <div className="outline-title">DRAWING PREVIEW</div>
+                                <div className="outline-main">
+                                  <i/><i/><i/><i/>
+                                </div>
+                                <div className="outline-titleblock">
+                                  <span>{drawing.drawing_no || "Drawing No."}</span>
+                                  <span>{drawing.revision || "Rev"}</span>
+                                </div>
                               </div>
-                              <div className="outline-titleblock">
-                                <span>{drawing.drawing_no || "Drawing No."}</span>
-                                <span>{drawing.revision || "Rev"}</span>
-                              </div>
-                            </div>
-                          )}
+                            )}
                     </div>
                     <div className="snapshot-caption">
                       <b>Drawing Snapshot</b>
@@ -2352,7 +2987,7 @@ export default function Page() {
                           category,
                           name: processOptions[0] || "Laser Cutting",
                           grade: "",
-                          unit: "job"
+                          unit: "hr"
                         });
                       } else if (category === "LABOUR") {
                         setDraftRate({
@@ -2593,10 +3228,7 @@ export default function Page() {
                           ].filter(Boolean)))
                         : [];
 
-                    const rowUnitOptions = Array.from(new Set([
-                      rate.unit,
-                      ...unitOptions
-                    ].filter(Boolean)));
+                    const rowUnitOptions = rateRowUnitOptions(rate);
 
                     return (
                       <tr key={rate.id}>
@@ -2732,6 +3364,505 @@ export default function Page() {
           </section>
         )}
 
+        {view === "dfm" && (
+          <section className="artifact-page">
+            <div className="panel artifact-header-panel">
+              <div className="heading row">
+                <div>
+                  <p className="eyebrow">DESIGN FOR MANUFACTURING</p>
+                  <h2>DFM Report</h2>
+                  <p>Generated in the background for every analyzed drawing. Fully editable before PDF download.</p>
+                </div>
+                <div className="artifact-header-actions">
+                  <div className="artifact-live-state">
+                    <i className={dfmProcessingCount ? "processing" : selectedDfm?.status === "ATTENTION" ? "attention" : selectedDfm?.status === "REVIEW" ? "review" : "ready"}/>
+                    <b>{dfmProcessingCount ? `${dfmProcessingCount} processing` : "DFM ready"}</b>
+                  </div>
+                  <button className="artifact-history-button" onClick={() => setShowDfmHistory(true)}>
+                    <span>History</span>
+                    <b>{dfmReports.length}</b>
+                  </button>
+                </div>
+              </div>
+
+              <div className="artifact-editor artifact-editor-full">
+                  {selectedDfm ? (
+                    <>
+                      <div className="artifact-toolbar">
+                        <input value={selectedDfm.name} onChange={(e) => updateDfm({ ...selectedDfm, name: e.target.value })}/>
+                        <button className="btn secondary" onClick={() => renameDfm(selectedDfm)}>Rename</button>
+                        <button className="btn secondary" onClick={() => void api.exportDfm(selectedDfm)}>Download PDF</button>
+                        <button className="btn danger" onClick={() => deleteDfm(selectedDfm)}>Delete</button>
+                      </div>
+
+                      <div className="artifact-kpi-grid dfm-kpis">
+                        <div className={selectedDfm.drawing_no ? "" : "needs-attention"}>
+                          <span>Drawing</span>
+                          <b>{selectedDfm.drawing_no || "Unknown"}</b>
+                          <small>{selectedDfm.filename || "Source drawing"}</small>
+                        </div>
+
+                        <label className={selectedDfm.classification.includes("review") ? "needs-attention" : ""}>
+                          <span>Manufacturing Type</span>
+                          <select value={selectedDfm.classification} onChange={(e) => updateDfm({ ...selectedDfm, classification: e.target.value })}>
+                            <option>Fabrication</option>
+                            <option>Machining</option>
+                            <option>Fabrication + Machining</option>
+                            <option>Manufacturing route requires engineer review</option>
+                          </select>
+                          <small>Auto-classified from process/features</small>
+                        </label>
+
+                        <label className={selectedDfm.status === "READY" ? "kpi-good" : "needs-attention"}>
+                          <span>DFM Status</span>
+                          <select value={selectedDfm.status} onChange={(e) => updateDfm({ ...selectedDfm, status: e.target.value })}>
+                            <option>READY</option>
+                            <option>REVIEW</option>
+                            <option>ATTENTION</option>
+                          </select>
+                          <small>{selectedDfm.status === "READY" ? "No blocking flag" : "Engineer attention required"}</small>
+                        </label>
+
+                        <div className="kpi-good">
+                          <span>Passed Checks</span>
+                          <b>{selectedDfmPassCount}</b>
+                          <small>Manufacturing checks passed</small>
+                        </div>
+
+                        <div className={selectedDfmReviewCount ? "needs-attention" : "kpi-good"}>
+                          <span>Review</span>
+                          <b>{selectedDfmReviewCount}</b>
+                          <small>{selectedDfmReviewCount ? "Needs engineer review" : "No review flags"}</small>
+                        </div>
+
+                        <div className={selectedDfmFailCount ? "needs-attention strong" : "kpi-good"}>
+                          <span>Failed / Blocking</span>
+                          <b>{selectedDfmFailCount}</b>
+                          <small>{selectedDfmFailCount ? "Resolve before release" : "No failed checks"}</small>
+                        </div>
+                      </div>
+
+                      {selectedDfmAttentionCount > 0 && (
+                        <div className="artifact-attention-banner">
+                          <i/>
+                          <div>
+                            <b>{selectedDfmAttentionCount} DFM item{selectedDfmAttentionCount === 1 ? "" : "s"} need attention</b>
+                            <span>Red-highlighted rows contain unknown, review or failed manufacturing conditions.</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="dfm-model-grid">
+                        <div>
+                          <div className="artifact-subhead">
+                            <div>
+                              <b>3D Model Review</b>
+                              <span>
+                                {modelFile
+                                  ? `${modelFile.name} · linked automatically from Choose drawing(s)`
+                                  : "No 3D model linked · optional STEP / STP / GLB / GLTF can be added here"}
+                              </span>
+                            </div>
+                            <label className="btn secondary file-button">
+                              {modelFile ? "Replace 3D Model" : "Upload 3D Model"}
+                              <input
+                                type="file"
+                                accept=".step,.stp,.glb,.gltf,.stl,.obj,.iges,.igs,.x_t,.x_b"
+                                onChange={(e) => setModelFile(e.target.files?.[0] || null)}
+                              />
+                            </label>
+                          </div>
+                          <ModelViewer file={modelFile} issueCount={selectedDfm.checks.filter((item) => item.result !== "PASS").length}/>
+                        </div>
+
+                        <div>
+                          <div className="artifact-subhead"><div><b>International DFM Reference Matrix</b><span>Feature-specific references; engineer must confirm applicability to the customer drawing</span></div></div>
+                          <div className="artifact-table-wrap">
+                            <table className="artifact-table reference-table">
+                              <thead>
+                                <tr>
+                                  <th>International Reference</th>
+                                  <th>DFM Check Basis / Scope</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {selectedDfm.standards.map((item, index) => (
+                                  <tr key={`${item.standard}-${index}`}>
+                                    <td>
+                                      <input
+                                        value={item.standard}
+                                        onChange={(e) => {
+                                          const standards = [...selectedDfm.standards];
+                                          standards[index] = { ...standards[index], standard: e.target.value };
+                                          updateDfm({ ...selectedDfm, standards });
+                                        }}
+                                      />
+                                    </td>
+                                    <td>
+                                      <textarea
+                                        value={item.scope}
+                                        onChange={(e) => {
+                                          const standards = [...selectedDfm.standards];
+                                          standards[index] = { ...standards[index], scope: e.target.value };
+                                          updateDfm({ ...selectedDfm, standards });
+                                        }}
+                                      />
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="artifact-section">
+                        <div className="artifact-subhead"><div><b>Manufacturing Feasibility</b><span>PASS / REVIEW / FAIL with recommendations</span></div></div>
+                        <div className="artifact-table-wrap">
+                          <table className="artifact-table dfm-check-table">
+                            <thead><tr><th>Area</th><th>Result</th><th>Finding</th><th>Recommendation</th><th>Reference</th></tr></thead>
+                            <tbody>
+                              {selectedDfm.checks.map((item, index) => (
+                                <tr
+                                  key={`${item.area}-${index}`}
+                                  className={
+                                    item.result === "FAIL"
+                                      ? "artifact-row-fail"
+                                      : item.result === "REVIEW"
+                                        ? "artifact-row-review"
+                                        : ""
+                                  }
+                                >
+                                  <td><input value={item.area} onChange={(e) => {
+                                    const checks = [...selectedDfm.checks]; checks[index] = { ...checks[index], area: e.target.value }; updateDfm({ ...selectedDfm, checks });
+                                  }}/></td>
+                                  <td><select value={item.result} onChange={(e) => {
+                                    const checks = [...selectedDfm.checks]; checks[index] = { ...checks[index], result: e.target.value }; updateDfm({ ...selectedDfm, checks });
+                                  }}><option>PASS</option><option>REVIEW</option><option>FAIL</option></select></td>
+                                  <td><textarea value={item.finding} onChange={(e) => {
+                                    const checks = [...selectedDfm.checks]; checks[index] = { ...checks[index], finding: e.target.value }; updateDfm({ ...selectedDfm, checks });
+                                  }}/></td>
+                                  <td><textarea value={item.recommendation} onChange={(e) => {
+                                    const checks = [...selectedDfm.checks]; checks[index] = { ...checks[index], recommendation: e.target.value }; updateDfm({ ...selectedDfm, checks });
+                                  }}/></td>
+                                  <td><input value={item.standard} onChange={(e) => {
+                                    const checks = [...selectedDfm.checks]; checks[index] = { ...checks[index], standard: e.target.value }; updateDfm({ ...selectedDfm, checks });
+                                  }}/></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      <div className="artifact-section">
+                        <div className="artifact-subhead"><div><b>Manufacturing Process Plan</b><span>Editable process / tooling / feasibility / inspection</span></div></div>
+                        <div className="artifact-table-wrap">
+                          <table className="artifact-table">
+                            <thead><tr><th>Seq</th><th>Process</th><th>Tooling / Method</th><th>Feasibility</th><th>Inspection</th></tr></thead>
+                            <tbody>
+                              {selectedDfm.process_plan.map((item, index) => (
+                                <tr key={`${item.sequence}-${index}`}>
+                                  <td><input type="number" value={item.sequence} onChange={(e) => {
+                                    const process_plan = [...selectedDfm.process_plan]; process_plan[index] = { ...process_plan[index], sequence: +e.target.value }; updateDfm({ ...selectedDfm, process_plan });
+                                  }}/></td>
+                                  <td><input value={item.process} onChange={(e) => {
+                                    const process_plan = [...selectedDfm.process_plan]; process_plan[index] = { ...process_plan[index], process: e.target.value }; updateDfm({ ...selectedDfm, process_plan });
+                                  }}/></td>
+                                  <td><textarea value={item.tooling} onChange={(e) => {
+                                    const process_plan = [...selectedDfm.process_plan]; process_plan[index] = { ...process_plan[index], tooling: e.target.value }; updateDfm({ ...selectedDfm, process_plan });
+                                  }}/></td>
+                                  <td><input value={item.feasibility} onChange={(e) => {
+                                    const process_plan = [...selectedDfm.process_plan]; process_plan[index] = { ...process_plan[index], feasibility: e.target.value }; updateDfm({ ...selectedDfm, process_plan });
+                                  }}/></td>
+                                  <td><textarea value={item.inspection} onChange={(e) => {
+                                    const process_plan = [...selectedDfm.process_plan]; process_plan[index] = { ...process_plan[index], inspection: e.target.value }; updateDfm({ ...selectedDfm, process_plan });
+                                  }}/></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  ) : <div className="artifact-empty large">No DFM report yet. Analyze one or more drawings.</div>}
+              </div>
+
+              {showDfmHistory && (
+                <div className="artifact-history-modal-backdrop" onMouseDown={() => setShowDfmHistory(false)}>
+                  <div className="artifact-history-modal" onMouseDown={(e) => e.stopPropagation()}>
+                    <div className="artifact-history-modal-head">
+                      <div>
+                        <p className="eyebrow">DFM REPORTS</p>
+                        <h3>DFM History</h3>
+                        <span>{dfmReports.length} saved report{dfmReports.length === 1 ? "" : "s"}</span>
+                      </div>
+                      <button className="icon-btn" onClick={() => setShowDfmHistory(false)}>×</button>
+                    </div>
+
+                    <div className="artifact-history-list-full">
+                      {dfmReports.slice().reverse().map((report) => (
+                        <div
+                          key={report.id}
+                          className={selectedDfm?.id === report.id ? "active" : ""}
+                        >
+                          <button
+                            className="artifact-history-select"
+                            onClick={() => {
+                              setSelectedDfmId(report.id);
+                              setShowDfmHistory(false);
+                            }}
+                          >
+                            <i className={`artifact-dot ${report.status === "READY" ? "ready" : report.status === "ATTENTION" ? "attention" : "review"}`}/>
+                            <span>
+                              <b>{report.name}</b>
+                              <small>{report.drawing_no || report.filename} · Rev {report.revision || "—"}</small>
+                            </span>
+                            <em>{new Date(report.created_at).toLocaleString()}</em>
+                          </button>
+                          <div className="artifact-history-row-actions">
+                            <button className="mini save" onClick={() => renameDfm(report)}>Rename</button>
+                            <button className="mini delete" onClick={() => deleteDfm(report)}>Delete</button>
+                          </div>
+                        </div>
+                      ))}
+
+                      {!dfmReports.length && (
+                        <div className="artifact-empty large">
+                          No DFM history yet. Analyze a drawing to create the first report.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
+        {view === "bom" && (
+          <section className="artifact-page">
+            <div className="panel artifact-header-panel">
+              <div className="heading row">
+                <div>
+                  <p className="eyebrow">BILL OF MATERIALS</p>
+                  <h2>BOM</h2>
+                  <p>Generated in parallel from drawing data and current costing. Fully editable before Word download.</p>
+                </div>
+                <div className="artifact-header-actions">
+                  <div className="artifact-live-state">
+                    <i className={bomProcessingCount ? "processing" : "ready"}/>
+                    <b>{bomProcessingCount ? `${bomProcessingCount} processing` : "BOM ready"}</b>
+                  </div>
+                  <button className="artifact-history-button" onClick={() => setShowBomHistory(true)}>
+                    <span>History</span>
+                    <b>{bomReports.length}</b>
+                  </button>
+                </div>
+              </div>
+
+              <div className="artifact-editor artifact-editor-full">
+                  {selectedBom ? (
+                    <>
+                      <div className="artifact-toolbar">
+                        <input value={selectedBom.name} onChange={(e) => updateBom({ ...selectedBom, name: e.target.value })}/>
+                        <button className="btn secondary" onClick={() => renameBom(selectedBom)}>Rename</button>
+                        <button className="btn secondary" onClick={() => void api.exportBomPdf(selectedBom)}>Download PDF</button>
+                        <button className="btn danger" onClick={() => deleteBom(selectedBom)}>Delete</button>
+                      </div>
+
+                      <div className="artifact-kpi-grid bom-kpis">
+                        <div className={selectedBom.drawing_no ? "" : "needs-attention"}>
+                          <span>Drawing</span>
+                          <b>{selectedBom.drawing_no || "Unknown"}</b>
+                          <small>Revision {selectedBom.revision || "—"}</small>
+                        </div>
+
+                        <div>
+                          <span>Total Items</span>
+                          <b>{selectedBom.items.length}</b>
+                          <small>All BOM lines</small>
+                        </div>
+
+                        <div>
+                          <span>Material Lines</span>
+                          <b>{selectedBomMaterialCount}</b>
+                          <small>Raw / manufactured material</small>
+                        </div>
+
+                        <div>
+                          <span>Standard / Purchased</span>
+                          <b>{selectedBomStandardCount}</b>
+                          <small>Bolt, nut, stud, purchased parts</small>
+                        </div>
+
+                        <div className={selectedBomMissingCount ? "needs-attention strong" : "kpi-good"}>
+                          <span>Missing / Review</span>
+                          <b>{selectedBomMissingCount}</b>
+                          <small>{selectedBomMissingCount ? "Complete red-marked rows" : "Required fields complete"}</small>
+                        </div>
+
+                        <div className="kpi-money">
+                          <span>Total BOM Cost</span>
+                          <b>{money(selectedBomTotalCost)}</b>
+                          <small>Editable item-cost total</small>
+                        </div>
+                      </div>
+
+                      {selectedBomMissingCount > 0 && (
+                        <div className="artifact-attention-banner">
+                          <i/>
+                          <div>
+                            <b>{selectedBomMissingCount} BOM row{selectedBomMissingCount === 1 ? "" : "s"} need review</b>
+                            <span>Missing description, material, quantity or unit is highlighted in red.</span>
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="artifact-section">
+                        <div className="artifact-subhead">
+                          <div><b>Editable BOM Table</b><span>Raw material + detected standard/purchased parts</span></div>
+                          <button className="btn secondary" onClick={() => updateBom({
+                            ...selectedBom,
+                            items: [...selectedBom.items, {
+                              item_no: selectedBom.items.length + 1,
+                              category: "Standard Part",
+                              description: "",
+                              material: "",
+                              specification: "",
+                              dimensions: "",
+                              quantity: 1,
+                              unit: "each",
+                              weight_kg: 0,
+                              unit_cost: 0,
+                              total_cost: 0,
+                              source: "Manual",
+                              remarks: ""
+                            }]
+                          })}>+ Add BOM Item</button>
+                        </div>
+
+                        <div className="artifact-table-wrap">
+                          <table className="artifact-table bom-table">
+                            <thead>
+                              <tr><th>Item</th><th>Category</th><th>Description</th><th>Material</th><th>Specification</th><th>Dimensions / Size</th><th>Qty</th><th>Unit</th><th>Weight kg</th><th>Unit Cost</th><th>Total</th><th>Remarks</th><th/></tr>
+                            </thead>
+                            <tbody>
+                              {selectedBom.items.map((item, index) => (
+                                <tr
+                                  key={`${item.item_no}-${index}`}
+                                  className={
+                                    !String(item.description || "").trim()
+                                    || !String(item.unit || "").trim()
+                                    || Number(item.quantity || 0) <= 0
+                                    || (item.category === "Raw Material" && !String(item.material || "").trim())
+                                      ? "artifact-row-fail"
+                                      : ""
+                                  }
+                                >
+                                  <td><input type="number" value={item.item_no} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], item_no: +e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><select value={item.category} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], category: e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}><option>Raw Material</option><option>Standard Part</option><option>Manufactured Part</option><option>Purchased Part</option></select></td>
+                                  <td><input value={item.description} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], description: e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><input value={item.material} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], material: e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><input value={item.specification} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], specification: e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><input value={item.dimensions} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], dimensions: e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><input type="number" value={item.quantity} onChange={(e) => {
+                                    const items = [...selectedBom.items];
+                                    const quantity = +e.target.value || 0;
+                                    items[index] = { ...items[index], quantity, total_cost: quantity * Number(items[index].unit_cost || 0) };
+                                    updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><select value={item.unit} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], unit: e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}><option>each</option><option>kg</option><option>g</option><option>m</option><option>mm</option><option>set</option></select></td>
+                                  <td><input type="number" value={item.weight_kg} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], weight_kg: +e.target.value || 0 }; updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><input type="number" value={item.unit_cost} onChange={(e) => {
+                                    const items = [...selectedBom.items];
+                                    const unit_cost = +e.target.value || 0;
+                                    items[index] = { ...items[index], unit_cost, total_cost: Number(items[index].quantity || 0) * unit_cost };
+                                    updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><b>{money(item.total_cost)}</b></td>
+                                  <td><input value={item.remarks} onChange={(e) => {
+                                    const items = [...selectedBom.items]; items[index] = { ...items[index], remarks: e.target.value }; updateBom({ ...selectedBom, items });
+                                  }}/></td>
+                                  <td><button className="mini delete" onClick={() => updateBom({ ...selectedBom, items: selectedBom.items.filter((_, itemIndex) => itemIndex !== index) })}>Delete</button></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    </>
+                  ) : <div className="artifact-empty large">No BOM yet. Analyze one or more drawings.</div>}
+              </div>
+
+              {showBomHistory && (
+                <div className="artifact-history-modal-backdrop" onMouseDown={() => setShowBomHistory(false)}>
+                  <div className="artifact-history-modal" onMouseDown={(e) => e.stopPropagation()}>
+                    <div className="artifact-history-modal-head">
+                      <div>
+                        <p className="eyebrow">BILL OF MATERIALS</p>
+                        <h3>BOM History</h3>
+                        <span>{bomReports.length} saved BOM{bomReports.length === 1 ? "" : "s"}</span>
+                      </div>
+                      <button className="icon-btn" onClick={() => setShowBomHistory(false)}>×</button>
+                    </div>
+
+                    <div className="artifact-history-list-full">
+                      {bomReports.slice().reverse().map((report) => (
+                        <div
+                          key={report.id}
+                          className={selectedBom?.id === report.id ? "active" : ""}
+                        >
+                          <button
+                            className="artifact-history-select"
+                            onClick={() => {
+                              setSelectedBomId(report.id);
+                              setShowBomHistory(false);
+                            }}
+                          >
+                            <i className="artifact-dot ready"/>
+                            <span>
+                              <b>{report.name}</b>
+                              <small>{report.drawing_no || report.filename} · Rev {report.revision || "—"}</small>
+                            </span>
+                            <em>{new Date(report.created_at).toLocaleString()}</em>
+                          </button>
+                          <div className="artifact-history-row-actions">
+                            <button className="mini save" onClick={() => renameBom(report)}>Rename</button>
+                            <button className="mini delete" onClick={() => deleteBom(report)}>Delete</button>
+                          </div>
+                        </div>
+                      ))}
+
+                      {!bomReports.length && (
+                        <div className="artifact-empty large">
+                          No BOM history yet. Analyze a drawing to create the first BOM.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </section>
+        )}
+
         {view === "dataset" && (
           <section className="panel">
             <div className="heading row">
@@ -2743,15 +3874,55 @@ export default function Page() {
               <button className="btn secondary" onClick={() => api.exportDataset()}>Export Training Dataset ZIP</button>
             </div>
             <div className="cards four">
+              <article><small>Workspace Datasets</small><b>{workspaceDatasets.length}</b><span>Auto-saved quotation folders</span></article>
               <article><small>Extractions</small><b>{stats?.extractions ?? 0}</b><span>Processing history</span></article>
-              <article><small>Reviewed</small><b>{stats?.reviewed_samples ?? 0}</b><span>Engineer review history</span></article>
               <article><small>Training Samples</small><b>{stats?.training_samples ?? 0}</b><span>Approved drawings only</span></article>
               <article><small>Dataset Version</small><b>v{stats?.dataset_version ?? 1}</b><span>Curated training set</span></article>
+            </div>
+
+            <div className="workspace-dataset-panel">
+              <div className="heading row workspace-dataset-heading">
+                <div>
+                  <p className="eyebrow">AUTO-SAVED WORK</p>
+                  <h3>Workspace Dataset Folders</h3>
+                  <p>Every drawing, reviewed sheet, costing state, DFM, BOM and linked 3D model is stored with the active workspace dataset in this browser.</p>
+                </div>
+                <button className="btn secondary" onClick={() => void refreshWorkspaceDatasets()}>Refresh Folders</button>
+              </div>
+
+              <div className="workspace-dataset-list">
+                {workspaceDatasets.map((item) => (
+                  <article key={item.datasetId}>
+                    <div className="workspace-dataset-icon">DATA</div>
+                    <div className="workspace-dataset-main">
+                      <b>{item.datasetName}</b>
+                      <span>
+                        {item.drawingNo || "Drawing not yet identified"} · Step {item.step} · {item.fileCount} file{item.fileCount === 1 ? "" : "s"}
+                      </span>
+                      <small>
+                        Last saved {item.savedAt ? new Date(item.savedAt).toLocaleString() : "—"}
+                        {item.hasDfm ? " · DFM" : ""}
+                        {item.hasBom ? " · BOM" : ""}
+                      </small>
+                    </div>
+                    <div className="workspace-dataset-actions">
+                      <button className="mini save" onClick={() => void restoreWorkspaceDataset(item.datasetId)}>Open</button>
+                      <button className="mini delete" onClick={() => void removeWorkspaceDataset(item.datasetId)}>Delete</button>
+                    </div>
+                  </article>
+                ))}
+
+                {!workspaceDatasets.length && (
+                  <div className="empty">
+                    No workspace dataset folder yet. Upload a drawing and the first folder will be created automatically.
+                  </div>
+                )}
+              </div>
             </div>
             <div className="notice">
               <b>{stats?.batch_ready ? "Training batch is ready." : "Collecting approved training samples."}</b>
               <span>Approved since current version: {stats?.new_training_since_version ?? 0} / {stats?.training_batch_threshold ?? 25}</span>
-              <span>Each approved sample stores the original drawing, AI extraction, final reviewed drawing data, cost rows and quotation summary.</span>
+              <span>Workspace Dataset Folders auto-save active work. Curated Training Samples are still added only when you explicitly choose “Send to Training”.</span>
             </div>
           </section>
         )}

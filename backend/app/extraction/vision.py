@@ -189,7 +189,7 @@ Important:
     if extracted_pdf_text.strip():
         prompt += (
             "\n\nSECONDARY PDF TEXT (may be corrupted):\n"
-            + extracted_pdf_text[:9000]
+            + extracted_pdf_text[:4000]
         )
 
     contents: list[object] = [
@@ -235,12 +235,20 @@ Important:
             last_error = exc
             message = str(exc).upper()
 
-            transient = any(
+            # Quota/rate-limit errors usually do not recover in a few seconds,
+            # so return them immediately instead of making the user wait.
+            rate_limited = any(
                 marker in message
                 for marker in (
                     "429",
                     "RESOURCE_EXHAUSTED",
                     "RATE LIMIT",
+                )
+            )
+
+            service_transient = any(
+                marker in message
+                for marker in (
                     "503",
                     "UNAVAILABLE",
                     "TIMEOUT",
@@ -248,12 +256,11 @@ Important:
                 )
             )
 
-            if not transient or attempt >= 2:
+            if rate_limited or not service_transient or attempt >= 2:
                 raise
 
-            # One controlled retry is quicker and safer than the old
-            # frontend burst of multiple simultaneous retries.
-            time.sleep(3.0)
+            # One short retry for genuine transient service failures only.
+            time.sleep(0.8)
 
     raise RuntimeError(
         f"Gemini extraction failed: {last_error}"

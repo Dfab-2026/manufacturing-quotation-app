@@ -37,7 +37,8 @@ def _title_crop_fast(document: fitz.Document) -> bytes | None:
             rect.y1,
         )
 
-        zoom = 180 / 72
+        # Small title crop only for scanned/image PDFs.
+        zoom = 120 / 72
         pix = page.get_pixmap(
             matrix=fitz.Matrix(zoom, zoom),
             clip=clip,
@@ -46,7 +47,7 @@ def _title_crop_fast(document: fitz.Document) -> bytes | None:
 
         return pix.tobytes(
             "jpeg",
-            jpg_quality=80,
+            jpg_quality=65,
         )
     except Exception:
         return None
@@ -66,7 +67,16 @@ def analyze_pdf_with_ai(pdf_bytes: bytes) -> dict:
             raise ValueError("PDF contains no pages.")
 
         extracted_text = _extract_text_fast(document)
-        title_crop = _title_crop_fast(document)
+
+        # Vector/text PDFs already give Gemini the original PDF plus searchable
+        # text, so generating another JPEG crop is redundant and slower.
+        # Use the crop only when the PDF behaves like a scan.
+        useful_text = extracted_text.strip()
+        title_crop = (
+            _title_crop_fast(document)
+            if len(useful_text) < 250
+            else None
+        )
     finally:
         document.close()
 

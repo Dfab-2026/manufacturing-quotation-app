@@ -78,6 +78,8 @@ export type AnalysisResponse = {
   rows: CostRow[];
   ai_raw?: AIExtraction | null;
   summary?: QuoteSummary;
+  dfm?: DfmReport;
+  bom?: BomReport;
 };
 
 export type Settings = {
@@ -159,3 +161,69 @@ export type BatchQuoteItem = {
 };
 
 export type BatchQuoteMode = "separate" | "merge";
+
+
+export type ArtifactStatus = "PROCESSING" | "READY" | "REVIEW" | "ATTENTION" | "FAILED";
+
+export type DfmCheck = {
+  area: string;
+  result: "PASS" | "REVIEW" | "FAIL" | string;
+  finding: string;
+  recommendation: string;
+  standard: string;
+};
+
+export type DfmProcessPlanRow = {
+  sequence: number;
+  process: string;
+  tooling: string;
+  feasibility: string;
+  inspection: string;
+};
+
+export type DfmReport = {
+  id: string;
+  created_at: string;
+  name: string;
+  file_hash: string;
+  filename: string;
+  drawing_no: string;
+  revision: string;
+  description: string;
+  classification: string;
+  status: ArtifactStatus | string;
+  standards: Array<{ standard: string; scope: string }>;
+  checks: DfmCheck[];
+  process_plan: DfmProcessPlanRow[];
+  notes: string[];
+};
+
+export type BomItem = {
+  item_no: number;
+  category: string;
+  description: string;
+  material: string;
+  specification: string;
+  dimensions: string;
+  quantity: number;
+  unit: string;
+  weight_kg: number;
+  unit_cost: number;
+  total_cost: number;
+  source: string;
+  remarks: string;
+};
+
+export type BomReport = {
+  id: string;
+  created_at: string;
+  name: string;
+  file_hash: string;
+  filename: string;
+  drawing_no: string;
+  revision: string;
+  description: string;
+  status: ArtifactStatus | string;
+  items: BomItem[];
+  notes: string[];
+};

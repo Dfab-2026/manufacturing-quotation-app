@@ -37,7 +37,7 @@ from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A4
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
@@ -288,7 +288,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.7.5")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.8.7")
 
 _allowed_origins = [
     "http://localhost:3000",
@@ -438,6 +438,14 @@ class BatchSaveReq(BaseModel):
     status: str = "Draft"
 
 
+class EngineeringArtifactReq(BaseModel):
+    file_hash: str = ""
+    filename: str = ""
+    drawing: Drawing
+    rows: list[Row] = Field(default_factory=list)
+    ai_raw: dict = Field(default_factory=dict)
+
+
 class Settings(BaseModel):
     company_name: str
     currency: str
@@ -449,6 +457,424 @@ class Settings(BaseModel):
     training_batch_threshold: int
     critical_medium_threshold: int = 40
     critical_high_threshold: int = 70
+
+
+DFM_STANDARD_REFERENCES = [
+    {
+        "standard": "ISO 2768-1:1989",
+        "scope": "General linear/angular tolerances where individual tolerances are not specified; applicable to metal-removal and formed sheet-metal parts. ISO 2768 edition 2 is in publication transition.",
+    },
+    {
+        "standard": "ISO 1101:2017",
+        "scope": "Geometrical tolerancing language for form, orientation, location and run-out.",
+    },
+    {
+        "standard": "ISO 5458:2018",
+        "scope": "Pattern and combined geometrical specifications; useful for repeated-hole/location patterns where applicable.",
+    },
+    {
+        "standard": "ISO 21920-1:2021",
+        "scope": "Surface-texture indication rules in technical product documentation.",
+    },
+    {
+        "standard": "ISO 13715:2017",
+        "scope": "Indication and dimensioning of edges of undefined shape / edge condition.",
+    },
+    {
+        "standard": "ISO 2553:2019",
+        "scope": "Symbolic representation of welded joints on technical drawings; current published edition while revision work is underway.",
+    },
+    {
+        "standard": "ISO 9013:2017 + Amd 1:2024",
+        "scope": "Thermal-cut classification, geometrical product specification and quality tolerances for oxyfuel/plasma/laser cuts where referenced.",
+    },
+    {
+        "standard": "ISO 965-1:2026",
+        "scope": "Tolerance system for ISO general-purpose metric screw threads (M).",
+    },
+]
+
+
+def _artifact_process_names(ai_raw: dict, rows: list[Row]) -> list[str]:
+    values: list[str] = []
+
+    for item in ai_raw.get("manufacturing_processes") or []:
+        if isinstance(item, dict):
+            name = str(item.get("process") or item.get("name") or item.get("operation") or "").strip()
+        else:
+            name = str(item).strip()
+        if name:
+            values.append(name)
+
+    for row in rows:
+        if row.category.upper() == "PROCESS" and row.item:
+            values.append(row.item)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        key = value.casefold()
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return result
+
+
+def _dfm_classification(processes: list[str], ai_raw: dict) -> str:
+    hay = " ".join(processes).casefold()
+    fabrication_words = (
+        "laser", "shear", "plasma", "waterjet", "bend", "forming",
+        "weld", "grind", "polish", "passivation", "coat",
+    )
+    machining_words = (
+        "turn", "mill", "machine", "drill", "bore", "tap",
+        "thread", "chamfer", "ream", "cnc",
+    )
+
+    fabrication = any(word in hay for word in fabrication_words) or bool(ai_raw.get("bends") or ai_raw.get("welds"))
+    machining = any(word in hay for word in machining_words) or bool(ai_raw.get("threads") or ai_raw.get("chamfers"))
+
+    if fabrication and machining:
+        return "Fabrication + Machining"
+    if machining:
+        return "Machining"
+    if fabrication:
+        return "Fabrication"
+    return "Manufacturing route requires engineer review"
+
+
+def _feature_number(item: object, keys: tuple[str, ...]) -> float | None:
+    if not isinstance(item, dict):
+        return None
+
+    for key in keys:
+        value = item.get(key)
+        if value is None:
+            continue
+        match = re.search(r"-?\d+(?:\.\d+)?", str(value))
+        if match:
+            try:
+                return float(match.group(0))
+            except ValueError:
+                pass
+    return None
+
+
+def _generate_dfm(payload: EngineeringArtifactReq) -> dict:
+    drawing = payload.drawing
+    ai_raw = payload.ai_raw or {}
+    processes = _artifact_process_names(ai_raw, payload.rows)
+    classification = _dfm_classification(processes, ai_raw)
+    checks: list[dict] = []
+
+    def add_check(area: str, result: str, finding: str, recommendation: str, standard: str = ""):
+        checks.append({
+            "area": area,
+            "result": result,
+            "finding": finding,
+            "recommendation": recommendation,
+            "standard": standard,
+        })
+
+    material_ok = bool(drawing.material and drawing.material.casefold() not in {"not detected", "unknown"})
+    add_check(
+        "Material definition",
+        "PASS" if material_ok else "REVIEW",
+        drawing.material if material_ok else "Material/grade is not fully defined.",
+        "Confirm material family, grade and applicable material specification before release.",
+    )
+
+    if "Fabrication" in classification:
+        add_check(
+            "Sheet / plate thickness",
+            "PASS" if drawing.thickness_mm > 0 else "FAIL",
+            f"Thickness detected: {drawing.thickness_mm:g} mm." if drawing.thickness_mm > 0 else "Thickness is missing for a fabrication route.",
+            "Verify thickness against selected stock and cutting/forming capability." if drawing.thickness_mm > 0 else "Add or confirm thickness before production planning.",
+            "ISO 2768 / ISO 2768-1",
+        )
+
+    dimensions = ai_raw.get("dimensions") or []
+    has_tolerance = any(
+        isinstance(item, dict)
+        and any(item.get(key) not in (None, "", "Not detected") for key in ("tolerance", "upper_tolerance", "lower_tolerance", "plus_minus"))
+        for item in dimensions
+    )
+    add_check(
+        "Dimensional tolerances",
+        "PASS" if has_tolerance else "REVIEW",
+        "Explicit tolerance information detected." if has_tolerance else "No explicit dimensional tolerance was detected in the extracted features.",
+        "Confirm general tolerance note/class or add critical feature tolerances.",
+        "ISO 2768 / ISO 2768-1",
+    )
+
+    confidence = ai_raw.get("confidence") or {}
+    if isinstance(confidence, dict) and confidence:
+        low_fields = [str(key) for key, value in confidence.items() if float(value or 0) < 70]
+        add_check(
+            "Drawing extraction confidence",
+            "REVIEW" if low_fields else "PASS",
+            f"Low-confidence fields: {', '.join(low_fields[:6])}" if low_fields else "No low-confidence extracted fields.",
+            "Engineer-check every low-confidence feature before production release.",
+        )
+
+    if drawing.thickness_mm > 0 and ai_raw.get("holes"):
+        risky_holes = []
+        for item in ai_raw.get("holes") or []:
+            diameter = _feature_number(item, ("diameter_mm", "diameter", "size_mm", "size"))
+            if diameter is not None and diameter < 0.8 * drawing.thickness_mm:
+                risky_holes.append(diameter)
+        if risky_holes:
+            add_check(
+                "Small holes vs thickness",
+                "REVIEW",
+                f"{len(risky_holes)} hole(s) are smaller than ~0.8 × material thickness.",
+                "Confirm cutting/drilling method, pierce quality and tolerance capability.",
+            )
+
+    if drawing.thickness_mm > 0 and ai_raw.get("bends"):
+        tight_bends = []
+        for item in ai_raw.get("bends") or []:
+            radius = _feature_number(item, ("inside_radius_mm", "radius_mm", "radius", "r"))
+            if radius is not None and radius < drawing.thickness_mm:
+                tight_bends.append(radius)
+        if tight_bends:
+            add_check(
+                "Bend radius",
+                "REVIEW",
+                f"{len(tight_bends)} bend-radius value(s) are below material thickness.",
+                "Confirm material ductility, tooling radius and cracking risk.",
+            )
+
+    if ai_raw.get("welds"):
+        weld_has_detail = any(
+            isinstance(item, dict)
+            and any(str(item.get(key) or "").strip() for key in ("type", "size", "length", "symbol", "process"))
+            for item in ai_raw.get("welds") or []
+        )
+        add_check(
+            "Weld definition / accessibility",
+            "PASS" if weld_has_detail else "REVIEW",
+            "Weld callouts detected." if weld_has_detail else "Weld features are present but the extracted weld definition is incomplete.",
+            "Confirm weld type, size, access, sequence and inspection requirement.",
+            "ISO 2553:2019",
+        )
+
+    if ai_raw.get("threads"):
+        add_check(
+            "Thread manufacturability",
+            "REVIEW",
+            f"{len(ai_raw.get('threads') or [])} threaded-feature callout(s) detected.",
+            "Verify metric-thread tolerance class, engagement depth, tool access and edge distance.",
+            "ISO 965-1:2026",
+        )
+
+    process_text = " ".join(processes).casefold()
+    if any(name in process_text for name in ("laser", "plasma", "oxyfuel", "thermal cut")):
+        add_check(
+            "Thermal-cut quality",
+            "REVIEW",
+            "A thermal cutting process is included in the manufacturing route.",
+            "Confirm cut-quality class, edge condition and dimensional tolerance required by the drawing/customer specification.",
+            "ISO 9013:2017 + Amd 1:2024",
+        )
+
+    if len(ai_raw.get("holes") or []) >= 2:
+        add_check(
+            "Hole / feature pattern",
+            "REVIEW",
+            f"{len(ai_raw.get('holes') or [])} hole feature(s) detected; pattern/location capability should be confirmed.",
+            "Verify positional scheme, datums and combined-pattern requirements where they are specified.",
+            "ISO 5458:2018 / ISO 1101:2017",
+        )
+
+    surface_items = ai_raw.get("surface_finish") or []
+    if surface_items:
+        add_check(
+            "Surface texture",
+            "REVIEW",
+            f"{len(surface_items)} surface-finish / texture callout(s) detected.",
+            "Verify symbol interpretation, required parameter/value and whether the selected process can achieve it.",
+            "ISO 21920-1:2021",
+        )
+
+    notes_text = " ".join(str(note) for note in (ai_raw.get("notes") or drawing.notes or []))
+    if "sharp" in notes_text.casefold() or "deburr" in notes_text.casefold():
+        add_check(
+            "Edge condition",
+            "PASS",
+            "Edge/deburr requirement detected in drawing notes.",
+            "Carry edge condition into the manufacturing and inspection plan.",
+            "ISO 13715:2017",
+        )
+    else:
+        add_check(
+            "Edge condition",
+            "REVIEW",
+            "No explicit extracted edge-break/deburr requirement was found.",
+            "Confirm whether sharp-edge removal / edge-break is required.",
+            "ISO 13715:2017",
+        )
+
+    process_plan = []
+    for index, process in enumerate(processes, 1):
+        process_plan.append({
+            "sequence": index,
+            "process": process,
+            "tooling": "Confirm machine/tooling from feature size, tolerance and material.",
+            "feasibility": "PASS",
+            "inspection": "Verify critical drawing features after this operation.",
+        })
+
+    fail_count = sum(1 for item in checks if item["result"] == "FAIL")
+    review_count = sum(1 for item in checks if item["result"] == "REVIEW")
+    status = "ATTENTION" if fail_count else ("REVIEW" if review_count else "READY")
+
+    return {
+        "id": f"DFM-{uuid.uuid4().hex[:10].upper()}",
+        "created_at": now(),
+        "name": f"DFM - {drawing.drawing_no or payload.filename or 'Drawing'}",
+        "file_hash": payload.file_hash,
+        "filename": payload.filename,
+        "drawing_no": drawing.drawing_no,
+        "revision": drawing.revision,
+        "description": drawing.description,
+        "classification": classification,
+        "status": status,
+        "standards": DFM_STANDARD_REFERENCES,
+        "checks": checks,
+        "process_plan": process_plan,
+        "notes": [
+            "Automated first-pass DFM screening.",
+            "Final feasibility remains subject to engineer/tooling/machine capability review.",
+        ],
+    }
+
+
+def _bom_item(item_no: int, category: str, description: str, material: str, specification: str, dimensions: str, quantity: float, unit: str, weight_kg: float, unit_cost: float, source: str) -> dict:
+    return {
+        "item_no": item_no,
+        "category": category,
+        "description": description,
+        "material": material,
+        "specification": specification,
+        "dimensions": dimensions,
+        "quantity": quantity,
+        "unit": unit,
+        "weight_kg": round(max(0.0, weight_kg), 4),
+        "unit_cost": round(max(0.0, unit_cost), 2),
+        "total_cost": round(max(0.0, quantity) * max(0.0, unit_cost), 2),
+        "source": source,
+        "remarks": "",
+    }
+
+
+def _generate_bom(payload: EngineeringArtifactReq) -> dict:
+    drawing = payload.drawing
+    ai_raw = payload.ai_raw or {}
+    items: list[dict] = []
+
+    material_row = next(
+        (row for row in payload.rows if row.category.upper() == "MATERIAL" and row.id != "ai-material-stock"),
+        None,
+    )
+
+    material_meta = ai_raw.get("material") or {}
+    if not isinstance(material_meta, dict):
+        material_meta = {}
+
+    if material_row:
+        items.append(_bom_item(
+            1,
+            "Raw Material",
+            drawing.description or "Manufactured part material",
+            drawing.material,
+            str(material_meta.get("specification") or material_meta.get("grade") or ""),
+            material_row.drawingQty,
+            material_row.costingQty,
+            material_row.unit,
+            material_row.costingQty if material_row.unit.casefold() == "kg" else drawing.weight_kg,
+            material_row.rate,
+            "Drawing + Rate Master",
+        ))
+
+    item_no = len(items) + 1
+
+    for stud in ai_raw.get("studs") or []:
+        if not isinstance(stud, dict):
+            continue
+        qty = _feature_number(stud, ("quantity", "qty")) or 1
+        size = str(stud.get("size") or stud.get("thread") or stud.get("diameter") or "")
+        items.append(_bom_item(
+            item_no,
+            "Standard Part",
+            "Stud / Fastener",
+            str(stud.get("material") or ""),
+            str(stud.get("standard") or ""),
+            size,
+            qty,
+            "each",
+            0,
+            0,
+            "Drawing feature",
+        ))
+        item_no += 1
+
+    standard_part_pattern = re.compile(r"\b((?:M\d+(?:\.\d+)?)?\s*(?:bolt|nut|washer|screw|fastener))\b", re.IGNORECASE)
+    found_standard: set[str] = set()
+
+    for note in [str(note) for note in (ai_raw.get("notes") or drawing.notes or [])]:
+        for match in standard_part_pattern.findall(note):
+            clean = " ".join(match.split())
+            key = clean.casefold()
+            if key in found_standard:
+                continue
+            found_standard.add(key)
+            items.append(_bom_item(
+                item_no,
+                "Standard Part",
+                clean.title(),
+                "",
+                "",
+                "",
+                1,
+                "each",
+                0,
+                0,
+                "Drawing note",
+            ))
+            item_no += 1
+
+    if not items:
+        items.append(_bom_item(
+            1,
+            "Part",
+            drawing.description or drawing.drawing_no or "Drawing item",
+            drawing.material,
+            "",
+            "",
+            max(1, drawing.quantity),
+            "each",
+            drawing.weight_kg,
+            0,
+            "Drawing",
+        ))
+
+    return {
+        "id": f"BOM-{uuid.uuid4().hex[:10].upper()}",
+        "created_at": now(),
+        "name": f"BOM - {drawing.drawing_no or payload.filename or 'Drawing'}",
+        "file_hash": payload.file_hash,
+        "filename": payload.filename,
+        "drawing_no": drawing.drawing_no,
+        "revision": drawing.revision,
+        "description": drawing.description,
+        "status": "READY",
+        "items": items,
+        "notes": [
+            "Generated from drawing extraction and current costing rows.",
+            "Engineer-verify standard-part quantity/cost where the drawing is not explicit.",
+        ],
+    }
 
 
 def rates_list() -> list[dict]:
@@ -2211,7 +2637,7 @@ def root():
     return {
         "service": "dfab-quotation-api",
         "status": "ok",
-        "version": "0.7.5",
+        "version": "0.8.7",
     }
 
 
@@ -2221,7 +2647,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.7.5",
+        "version": "0.8.7",
         "database": "connected" if connected else "unavailable",
     }
 
@@ -2246,6 +2672,203 @@ def get_settings():
 def put_settings(value: Settings):
     save("settings", value.model_dump())
     return value
+
+
+@app.post("/api/dfm/generate")
+def generate_dfm_report(value: EngineeringArtifactReq):
+    return _generate_dfm(value)
+
+
+@app.post("/api/bom/generate")
+def generate_bom_report(value: EngineeringArtifactReq):
+    return _generate_bom(value)
+
+
+@app.post("/api/dfm/export")
+def export_dfm_report(payload: dict):
+    out = BytesIO()
+    doc = SimpleDocTemplate(
+        out,
+        pagesize=A4,
+        rightMargin=12 * mm,
+        leftMargin=12 * mm,
+        topMargin=12 * mm,
+        bottomMargin=12 * mm,
+    )
+    styles = getSampleStyleSheet()
+
+    story = [
+        Paragraph(str(payload.get("name") or "DFM Report"), styles["Title"]),
+        Paragraph(
+            f"Drawing: {payload.get('drawing_no', '')} &nbsp;&nbsp; "
+            f"Revision: {payload.get('revision', '')}",
+            styles["Normal"],
+        ),
+        Paragraph(
+            f"Manufacturing type: {payload.get('classification', '')} &nbsp;&nbsp; "
+            f"Status: {payload.get('status', '')}",
+            styles["Normal"],
+        ),
+        Spacer(1, 8),
+        Paragraph("Manufacturing Feasibility", styles["Heading2"]),
+    ]
+
+    check_rows = [["Area", "Result", "Finding", "Recommendation", "Reference"]]
+    for item in payload.get("checks") or []:
+        check_rows.append([
+            str(item.get("area", "")),
+            str(item.get("result", "")),
+            str(item.get("finding", "")),
+            str(item.get("recommendation", "")),
+            str(item.get("standard", "")),
+        ])
+
+    checks = Table(
+        check_rows,
+        colWidths=[28 * mm, 17 * mm, 48 * mm, 55 * mm, 34 * mm],
+        repeatRows=1,
+    )
+    checks.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365d")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c7d3df")),
+    ]))
+    story.extend([checks, Spacer(1, 8), Paragraph("Process Plan", styles["Heading2"])])
+
+    plan_rows = [["Seq", "Process", "Tooling / Method", "Feasibility", "Inspection"]]
+    for item in payload.get("process_plan") or []:
+        plan_rows.append([
+            str(item.get("sequence", "")),
+            str(item.get("process", "")),
+            str(item.get("tooling", "")),
+            str(item.get("feasibility", "")),
+            str(item.get("inspection", "")),
+        ])
+
+    plan = Table(plan_rows, colWidths=[12 * mm, 38 * mm, 60 * mm, 25 * mm, 47 * mm], repeatRows=1)
+    plan.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#24568e")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c7d3df")),
+    ]))
+    story.append(plan)
+    doc.build(story)
+    out.seek(0)
+
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(payload.get("drawing_no") or "drawing"))
+    return StreamingResponse(
+        out,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="DFM_{safe}.pdf"'},
+    )
+
+
+@app.post("/api/bom/export")
+def export_bom_pdf(payload: dict):
+    out = BytesIO()
+    doc = SimpleDocTemplate(
+        out,
+        pagesize=landscape(A4),
+        rightMargin=10 * mm,
+        leftMargin=10 * mm,
+        topMargin=10 * mm,
+        bottomMargin=10 * mm,
+    )
+    styles = getSampleStyleSheet()
+
+    story = [
+        Paragraph(str(payload.get("name") or "Bill of Materials"), styles["Title"]),
+        Paragraph(
+            f"Drawing: {payload.get('drawing_no', '')} &nbsp;&nbsp; "
+            f"Revision: {payload.get('revision', '')} &nbsp;&nbsp; "
+            f"Description: {payload.get('description', '')}",
+            styles["Normal"],
+        ),
+        Spacer(1, 8),
+    ]
+
+    columns = [
+        "Item",
+        "Category",
+        "Description",
+        "Material",
+        "Specification",
+        "Dimensions / Size",
+        "Qty",
+        "Unit",
+        "Weight kg",
+        "Unit Cost",
+        "Total Cost",
+        "Remarks",
+    ]
+
+    table_rows = [columns]
+    for item in payload.get("items") or []:
+        table_rows.append([
+            str(item.get("item_no", "")),
+            str(item.get("category", "")),
+            str(item.get("description", "")),
+            str(item.get("material", "")),
+            str(item.get("specification", "")),
+            str(item.get("dimensions", "")),
+            str(item.get("quantity", "")),
+            str(item.get("unit", "")),
+            str(item.get("weight_kg", "")),
+            str(item.get("unit_cost", "")),
+            str(item.get("total_cost", "")),
+            str(item.get("remarks", "")),
+        ])
+
+    bom_table = Table(
+        table_rows,
+        colWidths=[
+            12 * mm,
+            24 * mm,
+            34 * mm,
+            25 * mm,
+            28 * mm,
+            32 * mm,
+            15 * mm,
+            15 * mm,
+            20 * mm,
+            22 * mm,
+            22 * mm,
+            28 * mm,
+        ],
+        repeatRows=1,
+    )
+    bom_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365d")),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#c7d3df")),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f8fafc")]),
+    ]))
+    story.append(bom_table)
+
+    notes = payload.get("notes") or []
+    if notes:
+        story.extend([Spacer(1, 8), Paragraph("Notes", styles["Heading2"])])
+        for note in notes:
+            story.append(Paragraph(f"• {str(note)}", styles["Normal"]))
+
+    doc.build(story)
+    out.seek(0)
+
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", str(payload.get("drawing_no") or "drawing"))
+    return StreamingResponse(
+        out,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="BOM_{safe}.pdf"'},
+    )
 
 
 @app.get("/api/rates", response_model=list[RateItem])
@@ -2605,7 +3228,9 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
 
     filename = file.filename or "drawing.pdf"
     extension = Path(filename).suffix.lower()
-    preview_image = make_drawing_preview(content, filename)
+    # Fast path: do not render/base64 a preview inside the analysis request.
+    # The browser displays the original uploaded PDF/image directly via ObjectURL.
+    preview_image = ""
 
     file_hash = sha256(content).hexdigest()
     extraction_id = "EXT-" + uuid.uuid4().hex[:10].upper()
@@ -2736,6 +3361,21 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
             }
         )
 
+    summary = calc(rows)
+
+    artifact_payload = EngineeringArtifactReq(
+        file_hash=file_hash,
+        filename=filename,
+        drawing=drawing,
+        rows=rows,
+        ai_raw=ai_raw or {},
+    )
+
+    # These are deterministic/local and very fast. Returning them with the
+    # analysis avoids two additional Vercel function calls per drawing.
+    dfm_report = _generate_dfm(artifact_payload)
+    bom_report = _generate_bom(artifact_payload)
+
     return {
         "extraction_id": extraction_id,
         "file_hash": file_hash,
@@ -2745,7 +3385,9 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
         "preview_image": preview_image,
         "drawing": drawing,
         "rows": rows,
-        "summary": calc(rows),
+        "summary": summary,
+        "dfm": dfm_report,
+        "bom": bom_report,
         "ai_raw": ai_raw,
     }
 
