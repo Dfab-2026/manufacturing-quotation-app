@@ -290,8 +290,7 @@ export async function readCadMesh(file: File): Promise<OcctResult> {
         workerPending.set(id, { resolve, reject });
         worker.postMessage({ id, extension, buffer }, [buffer]);
       }),
-      9000,
-      "CAD geometry parser"
+      9000
     );
   })();
 
