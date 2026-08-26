@@ -1,6 +1,7 @@
 from __future__ import annotations
 from app.extraction.pipeline import analyze_pdf_with_ai
 from app.extraction.vision import analyze_engineering_media
+from app.engineering_intelligence import enrich_engineering_intelligence, build_cost_trace
 from app.db import (
     append_extraction_record,
     append_review_record,
@@ -296,7 +297,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.10.0")
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.11.0")
 
 _allowed_origins = [
     "http://localhost:3000",
@@ -398,11 +399,15 @@ class ReviewReq(BaseModel):
     file_hash: str
     drawing: Drawing
     rows: list[Row]
+    ai_raw: dict = Field(default_factory=dict)
 
 
 class RevisionReq(BaseModel):
     drawing: Drawing
     note: str = "Snapshot"
+    summary: Summary | None = None
+    rows: list[Row] = Field(default_factory=list)
+    ai_raw: dict = Field(default_factory=dict)
 
 
 class QuoteReq(BaseModel):
@@ -473,6 +478,7 @@ class CadAnalysisReq(BaseModel):
     surface_area_mm2: float = 0
     volume_mm3: float = 0
     component_names: list[str] = Field(default_factory=list)
+    shape_hint: str = ""
 
 
 class WorkspaceSessionReq(BaseModel):
@@ -598,7 +604,11 @@ def _generate_dfm(payload: EngineeringArtifactReq) -> dict:
     drawing = payload.drawing
     ai_raw = payload.ai_raw or {}
     processes = _artifact_process_names(ai_raw, payload.rows)
-    classification = _dfm_classification(processes, ai_raw)
+    intelligence = ai_raw.get("engineering_intelligence") or {}
+    classification = (
+        str(intelligence.get("primary_manufacturing_type") or "").strip()
+        or _dfm_classification(processes, ai_raw)
+    )
     checks: list[dict] = []
 
     def add_check(area: str, result: str, finding: str, recommendation: str, standard: str = ""):
@@ -773,6 +783,9 @@ def _generate_dfm(payload: EngineeringArtifactReq) -> dict:
         "revision": drawing.revision,
         "description": drawing.description,
         "classification": classification,
+        "document_type": str(intelligence.get("document_type") or ai_raw.get("document_type") or "Part Drawing"),
+        "part_form": str(intelligence.get("part_form") or ai_raw.get("part_form") or "Unknown"),
+        "classification_confidence": int(intelligence.get("classification_confidence") or ai_raw.get("classification_confidence") or 0),
         "status": status,
         "standards": DFM_STANDARD_REFERENCES,
         "checks": checks,
@@ -816,7 +829,44 @@ def _generate_bom(payload: EngineeringArtifactReq) -> dict:
     if not isinstance(material_meta, dict):
         material_meta = {}
 
-    if material_row:
+    assembly_parts = [
+        item for item in (ai_raw.get("assembly_parts") or [])
+        if isinstance(item, dict)
+    ]
+
+    # Assembly drawings are decomposed into their own BOM component rows.
+    # Unknown dimensions stay blank; nothing is fabricated from another source.
+    if assembly_parts:
+        for index, part in enumerate(assembly_parts, 1):
+            dims = []
+            for key, label in (("length_mm", "L"), ("width_mm", "W"), ("height_mm", "H"), ("thickness_mm", "T")):
+                value = part.get(key)
+                if value not in (None, "", 0):
+                    dims.append(f"{label} {value} mm")
+
+            description = str(part.get("part_name") or part.get("description") or f"Assembly component {index}")
+            qty = max(1, int(part.get("quantity") or 1))
+            material = str(part.get("material") or "")
+            drawing_ref = str(part.get("drawing_no") or "").strip()
+            remarks = f"Drawing {drawing_ref}" if drawing_ref else "Assembly extraction"
+
+            row = _bom_item(
+                index,
+                "Manufactured Component",
+                description,
+                material,
+                "",
+                " × ".join(dims),
+                qty,
+                "each",
+                0,
+                0,
+                "Assembly drawing",
+            )
+            row["remarks"] = remarks
+            items.append(row)
+
+    if material_row and not assembly_parts:
         items.append(_bom_item(
             1,
             "Raw Material",
@@ -905,8 +955,9 @@ def _generate_bom(payload: EngineeringArtifactReq) -> dict:
         "status": "READY",
         "items": items,
         "notes": [
-            "Generated from drawing extraction and current costing rows.",
-            "Engineer-verify standard-part quantity/cost where the drawing is not explicit.",
+            "Generated from source-specific engineering extraction and current costing rows.",
+            "Assembly components are kept as independent BOM rows when detected.",
+            "Engineer-verify any quantity/material/cost that is not explicit in the released source.",
         ],
     }
 
@@ -2706,7 +2757,7 @@ def root():
     return {
         "service": "dfab-quotation-api",
         "status": "ok",
-        "version": "0.10.0",
+        "version": "0.11.0",
     }
 
 
@@ -2716,7 +2767,7 @@ def health():
 
     return {
         "status": "ok" if connected else "degraded",
-        "version": "0.10.0",
+        "version": "0.11.0",
         "database": "connected" if connected else "unavailable",
     }
 
@@ -3432,8 +3483,19 @@ def analyze_fallback(value: FallbackAnalysisReq):
         ],
     }
 
+    ai_raw = enrich_engineering_intelligence(
+        ai_raw,
+        filename=filename,
+        source_format=fmt,
+    )
     drawing = ai_result_to_drawing(ai_raw)
     rows = ai_result_to_rows(ai_raw, drawing)
+    ai_raw = enrich_engineering_intelligence(
+        ai_raw,
+        filename=filename,
+        source_format=fmt,
+        rows=rows,
+    )
     summary = calc(rows)
 
     file_hash = sha256(
@@ -3461,6 +3523,8 @@ def analyze_fallback(value: FallbackAnalysisReq):
         "dfm": _generate_dfm(artifact_payload),
         "bom": _generate_bom(artifact_payload),
         "ai_raw": ai_raw,
+        "engineering_intelligence": ai_raw.get("engineering_intelligence", {}),
+        "cost_trace": build_cost_trace(rows),
         "source_type": "cad" if extension in {
             ".step", ".stp", ".iges", ".igs", ".stl", ".obj",
             ".glb", ".gltf", ".x_t", ".x_b"
@@ -3544,11 +3608,44 @@ def analyze_cad(value: CadAnalysisReq):
             f"{fmt} is stored as an independent CAD source, but exact solid geometry metrics were not parsed in this version."
         )
 
+    shape_hint = str(value.shape_hint or "").strip().casefold()
+    if part_count > 1:
+        cad_document_type = "Assembly Drawing"
+        cad_part_form = "Assembly"
+        cad_primary = "Assembly / Integration"
+    elif shape_hint == "rotational_like":
+        cad_document_type = "Part Drawing"
+        cad_part_form = "Shaft / Cylindrical"
+        cad_primary = "CNC Turning"
+    elif shape_hint == "plate_like":
+        cad_document_type = "Part Drawing"
+        cad_part_form = "Plate"
+        cad_primary = "Laser Cutting"
+    else:
+        cad_document_type = "Part Drawing"
+        cad_part_form = "Block / Prismatic"
+        cad_primary = process_name
+
     ai_raw = {
         "drawing_no": stem,
         "revision": "",
         "description": value.root_name.strip() or stem,
         "drawing_type": "assembly" if part_count > 1 else "machining",
+        "document_type": cad_document_type,
+        "primary_manufacturing_type": cad_primary,
+        "manufacturing_types": [cad_primary, "Inspection & Handling"],
+        "part_form": cad_part_form,
+        "classification_confidence": 88 if parser_exact else 55,
+        "process_route": [cad_primary, "Inspection & Handling"],
+        "evidence": [
+            {
+                "field": "CAD Classification",
+                "value": f"{cad_document_type} / {cad_primary}",
+                "basis": f"{fmt} geometry: {part_count} part(s), shape hint {shape_hint or 'unknown'}, {value.triangle_count} triangles",
+                "page": 0,
+                "confidence": 88 if parser_exact else 55,
+            }
+        ],
         "assembly_parts": assembly_parts,
         "material": {
             "family": "",
@@ -3618,11 +3715,18 @@ def analyze_cad(value: CadAnalysisReq):
             "surface_area_mm2": max(0.0, float(value.surface_area_mm2 or 0)),
             "volume_mm3": max(0.0, float(value.volume_mm3 or 0)),
             "component_names": component_names,
+            "shape_hint": value.shape_hint,
         },
     }
 
+    ai_raw = enrich_engineering_intelligence(
+        ai_raw, filename=filename, source_format=fmt
+    )
     drawing = ai_result_to_drawing(ai_raw)
     rows = ai_result_to_rows(ai_raw, drawing)
+    ai_raw = enrich_engineering_intelligence(
+        ai_raw, filename=filename, source_format=fmt, rows=rows
+    )
     summary = calc(rows)
 
     extraction_id = "CAD-" + uuid.uuid4().hex[:10].upper()
@@ -3665,6 +3769,8 @@ def analyze_cad(value: CadAnalysisReq):
         "dfm": _generate_dfm(artifact_payload),
         "bom": _generate_bom(artifact_payload),
         "ai_raw": ai_raw,
+        "engineering_intelligence": ai_raw.get("engineering_intelligence", {}),
+        "cost_trace": build_cost_trace(rows),
         "source_type": "cad",
         "source_format": fmt,
     }
@@ -3695,6 +3801,12 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
     if memory:
         drawing = Drawing(**memory["drawing"])
         rows = [Row(**x) for x in memory["rows"]]
+        ai_raw = enrich_engineering_intelligence(
+            memory.get("ai_raw") or {},
+            filename=filename,
+            source_format=extension.lstrip(".").upper(),
+            rows=rows,
+        )
         source = "reviewed_memory"
         warnings = [
             "Exact previously reviewed drawing found. Saved engineer corrections were reused."
@@ -3708,11 +3820,17 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
             if not isinstance(ai_raw, dict):
                 raise ValueError("Vision AI did not return a JSON object.")
 
+            ai_raw = enrich_engineering_intelligence(
+                ai_raw, filename=filename, source_format="PDF"
+            )
             drawing = ai_result_to_drawing(ai_raw)
 
             # Build editable costing rows from the AI extraction.
             # Quantities/features come from the drawing; prices come from Rate Master.
             rows = ai_result_to_rows(ai_raw, drawing)
+            ai_raw = enrich_engineering_intelligence(
+                ai_raw, filename=filename, source_format="PDF", rows=rows
+            )
 
             source = "vision_ai"
             warnings = []
@@ -3792,17 +3910,40 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
     elif extension in {".png", ".jpg", ".jpeg", ".webp"}:
         mime_map={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".webp":"image/webp"}
         ai_raw=analyze_engineering_media(content,mime_map[extension])
-        drawing=ai_result_to_drawing(ai_raw); rows=ai_result_to_rows(ai_raw,drawing); source="vision_ai_image"
+        ai_raw=enrich_engineering_intelligence(ai_raw,filename=filename,source_format=extension.lstrip(".").upper())
+        drawing=ai_result_to_drawing(ai_raw); rows=ai_result_to_rows(ai_raw,drawing)
+        ai_raw=enrich_engineering_intelligence(ai_raw,filename=filename,source_format=extension.lstrip(".").upper(),rows=rows); source="vision_ai_image"
         warnings=["Image analyzed with Vision AI; verify critical manufacturing values."]
         uncertain=ai_raw.get("missing_or_uncertain") or []
         if uncertain:warnings.append("Review required: "+", ".join(str(x) for x in uncertain[:12]))
     elif extension==".dxf":
         try:
-            ai_raw,drawing,rows,warnings=analyze_dxf_geometry(content,filename); source="dxf_geometry"
+            ai_raw,drawing,rows,warnings=analyze_dxf_geometry(content,filename)
+            ai_raw=enrich_engineering_intelligence(ai_raw,filename=filename,source_format="DXF",rows=rows); source="dxf_geometry"
         except Exception as exc:
             drawing,rows,source,warnings,text_preview=extract_drawing_fields(content,filename); warnings.insert(0,f"DXF parser fallback: {exc}")
     else:
         drawing, rows, source, warnings, text_preview = extract_drawing_fields(content, filename)
+
+    if ai_raw is None:
+        ai_raw = enrich_engineering_intelligence(
+            {
+                "drawing_no": drawing.drawing_no,
+                "revision": drawing.revision,
+                "description": drawing.description,
+                "drawing_type": "part",
+                "material": {"family": drawing.material, "grade": "", "specification": ""},
+                "thickness_mm": drawing.thickness_mm or None,
+                "weight_kg": drawing.weight_kg or None,
+                "product_quantity": drawing.quantity,
+                "notes": drawing.notes,
+                "manufacturing_processes": [],
+                "missing_or_uncertain": warnings,
+            },
+            filename=filename,
+            source_format=extension.lstrip(".").upper(),
+            rows=rows,
+        )
 
     settings = load("settings", defaults_settings())
 
@@ -3849,6 +3990,8 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
         "dfm": dfm_report,
         "bom": bom_report,
         "ai_raw": ai_raw,
+        "engineering_intelligence": ai_raw.get("engineering_intelligence", {}),
+        "cost_trace": build_cost_trace(rows),
         "source_type": "drawing",
         "source_format": extension.lstrip(".").upper(),
     }
@@ -3863,6 +4006,9 @@ def review(value: ReviewReq):
         "file_hash": value.file_hash,
         "drawing": value.drawing.model_dump(),
         "rows": [r.model_dump() for r in value.rows],
+        "ai_raw": enrich_engineering_intelligence(
+            value.ai_raw, rows=value.rows
+        ) if value.ai_raw else {},
     }
 
     reviewed_samples = append_review_record(record)
@@ -4070,6 +4216,12 @@ def add_revision(value: RevisionReq):
         "revision": value.drawing.revision,
         "description": value.drawing.description,
         "material": value.drawing.material,
+        "thickness_mm": value.drawing.thickness_mm,
+        "weight_kg": value.drawing.weight_kg,
+        "quantity": value.drawing.quantity,
+        "summary": value.summary.model_dump() if value.summary else {},
+        "rows": [row.model_dump() for row in value.rows],
+        "ai_raw": enrich_engineering_intelligence(value.ai_raw, rows=value.rows) if value.ai_raw else {},
         "note": value.note,
     }
     rows = load("revisions", [])
@@ -4081,6 +4233,89 @@ def add_revision(value: RevisionReq):
 @app.get("/api/revisions/{drawing_no}")
 def revisions(drawing_no: str):
     return [x for x in load("revisions", []) if x.get("drawing_no") == drawing_no]
+
+
+@app.post("/api/revisions/compare-current")
+def compare_current_revision(value: RevisionReq):
+    drawing_no = value.drawing.drawing_no
+    prior_rows = [
+        x for x in load("revisions", [])
+        if x.get("drawing_no") == drawing_no
+    ]
+
+    if not prior_rows:
+        return {
+            "available": False,
+            "drawing_no": drawing_no,
+            "baseline_revision": "",
+            "current_revision": value.drawing.revision,
+            "changes": [],
+            "cost_delta": 0,
+        }
+
+    baseline = prior_rows[-1]
+    current_summary = value.summary.model_dump() if value.summary else {}
+    baseline_summary = baseline.get("summary") or {}
+    changes: list[dict] = []
+
+    current_fields = {
+        "Revision": value.drawing.revision,
+        "Description": value.drawing.description,
+        "Material": value.drawing.material,
+        "Thickness (mm)": value.drawing.thickness_mm,
+        "Weight (kg)": value.drawing.weight_kg,
+        "Quantity": value.drawing.quantity,
+    }
+    baseline_fields = {
+        "Revision": baseline.get("revision", ""),
+        "Description": baseline.get("description", ""),
+        "Material": baseline.get("material", ""),
+        "Thickness (mm)": baseline.get("thickness_mm", 0),
+        "Weight (kg)": baseline.get("weight_kg", 0),
+        "Quantity": baseline.get("quantity", 1),
+    }
+
+    for field, current_value in current_fields.items():
+        previous_value = baseline_fields.get(field)
+        if str(previous_value) != str(current_value):
+            changes.append({
+                "field": field,
+                "previous": previous_value,
+                "current": current_value,
+            })
+
+    previous_price = float(baseline_summary.get("selling_price") or 0)
+    current_price = float(current_summary.get("selling_price") or 0)
+    cost_delta = current_price - previous_price
+    if previous_price != current_price:
+        changes.append({
+            "field": "Selling Price",
+            "previous": round(previous_price, 2),
+            "current": round(current_price, 2),
+        })
+
+    previous_intel = (baseline.get("ai_raw") or {}).get("engineering_intelligence") or {}
+    current_ai = enrich_engineering_intelligence(value.ai_raw, rows=value.rows) if value.ai_raw else {}
+    current_intel = current_ai.get("engineering_intelligence") or {}
+
+    for field, label in (
+        ("document_type", "Document Type"),
+        ("primary_manufacturing_type", "Manufacturing Type"),
+        ("part_form", "Part Form"),
+    ):
+        before = previous_intel.get(field, "")
+        after = current_intel.get(field, "")
+        if before and after and before != after:
+            changes.append({"field": label, "previous": before, "current": after})
+
+    return {
+        "available": True,
+        "drawing_no": drawing_no,
+        "baseline_revision": str(baseline.get("revision") or ""),
+        "current_revision": value.drawing.revision,
+        "changes": changes,
+        "cost_delta": round(cost_delta, 2),
+    }
 
 
 @app.post("/api/quotations")

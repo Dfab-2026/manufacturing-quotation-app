@@ -17,6 +17,48 @@ def _extract_text_fast(document: fitz.Document) -> str:
         return ""
 
 
+
+
+def _extract_layout_context(document: fitz.Document) -> str:
+    """
+    Compact deterministic page/block layout context.
+
+    This is deliberately local (PyMuPDF) so the application gets document
+    structure/evidence hints without requiring a second paid OCR service.
+    """
+    chunks: list[str] = []
+    total = 0
+
+    for page_index, page in enumerate(document):
+        try:
+            blocks = page.get_text("blocks") or []
+        except Exception:
+            blocks = []
+
+        # Reading order: top-to-bottom, left-to-right.
+        blocks = sorted(blocks, key=lambda b: (float(b[1]), float(b[0])))
+
+        for block in blocks[:80]:
+            if len(block) < 5:
+                continue
+            x0, y0, x1, y1, text = block[:5]
+            clean = " ".join(str(text or "").split())
+            if not clean:
+                continue
+
+            line = (
+                f"p{page_index + 1} "
+                f"bbox({float(x0):.1f},{float(y0):.1f},{float(x1):.1f},{float(y1):.1f}) "
+                f"{clean}"
+            )
+            chunks.append(line)
+            total += len(line)
+            if total >= 7000:
+                return "\n".join(chunks)
+
+    return "\n".join(chunks)
+
+
 def _title_crop_fast(document: fitz.Document) -> bytes | None:
     """
     Small compressed crop only.
@@ -67,6 +109,7 @@ def analyze_pdf_with_ai(pdf_bytes: bytes) -> dict:
             raise ValueError("PDF contains no pages.")
 
         extracted_text = _extract_text_fast(document)
+        layout_context = _extract_layout_context(document)
 
         # Vector/text PDFs already give Gemini the original PDF plus searchable
         # text, so generating another JPEG crop is redundant and slower.
@@ -84,4 +127,5 @@ def analyze_pdf_with_ai(pdf_bytes: bytes) -> dict:
         pdf_bytes,
         extracted_pdf_text=extracted_text,
         title_crop_bytes=title_crop,
+        layout_context=layout_context,
     )

@@ -1,6 +1,6 @@
 [project]
 name = "dfab-quotation-api"
-version = "0.6.6"
+version = "0.11.0"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi",

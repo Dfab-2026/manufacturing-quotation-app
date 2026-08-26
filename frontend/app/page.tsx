@@ -23,6 +23,7 @@ import type {
   QuoteSummary,
   RateCatalog,
   RateItem,
+  RevisionComparison,
   RevisionRecord,
   Settings
 } from "@/lib/types";
@@ -504,6 +505,7 @@ export default function Page() {
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("Ready.");
   const [fileUrl, setFileUrl] = useState("");
+  const [revisionComparison, setRevisionComparison] = useState<RevisionComparison | null>(null);
 
   const [settings, setSettings] = useState<Settings | null>(null);
   const [rates, setRates] = useState<RateItem[]>([]);
@@ -907,6 +909,7 @@ export default function Page() {
     });
     setWorkspaceDatasetId(createWorkspaceDatasetId());
     setWorkspaceDatasetName("Untitled Quotation Dataset");
+    setRevisionComparison(null);
     setMsg(message);
   };
 
@@ -1104,6 +1107,7 @@ export default function Page() {
     setRows(target.rows);
     setSummary(target.summary);
     setFinalPriceOverride(null);
+    setRevisionComparison(null);
     setMsg(`Showing drawing ${target.drawing.drawing_no || target.file.name}.`);
   };
 
@@ -1234,7 +1238,7 @@ export default function Page() {
 
         const result = isModelSource(selected)
           ? await api.analyzeCad(await inspectCadFile(selected))
-          : await api.analyzeDrawing(selected, true);
+          : await api.analyzeDrawing(selected, false);
 
         const itemSummary =
           result.summary || await api.calculateQuote(result.rows);
@@ -1630,6 +1634,29 @@ export default function Page() {
     }
   };
 
+  const comparePreviousRevision = async () => {
+    if (!drawing || !analysis) return;
+
+    try {
+      setBusy(true);
+      const result = await api.compareCurrentRevision({
+        drawing,
+        summary,
+        rows,
+        ai_raw: analysis.ai_raw || {},
+        note: "Current comparison"
+      });
+      setRevisionComparison(result);
+      setMsg(result.available
+        ? `Compared with revision ${result.baseline_revision || "previous"}.`
+        : "No previous revision snapshot found for this drawing.");
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Revision comparison failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const saveReview = async () => {
     if (!analysis || !drawing) return;
     snapshotActiveBatch();
@@ -1640,10 +1667,14 @@ export default function Page() {
           extraction_id: analysis.extraction_id,
           file_hash: analysis.file_hash,
           drawing,
-          rows
+          rows,
+          ai_raw: analysis.ai_raw || {}
         }),
         api.saveRevision({
           drawing,
+          summary,
+          rows,
+          ai_raw: analysis.ai_raw || {},
           note: "Reviewed extraction saved"
         })
       ]);
@@ -1778,7 +1809,11 @@ export default function Page() {
   };
 
   const updateEngineeringData = (next: AIExtraction) => {
-    setAnalysis((current) => current ? { ...current, ai_raw: next } : current);
+    setAnalysis((current) => current ? {
+      ...current,
+      ai_raw: next,
+      engineering_intelligence: next.engineering_intelligence || current.engineering_intelligence
+    } : current);
 
     setDrawing((current) => {
       if (!current) return current;
@@ -2759,6 +2794,13 @@ export default function Page() {
 
                     const extension =
                       selected.name.split(".").pop()?.toUpperCase() || "FILE";
+                    const sourceIntelligence =
+                      batchItem?.analysis.engineering_intelligence
+                      || batchItem?.analysis.ai_raw?.engineering_intelligence;
+                    const sourceClass = sourceIntelligence?.document_type
+                      ? sourceIntelligence.document_type.replace(" Drawing", "")
+                      : "";
+                    const sourceRoute = sourceIntelligence?.primary_manufacturing_type || "";
 
                     return (
                       <button
@@ -2786,9 +2828,11 @@ export default function Page() {
                             : batchItem
                               ? batchItem.analysis.learning_source === "independent_fallback"
                                 ? `${extension} · Review Required`
-                                : model
-                                  ? `${extension} · CAD Analyzed`
-                                  : `${extension} · Analyzed`
+                                : sourceClass || sourceRoute
+                                  ? `${sourceClass || "Part"} · ${sourceRoute || "Analyzed"}`
+                                  : model
+                                    ? `${extension} · CAD Analyzed`
+                                    : `${extension} · Analyzed`
                               : `${extension} · Ready`}
                         </span>
                       </button>
@@ -3067,16 +3111,75 @@ export default function Page() {
               <section className="panel">
                 <div className="heading row">
                   <div><p className="eyebrow">STEP 2</p><h2>Drawing Snapshot & Basic Details</h2><p>Confirm the drawing identity and key values. Full engineering details stay in the Excel sheet.</p></div>
-                  <div className="actions compact"><button className="btn primary" disabled={busy} onClick={saveReview}>Save Review & Continue</button></div>
+                  <div className="actions compact">
+                    <button className="btn secondary" disabled={busy || !drawing.drawing_no} onClick={() => void comparePreviousRevision()}>Compare Previous</button>
+                    <button className="btn primary" disabled={busy} onClick={saveReview}>Save Review & Continue</button>
+                  </div>
                 </div>
                 <div className="extraction-status">
-                  <span className={`source-badge ${analysis?.learning_source === "vision_ai" ? "good" : "warn"}`}>
+                  <span className={`source-badge ${["vision_ai", "vision_ai_image", "cad_geometry", "reviewed_memory", "dxf_geometry"].includes(analysis?.learning_source || "") ? "good" : "warn"}`}>
                     Source: {analysis?.learning_source || "unknown"}
                   </span>
                   {analysis?.extraction_warnings?.map((warning, i) => (
                     <span className="extract-warning" key={i}>⚠ {warning}</span>
                   ))}
                 </div>
+
+                {(analysis?.engineering_intelligence || analysis?.ai_raw?.engineering_intelligence) && (() => {
+                  const intel = analysis?.engineering_intelligence || analysis?.ai_raw?.engineering_intelligence;
+                  const completeness = intel?.completeness;
+                  return (
+                    <div className="engineering-classification-ribbon">
+                      <div>
+                        <small>DOCUMENT</small>
+                        <b>{intel?.document_type || "Part Drawing"}</b>
+                      </div>
+                      <div>
+                        <small>MANUFACTURING</small>
+                        <b>{intel?.primary_manufacturing_type || "Review Required"}</b>
+                      </div>
+                      <div>
+                        <small>PART FORM</small>
+                        <b>{intel?.part_form || "Unknown"}</b>
+                      </div>
+                      <div>
+                        <small>CLASSIFICATION</small>
+                        <b>{Number(intel?.classification_confidence || 0)}%</b>
+                      </div>
+                      <div className={`release-${String(completeness?.release_state || "REVIEW").toLowerCase()}`}>
+                        <small>ENGINEERING DATA</small>
+                        <b>{Number(completeness?.engineering_data || 0)}%</b>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {revisionComparison && (
+                  <div className={`revision-compare-panel ${revisionComparison.available ? "available" : "empty"}`}>
+                    <div>
+                      <span>REVISION COMPARISON</span>
+                      <b>{revisionComparison.available
+                        ? `${revisionComparison.baseline_revision || "Previous"} → ${revisionComparison.current_revision || "Current"}`
+                        : "No previous revision"}</b>
+                    </div>
+                    {revisionComparison.available && (
+                      <>
+                        <strong>{revisionComparison.changes.length} change{revisionComparison.changes.length === 1 ? "" : "s"}</strong>
+                        <em className={revisionComparison.cost_delta > 0 ? "increase" : revisionComparison.cost_delta < 0 ? "decrease" : "same"}>
+                          Cost Δ {money(revisionComparison.cost_delta)}
+                        </em>
+                        <div className="revision-change-list">
+                          {revisionComparison.changes.slice(0, 6).map((change, index) => (
+                            <span key={`${change.field}-${index}`}>
+                              <b>{change.field}</b>
+                              <small>{String(change.previous ?? "—")} → {String(change.current ?? "—")}</small>
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
 
                 <div className="review">
                   <div className="paperbox">
@@ -3167,13 +3270,32 @@ export default function Page() {
                   <span><i className="sheet-dot green"/>Ready</span>
                   <span><i className="sheet-dot yellow"/>Review</span>
                   <span><i className="sheet-dot red"/>Attention</span>
-                  <b>No numeric confidence scores are shown on this sheet.</b>
+                  <b>Feature tables use status; classification and evidence show confidence.</b>
                 </div>
                 <div className="charge-cards">
                   <div><span>Material Charges</span><b>{money(chargeTotals.material)}</b></div>
                   <div><span>Processing Charges</span><b>{money(chargeTotals.process)}</b></div>
                   <div><span>Labour Charges</span><b>{money(chargeTotals.labour)}</b></div>
                 </div>
+
+                {rows.length ? (
+                  <div className="cost-trace-panel">
+                    <div className="cost-trace-head">
+                      <div><span>COST TRACEABILITY</span><b>Live quantity × rate explanation</b></div>
+                      <small>{rows.length} rows</small>
+                    </div>
+                    <div className="cost-trace-list">
+                      {rows.slice(0, 8).map((item) => (
+                        <div key={item.id || `${item.category}-${item.item}`}>
+                          <span>{item.category}</span>
+                          <b>{item.item}</b>
+                          <code>{Number(item.costingQty || 0)} {item.unit} × {money(Number(item.rate || 0))}/{item.unit || "unit"} = {money(Number(item.costingQty || 0) * Number(item.rate || 0))}</code>
+                          <small>{item.rateSource || "Manual / Included"} · {item.confidence || "Review"}</small>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="cost-grid-shell">
                   <div className="cost-grid-title">
@@ -3888,6 +4010,12 @@ export default function Page() {
                       : null;
                     const extension =
                       selected.name.split(".").pop()?.toUpperCase() || "FILE";
+                    const artifactIntel =
+                      workspace?.analysis.engineering_intelligence
+                      || workspace?.analysis.ai_raw?.engineering_intelligence;
+                    const artifactClass = artifactIntel?.document_type
+                      ? artifactIntel.document_type.replace(" Drawing", "")
+                      : extension;
 
                     return (
                       <button
@@ -3911,8 +4039,8 @@ export default function Page() {
                         </b>
                         <span>
                           {report
-                            ? `${extension} · ${report.status}`
-                            : `${extension} · Processing`}
+                            ? `${artifactClass} · ${report.status}`
+                            : `${artifactClass} · Processing`}
                         </span>
                       </button>
                     );
@@ -4229,6 +4357,12 @@ export default function Page() {
                       : null;
                     const extension =
                       selected.name.split(".").pop()?.toUpperCase() || "FILE";
+                    const artifactIntel =
+                      workspace?.analysis.engineering_intelligence
+                      || workspace?.analysis.ai_raw?.engineering_intelligence;
+                    const artifactClass = artifactIntel?.document_type
+                      ? artifactIntel.document_type.replace(" Drawing", "")
+                      : extension;
 
                     return (
                       <button
@@ -4251,7 +4385,7 @@ export default function Page() {
                             || selected.name.replace(/\.[^.]+$/, "")}
                         </b>
                         <span>
-                          {report ? `${extension} · Ready` : `${extension} · Processing`}
+                          {report ? `${artifactClass} · Ready` : `${artifactClass} · Processing`}
                         </span>
                       </button>
                     );
@@ -4887,6 +5021,58 @@ function EngineeringDetails({
     });
   };
 
+  const intelligence = data.engineering_intelligence;
+  const completeness = intelligence?.completeness;
+  const evidence = intelligence?.evidence || data.evidence || [];
+
+  const setIntelligence = (key: string, value: unknown) => {
+    const current = data.engineering_intelligence || {
+      document_type: data.document_type || "Part Drawing",
+      primary_manufacturing_type: data.primary_manufacturing_type || "",
+      manufacturing_types: data.manufacturing_types || [],
+      part_form: data.part_form || "Unknown",
+      classification_confidence: data.classification_confidence || 0,
+      process_route: data.process_route || [],
+      evidence: data.evidence || [],
+      completeness: {
+        engineering_data: 0,
+        cost_confidence: 0,
+        classification_confidence: data.classification_confidence || 0,
+        rate_coverage: 0,
+        release_state: "REVIEW",
+        review_required: []
+      }
+    };
+
+    const nextIntelligence = { ...current, [key]: value };
+    const next: AIExtraction = {
+      ...data,
+      engineering_intelligence: nextIntelligence,
+      document_type: key === "document_type" ? String(value) : nextIntelligence.document_type,
+      primary_manufacturing_type: key === "primary_manufacturing_type" ? String(value) : nextIntelligence.primary_manufacturing_type,
+      part_form: key === "part_form" ? String(value) : nextIntelligence.part_form
+    };
+
+    if (key === "primary_manufacturing_type") {
+      next.manufacturing_types = Array.from(new Set([
+        String(value),
+        ...(nextIntelligence.manufacturing_types || [])
+      ].filter(Boolean)));
+      const nextRoute = Array.from(new Set([
+        String(value),
+        ...(nextIntelligence.process_route || []).filter((item) => item !== String(value))
+      ].filter(Boolean)));
+      next.process_route = nextRoute;
+      next.engineering_intelligence = {
+        ...nextIntelligence,
+        manufacturing_types: next.manufacturing_types,
+        process_route: nextRoute
+      };
+    }
+
+    onChange(next);
+  };
+
   const setSummaryNumber = (
     key: "thickness_mm" | "weight_kg" | "product_quantity",
     value: string
@@ -4967,13 +5153,84 @@ function EngineeringDetails({
 
   const finishes = (data.surface_finish || []).map((x) => String(x));
   const notes = (data.notes || []).map((x) => String(x));
-  const uncertain = (data.missing_or_uncertain || []).map((x) => String(x));
+  const uncertain = Array.from(new Set([
+    ...(data.missing_or_uncertain || []).map((x) => String(x)),
+    ...(completeness?.review_required || []).map((x) => String(x))
+  ].filter(Boolean)));
 
   return (
     <div className="engineering-details vertical-edit-sheet">
+      <section className="sheet-section engineering-intelligence-section">
+        <div className="sheet-section-title">
+          <div><span>01</span><div><b>Engineering Classification</b><small>Document type, manufacturing route and quotation readiness</small></div></div>
+        </div>
+
+        <div className="engineering-intelligence-grid">
+          <label>
+            <span>Document Type</span>
+            <select
+              value={intelligence?.document_type || data.document_type || "Part Drawing"}
+              onChange={(e) => setIntelligence("document_type", e.target.value)}
+            >
+              {["Part Drawing", "Assembly Drawing", "General Arrangement", "Weldment / Fabrication Drawing", "Detail Drawing"].map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Primary Manufacturing</span>
+            <select
+              value={intelligence?.primary_manufacturing_type || data.primary_manufacturing_type || "Inspection & Handling"}
+              onChange={(e) => setIntelligence("primary_manufacturing_type", e.target.value)}
+            >
+              {["CNC Milling", "CNC Turning", "General Machining", "Laser Cutting", "Sheet-Metal Fabrication", "Welding / Fabrication", "Drilling / Boring", "Threading / Tapping", "Grinding / Finishing", "Casting", "Forging", "Extrusion", "Tube / Pipe Fabrication", "Additive Manufacturing", "Purchased / Standard Part", "Assembly / Integration", "Inspection & Handling"].map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Part Form</span>
+            <select
+              value={intelligence?.part_form || data.part_form || "Unknown"}
+              onChange={(e) => setIntelligence("part_form", e.target.value)}
+            >
+              {["Plate", "Sheet", "Block / Prismatic", "Shaft / Cylindrical", "Flange", "Bracket", "Frame", "Tube / Pipe", "Enclosure / Cover", "Gear", "Casting", "Assembly", "Standard Part", "Unknown"].map((item) => <option key={item}>{item}</option>)}
+            </select>
+          </label>
+          <div className="classification-score-card">
+            <span>Classification Confidence</span>
+            <b>{Number(intelligence?.classification_confidence || data.classification_confidence || 0)}%</b>
+            <small>{completeness?.release_state || "REVIEW"}</small>
+          </div>
+        </div>
+
+        {(intelligence?.process_route || data.process_route || []).length > 0 && (
+          <div className="process-route-card">
+            <span>PROCESS ROUTE</span>
+            <div>
+              {(intelligence?.process_route || data.process_route || []).map((process, index) => (
+                <span key={`${process}-${index}`}>
+                  <b>{index + 1}</b>{process}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        <div className="completeness-grid">
+          {[
+            ["Engineering Data", completeness?.engineering_data || 0],
+            ["Cost Confidence", completeness?.cost_confidence || 0],
+            ["Rate Coverage", completeness?.rate_coverage || 0]
+          ].map(([label, value]) => (
+            <div key={String(label)}>
+              <span>{label}</span>
+              <b>{Number(value)}%</b>
+              <i><em style={{ width: `${Math.max(0, Math.min(100, Number(value)))}%` }}/></i>
+            </div>
+          ))}
+        </div>
+      </section>
+
       <section className="sheet-section">
         <div className="sheet-section-title">
-          <div><span>01</span><div><b>Part Summary</b><small>Editable key engineering information</small></div></div>
+          <div><span>02</span><div><b>Part Summary</b><small>Editable key engineering information</small></div></div>
         </div>
 
         <div className="editable-summary-table">
@@ -5003,7 +5260,7 @@ function EngineeringDetails({
 
       <section className="sheet-section">
         <div className="sheet-section-title">
-          <div><span>02</span><div><b>Drawing Features</b><small>Full-width editable tables arranged one-by-one</small></div></div>
+          <div><span>03</span><div><b>Drawing Features</b><small>Full-width editable tables arranged one-by-one</small></div></div>
         </div>
 
         <div className="engineering-feature-stack">
@@ -5031,7 +5288,7 @@ function EngineeringDetails({
 
       <section className="sheet-section">
         <div className="sheet-section-title">
-          <div><span>03</span><div><b>Notes & Review</b><small>Editable drawing notes kept one table after another</small></div></div>
+          <div><span>04</span><div><b>Notes & Review</b><small>Editable drawing notes kept one table after another</small></div></div>
         </div>
 
         <div className="engineering-feature-stack notes-stack">
@@ -5046,6 +5303,30 @@ function EngineeringDetails({
           </div>
         </div>
       </section>
+
+      {evidence.length > 0 && (
+        <section className="sheet-section engineering-evidence-section">
+          <div className="sheet-section-title">
+            <div><span>05</span><div><b>Evidence & Provenance</b><small>Why the system classified and extracted these values</small></div></div>
+          </div>
+          <div className="evidence-table-wrap">
+            <table className="evidence-table">
+              <thead><tr><th>Field</th><th>Value</th><th>Drawing Basis</th><th>Page</th><th>Confidence</th></tr></thead>
+              <tbody>
+                {evidence.map((item, index) => (
+                  <tr key={`${item.field}-${index}`}>
+                    <td><b>{item.field}</b></td>
+                    <td>{item.value}</td>
+                    <td>{item.basis}</td>
+                    <td>{item.page ? item.page : "—"}</td>
+                    <td><span className={`evidence-confidence ${item.confidence >= 80 ? "good" : item.confidence >= 60 ? "review" : "attention"}`}>{item.confidence}%</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

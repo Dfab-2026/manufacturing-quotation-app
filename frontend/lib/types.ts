@@ -55,11 +55,63 @@ export type AssemblyPartExtraction = {
   confidence?: number;
 };
 
+export type EngineeringEvidence = {
+  field: string;
+  value: string;
+  basis: string;
+  page?: number;
+  confidence: number;
+};
+
+export type EngineeringCompleteness = {
+  engineering_data: number;
+  cost_confidence: number;
+  classification_confidence: number;
+  rate_coverage: number;
+  release_state: "READY" | "REVIEW" | "ATTENTION" | string;
+  review_required: string[];
+};
+
+export type EngineeringIntelligence = {
+  document_type: string;
+  primary_manufacturing_type: string;
+  manufacturing_types: string[];
+  part_form: string;
+  classification_confidence: number;
+  process_route: string[];
+  evidence: EngineeringEvidence[];
+  completeness: EngineeringCompleteness;
+  source_format?: string;
+};
+
+export type CostTraceItem = {
+  id: string;
+  category: string;
+  item: string;
+  drawing_basis: string;
+  costing_qty: number;
+  unit: string;
+  rate: number;
+  amount: number;
+  formula: string;
+  rate_source: string;
+  confidence: string;
+  critical_score: number;
+};
+
 export type AIExtraction = {
   drawing_no?: string;
   revision?: string;
   description?: string;
   drawing_type?: string;
+  document_type?: string;
+  primary_manufacturing_type?: string;
+  manufacturing_types?: string[];
+  part_form?: string;
+  classification_confidence?: number;
+  process_route?: string[];
+  evidence?: EngineeringEvidence[];
+  engineering_intelligence?: EngineeringIntelligence;
   assembly_parts?: AssemblyPartExtraction[];
   material?: {
     family?: string;
@@ -96,6 +148,7 @@ export type AIExtraction = {
     surface_area_mm2?: number;
     volume_mm3?: number;
     component_names?: string[];
+    shape_hint?: string;
   };
 };
 
@@ -109,6 +162,8 @@ export type AnalysisResponse = {
   drawing: DrawingDetails;
   rows: CostRow[];
   ai_raw?: AIExtraction | null;
+  engineering_intelligence?: EngineeringIntelligence;
+  cost_trace?: CostTraceItem[];
   summary?: QuoteSummary;
   dfm?: DfmReport;
   bom?: BomReport;
@@ -187,6 +242,15 @@ export type RevisionRecord = {
   note: string;
 };
 
+export type RevisionComparison = {
+  available: boolean;
+  drawing_no: string;
+  baseline_revision: string;
+  current_revision: string;
+  changes: Array<{ field: string; previous: unknown; current: unknown }>;
+  cost_delta: number;
+};
+
 
 export type BatchQuoteItem = {
   drawing: DrawingDetails;
@@ -225,6 +289,9 @@ export type DfmReport = {
   revision: string;
   description: string;
   classification: string;
+  document_type?: string;
+  part_form?: string;
+  classification_confidence?: number;
   status: ArtifactStatus | string;
   standards: Array<{ standard: string; scope: string }>;
   checks: DfmCheck[];

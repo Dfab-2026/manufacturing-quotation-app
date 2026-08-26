@@ -4,7 +4,7 @@ import time
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 
 from dotenv import load_dotenv
 from google import genai
@@ -107,6 +107,15 @@ class AssemblyPart(BaseModel):
     confidence: int = Field(default=0, ge=0, le=100)
 
 
+
+
+class EngineeringEvidence(BaseModel):
+    field: str = ""
+    value: str = ""
+    basis: str = ""
+    page: int = Field(default=0, ge=0, le=999)
+    confidence: int = Field(default=0, ge=0, le=100)
+
 class Confidence(BaseModel):
     drawing_no: int = Field(default=0, ge=0, le=100)
     revision: int = Field(default=0, ge=0, le=100)
@@ -115,13 +124,32 @@ class Confidence(BaseModel):
     thickness: int = Field(default=0, ge=0, le=100)
     weight: int = Field(default=0, ge=0, le=100)
     quantity: int = Field(default=0, ge=0, le=100)
+    dimensions: int = Field(default=0, ge=0, le=100)
+    processes: int = Field(default=0, ge=0, le=100)
+    classification: int = Field(default=0, ge=0, le=100)
 
 
 class EngineeringDrawingExtraction(BaseModel):
     drawing_no: str = ""
     revision: str = ""
     description: str = ""
+
+    # Two-axis classification: what document is this, and how is it manufactured?
     drawing_type: str = "part"
+    document_type: Literal[
+        "Part Drawing",
+        "Assembly Drawing",
+        "General Arrangement",
+        "Weldment / Fabrication Drawing",
+        "Detail Drawing",
+    ] = "Part Drawing"
+    primary_manufacturing_type: str = ""
+    manufacturing_types: list[str] = Field(default_factory=list)
+    part_form: str = "Unknown"
+    classification_confidence: int = Field(default=0, ge=0, le=100)
+    process_route: list[str] = Field(default_factory=list)
+    evidence: list[EngineeringEvidence] = Field(default_factory=list)
+
     assembly_parts: list[AssemblyPart] = Field(default_factory=list)
 
     material: Material = Field(default_factory=Material)
@@ -154,7 +182,19 @@ class EngineeringDrawingExtraction(BaseModel):
 def analyze_engineering_media(content_bytes: bytes, mime_type: str) -> dict:
     if not content_bytes:
         raise ValueError("No media bytes were supplied.")
-    prompt = """You are a senior manufacturing engineer. Analyze this engineering drawing image. Extract drawing number, revision, description, drawing_type, assembly_parts, material, thickness, dimensions, holes, threads, chamfers, bends, studs, welds, surface_finish, manufacturing_processes, notes, confidence and missing_or_uncertain. Never invent values. Keep assembly components separate. Never invent rates/cost."""
+    prompt = """You are a senior manufacturing engineer and manufacturing-process planner. Analyze this engineering drawing image.
+
+Return structured engineering data and classify it on TWO independent axes:
+1) document_type: Part Drawing, Assembly Drawing, General Arrangement, Weldment / Fabrication Drawing, or Detail Drawing.
+2) manufacturing route: primary_manufacturing_type plus manufacturing_types and ordered process_route.
+
+Also identify part_form such as Plate, Sheet, Block / Prismatic, Shaft / Cylindrical, Flange, Bracket, Frame, Tube / Pipe, Enclosure / Cover, Gear, Casting, Assembly, Standard Part, or Unknown.
+
+For classification, provide classification_confidence 0-100 and evidence rows. Each evidence row must name the field/value, state the exact drawing basis/callout/geometry signal, page when known, and confidence.
+
+Extract drawing number, revision, description, drawing_type, assembly_parts, material, thickness, dimensions, holes, threads, chamfers, bends, studs, welds, surface_finish, manufacturing_processes, notes, confidence and missing_or_uncertain.
+
+For assemblies/weldments keep every component separate in BOM/item order. Never mix dimensions between components. Never invent values, material, dimensions, rates, labour hours, machine time or costs. Mark uncertain values for review."""
     response = client.models.generate_content(
         model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
         contents=[prompt, types.Part.from_bytes(data=content_bytes, mime_type=mime_type)],
@@ -169,6 +209,7 @@ def analyze_engineering_drawing(
     pdf_bytes: bytes,
     extracted_pdf_text: str = "",
     title_crop_bytes: bytes | None = None,
+    layout_context: str = "",
 ) -> dict:
     """
     Fast path:
@@ -193,6 +234,12 @@ Important:
 - Read the title block, notes, section views and every dimension callout.
 - Read drawing number and revision from the drawing itself.
 - First classify drawing_type as one of: part, assembly, weldment, sheet_metal, machining, mixed.
+- Separately classify document_type as exactly one of: Part Drawing, Assembly Drawing, General Arrangement, Weldment / Fabrication Drawing, Detail Drawing.
+- Separately classify primary_manufacturing_type and manufacturing_types. A document can be an Assembly Drawing while its components require machining, laser cutting, bending and welding. Never confuse document type with manufacturing type.
+- Determine part_form such as Plate, Sheet, Block / Prismatic, Shaft / Cylindrical, Flange, Bracket, Frame, Tube / Pipe, Enclosure / Cover, Gear, Casting, Assembly, Standard Part, or Unknown.
+- Return classification_confidence 0-100.
+- Return an ordered process_route from raw material/preparation through manufacturing, finishing and inspection.
+- Return evidence rows for important classifications and extracted values. Each evidence row should include field, value, basis (the visible note/callout/geometry signal), page number when known, and confidence.
 - If this is an ASSEMBLY / GA / weldment drawing, do NOT collapse all geometry into one part.
 - Extract every identifiable component separately into assembly_parts in BOM/item-number order.
 - For each assembly component capture item number, part name, drawing number, quantity, material, length, width, height, thickness and description when visible.
@@ -216,6 +263,8 @@ Important:
 - For prismatic/block-like solid parts with pockets, flats, slots or multi-face features, prefer CNC milling.
 - Holes can imply drilling/boring, threads can imply tapping/threading, and chamfers can imply chamfering.
 - If more than one process is plausible, include the most likely sequence with a short reason.
+- Recognize casting, forging, extrusion, tube/pipe fabrication, purchased/standard parts and additive manufacturing when the drawing actually supports them.
+- Assembly/GA drawings should identify Assembly / Integration as a route stage but also list the actual processes required by individual components.
 - Never invent material price, process rate, labour hours or quotation cost.
 - Never use the filename as a substitute for reading the drawing.
 - Use confidence 0-100 for extracted values.
@@ -226,6 +275,12 @@ Important:
         prompt += (
             "\n\nSECONDARY PDF TEXT (may be corrupted):\n"
             + extracted_pdf_text[:4000]
+        )
+
+    if layout_context.strip():
+        prompt += (
+            "\n\nDOCUMENT LAYOUT BLOCKS (page + bounding-box context; use as supporting evidence, not as a reason to invent values):\n"
+            + layout_context[:7000]
         )
 
     contents: list[object] = [

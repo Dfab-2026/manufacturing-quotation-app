@@ -1,0 +1,17 @@
+v0.11.0 QA
+
+PASS
+- Python py_compile: main.py, engineering_intelligence.py, pipeline.py, vision.py, db.py, api/index.py
+- frontend TS/TSX transpile syntax: page.tsx, api.ts, types.ts, cad.ts, ModelViewer.tsx
+- cad.ts strict semantic TypeScript check
+- lib/api.ts + lib/types.ts + lib/cad.ts semantic TypeScript check (with process env declaration)
+- engineering intelligence deterministic sample test
+- classification fields present in Gemini structured schema source
+- source-specific assembly BOM decomposition code present
+- exact reviewed-memory ai_raw persistence/reuse code present
+- revision compare API + frontend action present
+- live cost traceability UI present
+
+LIMIT
+- The patch archive does not contain the full frontend package.json/node_modules, so `next build` cannot be executed from this patch archive alone.
+- Google Document AI, OpenAI validation and HOOPS Exchange require external credentials/licensing and are therefore not hard-wired into this zero-new-dependency patch.

@@ -77,6 +77,7 @@ export async function analyzeCad(payload: {
   surface_area_mm2: number;
   volume_mm3: number;
   component_names: string[];
+  shape_hint?: string;
 }) {
   return j<AnalysisResponse>("/api/analyze-cad", {
     method: "POST",
@@ -85,7 +86,7 @@ export async function analyzeCad(payload: {
   }, 18000);
 }
 
-export async function analyzeDrawing(file: File, forceAI = true) {
+export async function analyzeDrawing(file: File, forceAI = false) {
   const form = new FormData();
   form.append("file", file);
   return j<AnalysisResponse>(`/api/analyze?force_ai=${forceAI ? "true" : "false"}`, {
@@ -297,6 +298,14 @@ export async function getRevisions(drawingNo: string) {
 }
 export async function saveRevision(payload: unknown) {
   return j<RevisionRecord>("/api/revisions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function compareCurrentRevision(payload: unknown) {
+  return j<import("./types").RevisionComparison>("/api/revisions/compare-current", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)

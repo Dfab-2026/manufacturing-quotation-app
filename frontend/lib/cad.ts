@@ -17,6 +17,7 @@ export type CadGeometrySummary = {
   surface_area_mm2: number;
   volume_mm3: number;
   component_names: string[];
+  shape_hint?: "plate_like" | "rotational_like" | "prismatic_like" | "unknown";
 };
 
 type OcctResult = {
@@ -337,6 +338,26 @@ function nodeNames(root: OcctResult["root"]) {
 }
 
 
+function shapeHintFromDimensions(dimensions: { x: number; y: number; z: number }) {
+  const values = [dimensions.x, dimensions.y, dimensions.z]
+    .map((value) => Math.max(0, Number(value || 0)))
+    .sort((a, b) => a - b);
+
+  const [small, middle, large] = values;
+  if (!large || !middle) return "unknown" as const;
+
+  if (small / large <= 0.12 && middle / large >= 0.30) {
+    return "plate_like" as const;
+  }
+
+  const roundSection = Math.abs(small - middle) / Math.max(middle, 1) <= 0.18;
+  if (roundSection && large / Math.max(middle, 1) >= 1.35) {
+    return "rotational_like" as const;
+  }
+
+  return "prismatic_like" as const;
+}
+
 function geometrySummaryFromTriangles(
   file: File,
   hash: string,
@@ -373,6 +394,9 @@ function geometrySummaryFromTriangles(
   }
 
   const finite = [minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite);
+  const dimensions = finite
+    ? { x: maxX - minX, y: maxY - minY, z: maxZ - minZ }
+    : { x: 0, y: 0, z: 0 };
 
   return {
     filename: file.name,
@@ -383,12 +407,11 @@ function geometrySummaryFromTriangles(
     part_count: 1,
     mesh_count: triangles.length ? 1 : 0,
     triangle_count: triangles.length,
-    dimensions_mm: finite
-      ? { x: maxX - minX, y: maxY - minY, z: maxZ - minZ }
-      : { x: 0, y: 0, z: 0 },
+    dimensions_mm: dimensions,
     surface_area_mm2: surfaceArea,
     volume_mm3: Math.abs(signedVolume),
-    component_names: []
+    component_names: [],
+    shape_hint: shapeHintFromDimensions(dimensions)
   };
 }
 
@@ -518,7 +541,8 @@ export async function inspectCadFile(
       dimensions_mm: { x: 0, y: 0, z: 0 },
       surface_area_mm2: 0,
       volume_mm3: 0,
-      component_names: []
+      component_names: [],
+      shape_hint: "unknown"
     };
   }
 
@@ -529,7 +553,7 @@ export async function inspectCadFile(
     return {
       filename: file.name, file_hash: hash, format: extension.toUpperCase(), parser_status: "metadata_only" as const,
       root_name: file.name.replace(/\.[^.]+$/, ""), part_count: 1, mesh_count: 0, triangle_count: 0,
-      dimensions_mm: { x: 0, y: 0, z: 0 }, surface_area_mm2: 0, volume_mm3: 0, component_names: []
+      dimensions_mm: { x: 0, y: 0, z: 0 }, surface_area_mm2: 0, volume_mm3: 0, component_names: [], shape_hint: "unknown"
     };
   }
   const meshes = result.meshes || [];
@@ -607,6 +631,13 @@ export async function inspectCadFile(
 
   const finite = [minX, minY, minZ, maxX, maxY, maxZ].every(Number.isFinite);
   const hierarchy = nodeNames(result.root);
+  const dimensions = finite
+    ? {
+        x: Math.max(0, maxX - minX),
+        y: Math.max(0, maxY - minY),
+        z: Math.max(0, maxZ - minZ)
+      }
+    : { x: 0, y: 0, z: 0 };
 
   return {
     filename: file.name,
@@ -617,16 +648,11 @@ export async function inspectCadFile(
     part_count: Math.max(1, hierarchy.partCount || meshes.length || 1),
     mesh_count: meshes.length,
     triangle_count: triangleCount,
-    dimensions_mm: finite
-      ? {
-          x: Math.max(0, maxX - minX),
-          y: Math.max(0, maxY - minY),
-          z: Math.max(0, maxZ - minZ)
-        }
-      : { x: 0, y: 0, z: 0 },
+    dimensions_mm: dimensions,
     surface_area_mm2: surfaceArea,
     volume_mm3: volume,
-      component_names: hierarchy.names
+    component_names: hierarchy.names,
+    shape_hint: shapeHintFromDimensions(dimensions)
     };
   })();
 
