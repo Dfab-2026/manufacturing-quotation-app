@@ -328,8 +328,15 @@ def _replace_cost_rows(
         )
 
 
+SYSTEM_STATE_STORES = {"actuals", "approvals", "audit"}
+
+
 def load_store(name: str, default: Any):
     with SessionLocal() as session:
+        if name in SYSTEM_STATE_STORES:
+            row = session.get(SystemStateRecord, name)
+            return row.payload if row is not None else default
+
         if name == "settings":
             row = session.get(SettingsRecord, 1)
             return row.payload if row else default
@@ -389,6 +396,14 @@ def load_store(name: str, default: Any):
 
 def save_store(name: str, data: Any) -> None:
     with SessionLocal.begin() as session:
+        if name in SYSTEM_STATE_STORES:
+            row = session.get(SystemStateRecord, name)
+            if row is None:
+                session.add(SystemStateRecord(key=name, payload=data))
+            else:
+                row.payload = data
+            return
+
         if name == "settings":
             row = session.get(SettingsRecord, 1)
             payload = dict(data or {})
@@ -847,6 +862,22 @@ def append_review_record(item: dict) -> int:
             ) or 0
         )
 
+
+
+
+def latest_extraction_by_hash(file_hash: str) -> dict | None:
+    """Return the newest successful extraction for one exact drawing hash."""
+    if not file_hash:
+        return None
+
+    with SessionLocal() as session:
+        row = session.scalars(
+            select(ExtractionRecord)
+            .where(ExtractionRecord.file_hash == file_hash)
+            .order_by(ExtractionRecord.created_at.desc())
+            .limit(1)
+        ).first()
+        return row.payload if row else None
 
 def latest_review_by_hash(file_hash: str) -> dict | None:
     """Return the newest reviewed correction for one exact drawing hash."""

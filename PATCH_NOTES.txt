@@ -1,0 +1,8 @@
+Targeted update only:
+- Stronger drawing extraction requirements for thickness plus overall width/height.
+- Deterministic weight fallback: width x height x inferred/default thickness x density x quantity + 10 kg.
+- Width/height can come from labelled dimensions, A x B evidence/notes, usable overall dimensions, or CAD axes.
+- Local hole/thread/chamfer/radius dimensions are excluded from envelope fallback.
+- Ongoing quotation rebuilds visible drawing/source lists from saved batch workspaces when needed.
+- Ongoing quotation falls back to the latest valid unfinished workspace when the active draft is stale/empty.
+- All unrelated UI/workflows unchanged.

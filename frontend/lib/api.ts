@@ -12,7 +12,8 @@ import type {
   RateCatalog,
   RateItem,
   RevisionRecord,
-  Settings
+  Settings,
+  PremiumEstimate
 } from "./types";
 
 const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
@@ -416,7 +417,8 @@ export async function uploadWorkspaceFile(
     file_hash: string;
   }>(
     `/api/workspaces/${encodeURIComponent(sessionId)}/files`,
-    { method: "POST", body: form }
+    { method: "POST", body: form },
+    120000
   );
 }
 
@@ -427,4 +429,32 @@ export async function deleteWorkspaceSession(sessionId: string) {
     { method: "DELETE" },
     12000
   );
+}
+
+export async function getPremiumEstimate(payload: { drawing: DrawingDetails; rows: CostRow[]; ai_raw?: Record<string, unknown> | null }) {
+  return j<PremiumEstimate>("/api/premium/estimate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  }, 12000);
+}
+
+export async function saveActualCost(payload: { drawing: DrawingDetails; quoted_cost: number; actual_cost: number; quoted_hours: number; actual_hours: number; notes?: string }) {
+  return j("/api/premium/actuals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function savePremiumApproval(payload: { quote_id?: string; drawing_no?: string; action: "approve" | "reject" | "revision"; role?: string; note?: string }) {
+  return j("/api/premium/approvals", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function getPremiumKpis() {
+  return j<{ quotes: number; total_value: number; won: number; win_rate: number; actual_samples: number; approval_events: number }>("/api/premium/kpis", undefined, 8000);
 }

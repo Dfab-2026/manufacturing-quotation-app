@@ -25,7 +25,8 @@ import type {
   RateItem,
   RevisionComparison,
   RevisionRecord,
-  Settings
+  Settings,
+  PremiumEstimate
 } from "@/lib/types";
 
 type View = "dashboard" | "workflow" | "quotes" | "rates" | "dfm" | "bom" | "dataset" | "settings";
@@ -48,7 +49,7 @@ type BatchFailure = {
 };
 
 
-const BATCH_ANALYZE_CONCURRENCY = 1;
+const BATCH_ANALYZE_CONCURRENCY = 2; // Keep AI calls conservative; per-drawing work is optimized below.
 const DFM_HISTORY_KEY = "dfab-dfm-history-v080";
 const BOM_HISTORY_KEY = "dfab-bom-history-v080";
 type ArtifactJobState = "processing" | "ready" | "review" | "attention" | "failed";
@@ -156,7 +157,10 @@ function StatusDot({ signal, label }: { signal: Signal; label?: string }) {
 
 
 const REVIEW_SECTION_MAP: Array<[string[], string]> = [
-  [["material", "grade", "specification"], "sheet-summary-material"],
+  [["specification", "material spec", "spec"], "sheet-summary-specification"],
+  [["grade"], "sheet-summary-grade"],
+  [["material"], "sheet-summary-material"],
+  [["drawing type", "document type"], "sheet-summary-drawing-type"],
   [["thickness", "thick"], "sheet-summary-thickness"],
   [["weight", "mass"], "sheet-summary-weight"],
   [["quantity", "qty"], "sheet-summary-quantity"],
@@ -219,7 +223,7 @@ function reviewTargetId(text: string, data: AIExtraction | null) {
 
 function scrollToSheetTarget(targetId: string) {
   const node = document.getElementById(targetId);
-  if (!node) return;
+  if (!node) return false;
 
   node.scrollIntoView({
     behavior: "smooth",
@@ -227,7 +231,10 @@ function scrollToSheetTarget(targetId: string) {
   });
 
   node.classList.add("review-focus");
-  window.setTimeout(() => node.classList.remove("review-focus"), 1800);
+  const focusable = node.querySelector<HTMLElement>("input, select, textarea, button");
+  window.setTimeout(() => focusable?.focus({ preventScroll: true }), 420);
+  window.setTimeout(() => node.classList.remove("review-focus"), 2200);
+  return true;
 }
 
 function blankRate(): RateItem {
@@ -259,6 +266,696 @@ type CommercialAmountOverrides = {
   overhead: number | null;
   markup: number | null;
 };
+
+type MaterialShape = "plate" | "round_bar" | "pipe" | "rect_tube" | "angle";
+
+type MaterialCalculatorState = {
+  rowId: string;
+  shape: MaterialShape;
+  lengthMm: number;
+  widthMm: number;
+  heightMm: number;
+  thicknessMm: number;
+  diameterMm: number;
+  outerDiameterMm: number;
+  innerDiameterMm: number;
+  wallThicknessMm: number;
+  legAMm: number;
+  legBMm: number;
+  quantity: number;
+  densityKgM3: number;
+  pricePerKg: number;
+  predictedBaseWeightKg: number;
+  allowanceKg: number;
+  predictedTotalWeightKg: number;
+  predictionBasis: string;
+};
+
+const EMPTY_MATERIAL_CALCULATOR: MaterialCalculatorState = {
+  rowId: "",
+  shape: "plate",
+  lengthMm: 0,
+  widthMm: 0,
+  heightMm: 0,
+  thicknessMm: 0,
+  diameterMm: 0,
+  outerDiameterMm: 0,
+  innerDiameterMm: 0,
+  wallThicknessMm: 0,
+  legAMm: 0,
+  legBMm: 0,
+  quantity: 1,
+  densityKgM3: 7850,
+  pricePerKg: 0,
+  predictedBaseWeightKg: 0,
+  allowanceKg: 1,
+  predictedTotalWeightKg: 0,
+  predictionBasis: ""
+};
+
+function inferMaterialDensity(material: string) {
+  return recognizedMaterialDensityKgM3(material);
+}
+
+function inferMaterialShape(data: AIExtraction | null | undefined): MaterialShape {
+  const hint = `${data?.part_form || ""} ${data?.cad_geometry?.shape_hint || ""}`.toLowerCase();
+  if (hint.includes("pipe") || hint.includes("tube") || hint.includes("hollow")) return "pipe";
+  if (hint.includes("round") || hint.includes("cylinder") || hint.includes("rod") || hint.includes("bar")) return "round_bar";
+  if (hint.includes("angle")) return "angle";
+  return "plate";
+}
+
+function materialVolumeMm3(value: MaterialCalculatorState) {
+  const length = Math.max(0, Number(value.lengthMm || 0));
+  if (value.shape === "plate") {
+    return length * Math.max(0, value.widthMm) * Math.max(0, value.thicknessMm);
+  }
+  if (value.shape === "round_bar") {
+    const d = Math.max(0, value.diameterMm);
+    return Math.PI * d * d / 4 * length;
+  }
+  if (value.shape === "pipe") {
+    const od = Math.max(0, value.outerDiameterMm);
+    const id = Math.max(0, value.innerDiameterMm);
+    return Math.PI * Math.max(0, od * od - id * id) / 4 * length;
+  }
+  if (value.shape === "rect_tube") {
+    const width = Math.max(0, value.widthMm);
+    const height = Math.max(0, value.heightMm);
+    const wall = Math.max(0, value.wallThicknessMm);
+    const innerWidth = Math.max(0, width - 2 * wall);
+    const innerHeight = Math.max(0, height - 2 * wall);
+    return Math.max(0, width * height - innerWidth * innerHeight) * length;
+  }
+  const legA = Math.max(0, value.legAMm);
+  const legB = Math.max(0, value.legBMm);
+  const thickness = Math.max(0, value.thicknessMm);
+  return Math.max(0, thickness * (legA + legB - thickness)) * length;
+}
+
+function recognizedMaterialDensityKgM3(material: string) {
+  const value = String(material || "").toLowerCase();
+  if (!value.trim()) return 0;
+  if (value.includes("aluminium") || value.includes("aluminum")) return 2700;
+  if (value.includes("copper")) return 8960;
+  if (value.includes("brass")) return 8500;
+  if (value.includes("titanium")) return 4500;
+  if (value.includes("stainless") || /\bss\s*\d/i.test(value) || value.startsWith("ss")) return 8000;
+  if (value.includes("mild steel") || value.includes("carbon steel") || value.includes("structural steel") || value.includes("galvanized steel") || value === "steel" || /\bsteel\b/i.test(value) || /\bsa\s*516\b/i.test(value) || /\ba\s*36\b/i.test(value)) return 7850;
+  if (value.includes("cast iron")) return 7200;
+  if (value.includes("inconel")) return 8440;
+  if (value.includes("nickel")) return 8900;
+  if (value.includes("bronze")) return 8800;
+  return 0;
+}
+
+function numericFeatureValue(row: Record<string, unknown> | undefined, key: string) {
+  const value = Number(row?.[key] || 0);
+  return Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+
+function parseDrawingLengthMm(token: string, unitToken = "mm") {
+  const cleaned = String(token || "").trim().replace(/\s+/g, " ");
+  let numeric = Number(cleaned);
+  if (!Number.isFinite(numeric)) {
+    const mixed = cleaned.match(/^(\d+)\s*[- ]\s*(\d+)\/(\d+)$/);
+    const fraction = cleaned.match(/^(\d+)\/(\d+)$/);
+    if (mixed) numeric = Number(mixed[1]) + Number(mixed[2]) / Number(mixed[3]);
+    else if (fraction) numeric = Number(fraction[1]) / Number(fraction[2]);
+  }
+  if (!(Number.isFinite(numeric) && numeric > 0)) return 0;
+  return engineeringLengthToMm(numeric, unitToken);
+}
+
+function thicknessFromEngineeringText(data: AIExtraction) {
+  const sources = [
+    ...(data.notes || []),
+    ...(data.missing_or_uncertain || []),
+    ...(data.evidence || []).flatMap((row) => [row.field, row.value, row.basis])
+  ].map((item) => String(item || ""));
+
+  for (const source of sources) {
+    const direct = source.match(/(?:thk|thick(?:ness)?|plate\s*t|sheet\s*t|wall(?:\s*thickness)?|\bt)\s*[:=x×-]?\s*(\d+\s*[- ]\s*\d+\/\d+|\d+\/\d+|\d+(?:\.\d+)?)\s*(mm|inches|inch|in|\")?/i);
+    if (direct) {
+      const value = parseDrawingLengthMm(direct[1], direct[2] || "mm");
+      if (value > 0) return { value, basis: direct[2] && !/^mm$/i.test(direct[2]) ? "Imperial thickness callout converted to mm" : "Thickness value found in drawing evidence/notes" };
+    }
+
+    const stock = source.match(/(?:plate|sheet|flat|strip|blank|size)\s*[:=-]?\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)/i);
+    if (stock) {
+      const values = stock.slice(1).map(Number).filter((item) => Number.isFinite(item) && item > 0).sort((a, b) => a - b);
+      if (values.length === 3) return { value: values[0], basis: "Plate/sheet stock-size callout" };
+    }
+  }
+
+  return null;
+}
+
+const DEFAULT_FALLBACK_THICKNESS_MM = 100;
+
+function predictedThickness(data: AIExtraction | null | undefined, drawing: DrawingDetails): { value: number; basis: string; isFallback?: boolean } | null {
+  if (!data) return null;
+
+  const explicit = Number(data.thickness_mm || drawing.thickness_mm || 0);
+  if (explicit > 0) return { value: explicit, basis: "Drawing thickness callout" };
+
+  const dimensions = ((data.dimensions || []) as Record<string, unknown>[])
+    .map((row) => ({
+      label: String(row.label || row.type || row.description || "").toLowerCase(),
+      value: normalizedDimensionMm(row)
+    }))
+    .filter((row) => Number.isFinite(row.value) && row.value > 0);
+
+  const labelled = dimensions.find((row) =>
+    /(^|\b)(thickness|thick|thk|plate\s*t|sheet\s*t|wall|wall\s*thickness|gauge)(\b|$)/i.test(row.label)
+  );
+  if (labelled?.value) return { value: labelled.value, basis: "Thickness-labelled drawing dimension" };
+
+  const textPrediction = thicknessFromEngineeringText(data);
+  if (textPrediction) return textPrediction;
+
+  const componentThicknesses = ((data.assembly_parts || []) as Record<string, unknown>[])
+    .map((part) => Number(part.thickness_mm || 0))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  if (componentThicknesses.length) {
+    const unique = Array.from(new Set(componentThicknesses.map((value) => Number(value.toFixed(3)))));
+    if (unique.length === 1) return { value: unique[0], basis: "Uniform assembly/component plate thickness" };
+  }
+
+  const geometry = data.cad_geometry?.dimensions_mm || {};
+  const axes = [Number(geometry.x || 0), Number(geometry.y || 0), Number(geometry.z || 0)]
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => a - b);
+  const form = `${data.part_form || ""} ${data.cad_geometry?.shape_hint || ""} ${data.drawing_type || ""}`.toLowerCase();
+  const plateLike = /plate|sheet|bracket|cover|panel|enclosure|flat|strip|sheet_metal/.test(form);
+
+  if (axes.length === 3 && plateLike) {
+    const [smallest, middle] = axes;
+    if (smallest > 0 && middle / smallest >= 1.5) {
+      return { value: smallest, basis: "Plate-like CAD geometry: smallest overall axis" };
+    }
+  }
+
+  if (plateLike) {
+    const values = Array.from(new Set(dimensions.map((row) => Number(row.value.toFixed(3)))))
+      .filter((value) => value > 0)
+      .sort((a, b) => a - b);
+
+    if (values.length >= 3) {
+      const smallest = values[0];
+      const next = values[1];
+      if (smallest <= 50 && next / smallest >= 1.35) {
+        return { value: smallest, basis: "Plate-like drawing geometry: smallest physical dimension" };
+      }
+    }
+  }
+
+  return null;
+}
+
+function parsedEngineeringEnvelopeMm(data: AIExtraction) {
+  const labelled: { label: string; value: number }[] = [];
+  const push = (label: unknown, raw: unknown) => {
+    const value = Number(raw || 0);
+    if (Number.isFinite(value) && value > 0) labelled.push({ label: String(label || "").toLowerCase(), value });
+  };
+
+  for (const row of (data.dimensions || []) as Record<string, unknown>[]) {
+    push(row.label || row.type || row.description, row.value_mm || row.value);
+  }
+
+  // Evidence/notes often contain an overall size even when the extractor did not
+  // normalize it into a dimensions row (for example: "SIZE 450 x 300").
+  const textSources = [
+    ...(data.notes || []),
+    ...(data.evidence || []).flatMap((row) => [row.field, row.value, row.basis])
+  ].map((item) => String(item || ""));
+
+  for (const source of textSources) {
+    const pair = source.match(/(?:overall|size|blank|plate|sheet|width|height|w\s*[x×]\s*h)?[^0-9]{0,12}(\d+(?:\.\d+)?)\s*(?:mm)?\s*[x×]\s*(\d+(?:\.\d+)?)\s*(?:mm)?/i);
+    if (pair) {
+      push("overall width", pair[1]);
+      push("overall height", pair[2]);
+    }
+  }
+
+  const width = labelled.find((row) => /(^|\b)(width|overall\s*width|w)(\b|$)/i.test(row.label))?.value || 0;
+  const height = labelled.find((row) => /(^|\b)(height|overall\s*height|h)(\b|$)/i.test(row.label))?.value || 0;
+  const length = labelled.find((row) => /(^|\b)(length|overall|oal|long)(\b|$)/i.test(row.label))?.value || 0;
+
+  const physical = labelled
+    .filter((row) => !/diam|radius|hole|thread|chamfer|angle|pitch|thick|thk|wall|gauge/i.test(row.label))
+    .map((row) => row.value)
+    .filter((value) => value > 0)
+    .sort((a, b) => b - a);
+
+  const cad = data.cad_geometry?.dimensions_mm || {};
+  const cadAxes = [Number(cad.x || 0), Number(cad.y || 0), Number(cad.z || 0)]
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => b - a);
+
+  const first = width || length || physical[0] || cadAxes[0] || 0;
+  const second = height || (physical.find((value) => Math.abs(value - first) > 0.001) || 0) || cadAxes[1] || 0;
+
+  if (!(first > 0 && second > 0)) return null;
+  return {
+    widthMm: Math.max(first, second),
+    heightMm: Math.min(first, second),
+    basis: width > 0 && height > 0
+      ? "Drawing overall width × height"
+      : cadAxes.length >= 2 && !(physical.length >= 2)
+        ? "CAD overall width × height"
+        : "Two largest usable drawing dimensions interpreted as width × height"
+  };
+}
+
+
+function engineeringMetricOrDash(value: unknown, digits: number, unit: string) {
+  const numeric = Number(value || 0);
+  return Number.isFinite(numeric) && numeric > 0 ? `${numeric.toFixed(digits)} ${unit}` : "—";
+}
+
+function engineeringLengthToMm(value: unknown, unit: unknown = "mm") {
+  const numeric = Number(value || 0);
+  if (!(Number.isFinite(numeric) && numeric > 0)) return 0;
+  const normalized = String(unit || "mm").trim().toLowerCase().replace(/\s+/g, "");
+  if (["in", "inch", "inches", '"'].includes(normalized)) return numeric * 25.4;
+  if (["ft", "foot", "feet", "'"].includes(normalized)) return numeric * 304.8;
+  if (["cm", "centimeter", "centimeters", "centimetre", "centimetres"].includes(normalized)) return numeric * 10;
+  if (["m", "meter", "meters", "metre", "metres"].includes(normalized)) return numeric * 1000;
+  return numeric;
+}
+
+function normalizedDimensionMm(row: any) {
+  const originalUnit = row?.original_unit || row?.unit || row?.units || "mm";
+  const originalValue = row?.original_value ?? row?.value ?? row?.value_mm;
+  // New extraction stores value_mm already normalized. When original_value/unit are
+  // present, recompute deterministically so inch/foot callouts never enter costing as mm.
+  if (row?.original_value != null || (row?.unit && String(row.unit).toLowerCase() !== "mm")) {
+    return engineeringLengthToMm(originalValue, originalUnit);
+  }
+  const normalizedValue = Number(row?.value_mm ?? row?.value ?? 0);
+  return Number.isFinite(normalizedValue) && normalizedValue > 0 ? normalizedValue : 0;
+}
+
+function predictedPartWeight(data: AIExtraction | null | undefined, drawing: DrawingDetails) {
+  if (!data) return null;
+
+  const quantity = Math.max(1, Number(data.product_quantity || drawing.quantity || 1));
+  const weightMeta = data as AIExtraction & {
+    drawing_stated_weight_kg?: number;
+    weight_source?: string;
+  };
+  const statedWeightKg = Number(weightMeta.drawing_stated_weight_kg || 0);
+  const hasAuthoritativeDrawingWeight = statedWeightKg > 0 && String(weightMeta.weight_source || "drawing_stated") === "drawing_stated";
+  if (hasAuthoritativeDrawingWeight) {
+    const base = statedWeightKg * quantity;
+    return {
+      baseWeightKg: base,
+      totalWeightKg: base + 1,
+      basis: "Drawing-stated weight × quantity; 1 kg costing allowance kept separate",
+      source: "drawing_stated" as const
+    };
+  }
+
+  const storedPrediction = data.weight_prediction;
+  // Never reuse a historical geometry prediction as source truth. Older drafts
+  // can contain values calculated before the current extraction rules. Only a
+  // prediction explicitly tagged drawing_stated may bypass recalculation.
+  if (String((storedPrediction as { source?: string } | undefined)?.source || "") === "drawing_stated"
+      && Number(storedPrediction?.base_weight_kg || 0) > 0) {
+    const base = Number(storedPrediction?.base_weight_kg || 0);
+    return {
+      baseWeightKg: base,
+      totalWeightKg: base + 1,
+      basis: String(storedPrediction?.basis || "Drawing-stated weight + 1 kg costing allowance"),
+      source: "drawing_stated" as const
+    };
+  }
+  const materialText = [
+    data.material?.family,
+    data.material?.grade,
+    data.material?.specification,
+    drawing.material
+  ].filter(Boolean).join(" ");
+  const recognizedDensity = recognizedMaterialDensityKgM3(materialText);
+  const density = recognizedDensity > 0 ? recognizedDensity : 7850;
+  const densityBasis = recognizedDensity > 0 ? "material density" : "default steel density 7850 kg/m³";
+  // Never reinterpret raw weight_kg as a printed value once the record already
+  // contains a prediction. New extraction marks true title-block weights using
+  // drawing_stated_weight_kg/weight_source before this function runs.
+  const explicitWeight = !data.weight_prediction && String(weightMeta.weight_source || "") === "drawing_stated"
+    ? Number(data.weight_kg || 0)
+    : 0;
+
+  if (explicitWeight > 0) {
+    const base = explicitWeight * quantity;
+    return {
+      baseWeightKg: base,
+      totalWeightKg: base + 1,
+      basis: "Drawing-stated weight × quantity; 1 kg costing allowance kept separate",
+      source: "drawing_stated" as const
+    };
+  }
+
+  const cadVolume = Number(data.cad_geometry?.volume_mm3 || 0);
+  if (cadVolume > 0) {
+    const base = cadVolume * density / 1_000_000_000 * quantity;
+    if (base > 0) return {
+      baseWeightKg: base,
+      totalWeightKg: base + 1,
+      basis: `CAD solid volume × ${densityBasis} × quantity + 1 kg allowance`
+    };
+  }
+
+  const assemblyParts = (data.assembly_parts || []) as Record<string, unknown>[];
+  if (assemblyParts.length) {
+    let assemblyWeight = 0;
+    let derivedParts = 0;
+    for (const part of assemblyParts) {
+      const partMaterial = String(part.material || materialText);
+      const recognizedPartDensity = recognizedMaterialDensityKgM3(partMaterial);
+      const partDensity = recognizedPartDensity > 0 ? recognizedPartDensity : density;
+      const length = numericFeatureValue(part, "length_mm");
+      const width = numericFeatureValue(part, "width_mm");
+      const height = numericFeatureValue(part, "height_mm");
+      const thickness = numericFeatureValue(part, "thickness_mm");
+      const partQty = Math.max(1, Number(part.quantity || 1));
+      if (!(length > 0 && width > 0)) continue;
+      const third = thickness > 0 ? thickness : (height > 0 ? height : DEFAULT_FALLBACK_THICKNESS_MM);
+      if (!(third > 0)) continue;
+      assemblyWeight += length * width * third * partDensity / 1_000_000_000 * partQty;
+      derivedParts += 1;
+    }
+    if (assemblyWeight > 0 && derivedParts > 0) return {
+      baseWeightKg: assemblyWeight,
+      totalWeightKg: assemblyWeight + 1,
+      basis: `${derivedParts} assembly component${derivedParts === 1 ? "" : "s"} × material density + 1 kg allowance`
+    };
+  }
+
+  const dimensions = ((data.dimensions || []) as Record<string, unknown>[])
+    .map((row) => ({
+      label: String(row.label || row.type || "").toLowerCase(),
+      value: normalizedDimensionMm(row)
+    }))
+    .filter((row) => Number.isFinite(row.value) && row.value > 0);
+  const thickness = Number(data.thickness_mm || drawing.thickness_mm || 0);
+  const form = String(data.part_form || "").toLowerCase();
+
+  const byLabel = (keys: string[]) => dimensions.find((row) => keys.some((key) => row.label.includes(key)))?.value || 0;
+  const overall = dimensions
+    .filter((row) => row.value > Math.max(0, thickness * 1.01))
+    .map((row) => row.value)
+    .sort((a, b) => b - a);
+
+  let volumeMm3 = 0;
+  let basis = "";
+
+  if (form.includes("shaft") || form.includes("cylind") || form.includes("round")) {
+    const diameter = byLabel(["diameter", "dia", "od", "ø"]);
+    const length = byLabel(["length", "overall", "oal"]) || overall[0] || 0;
+    if (diameter > 0 && length > 0) {
+      volumeMm3 = Math.PI * diameter * diameter / 4 * length;
+      basis = `Cylindrical drawing geometry × ${densityBasis} × quantity + 1 kg allowance`;
+    }
+  } else if (form.includes("tube") || form.includes("pipe")) {
+    const od = byLabel(["outer diameter", "od", "outside dia"]);
+    const id = byLabel(["inner diameter", "id", "inside dia"]);
+    const length = byLabel(["length", "overall", "oal"]) || overall[0] || 0;
+    if (od > 0 && id > 0 && od > id && length > 0) {
+      volumeMm3 = Math.PI * (od * od - id * id) / 4 * length;
+      basis = `Pipe/tube drawing geometry × ${densityBasis} × quantity + 1 kg allowance`;
+    }
+  } else if (thickness > 0 && overall.length >= 2) {
+    volumeMm3 = overall[0] * overall[1] * thickness;
+    basis = `Plate/sheet envelope × thickness × ${densityBasis} × quantity + 1 kg allowance`;
+  } else if ((form.includes("block") || form.includes("prismatic")) && overall.length >= 3) {
+    volumeMm3 = overall[0] * overall[1] * overall[2];
+    basis = `Prismatic envelope × ${densityBasis} × quantity + 1 kg allowance`;
+  }
+
+  if (!(volumeMm3 > 0)) {
+    const geometry = data.cad_geometry?.dimensions_mm || {};
+    const axes = [Number(geometry.x || 0), Number(geometry.y || 0), Number(geometry.z || 0)]
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .sort((a, b) => b - a);
+    if (axes.length >= 2 && thickness > 0) {
+      volumeMm3 = axes[0] * axes[1] * thickness;
+      basis = `CAD/drawing envelope × normalized thickness × ${densityBasis} × quantity + 1 kg allowance`;
+    }
+  }
+
+  if (!(volumeMm3 > 0)) {
+    const envelope = parsedEngineeringEnvelopeMm(data);
+    const normalizedThickness = thickness > 0 ? thickness : DEFAULT_FALLBACK_THICKNESS_MM;
+    if (envelope && normalizedThickness > 0) {
+      volumeMm3 = envelope.widthMm * envelope.heightMm * normalizedThickness;
+      basis = `${envelope.basis} × ${normalizedThickness.toFixed(3)} mm thickness × ${densityBasis} × quantity + 1 kg allowance`;
+    }
+  }
+
+  if (!(volumeMm3 > 0)) return null;
+  const base = volumeMm3 * density / 1_000_000_000 * quantity;
+  if (!(base > 0)) return null;
+  return { baseWeightKg: base, totalWeightKg: base + 1, basis };
+}
+
+function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
+  const raw: AIExtraction = { ...(result.ai_raw || {}) };
+
+  // Source-truth cleanup for old drafts/reviews. A previous build wrote the
+  // internal 100 mm costing fallback into the visible drawing thickness field.
+  // Clear that stale value unless the drawing actually supplies thickness
+  // evidence/dimension support.
+  const thicknessEvidenceText = [
+    ...(raw.notes || []),
+    ...(raw.evidence || []).flatMap((row) => [row.field, row.value, row.basis]),
+    ...((raw.dimensions || []) as Record<string, unknown>[]).flatMap((row) => [row.label, row.type, row.callout, row.source])
+  ].map((value) => String(value || "")).join(" ").toLowerCase();
+  const staleDefaultThickness = Number(raw.thickness_mm || result.drawing?.thickness_mm || 0) === DEFAULT_FALLBACK_THICKNESS_MM
+    && (/default thickness|fallback thickness/.test(thicknessEvidenceText)
+      || !/(thickness|thick|thk|wall|gauge|plate\s*t|sheet\s*t)/i.test(thicknessEvidenceText));
+  if (staleDefaultThickness) {
+    raw.thickness_mm = undefined;
+    raw.notes = (raw.notes || []).filter((note) => !/^Default thickness:/i.test(String(note)));
+  }
+
+  const material = { ...(raw.material || {}) };
+  const drawingMaterial = String(result.drawing?.material || "").trim();
+
+  if (!String(material.family || "").trim() && drawingMaterial && drawingMaterial.toLowerCase() !== "not detected") {
+    material.family = drawingMaterial;
+  }
+
+  const thicknessPrediction = predictedThickness({ ...raw, material }, result.drawing);
+  if (!(Number(raw.thickness_mm || 0) > 0) && thicknessPrediction) {
+    raw.thickness_mm = Number(thicknessPrediction.value.toFixed(3));
+    const thicknessNote = thicknessPrediction.isFallback
+      ? `Default thickness: ${Number(thicknessPrediction.value.toFixed(3))} mm (${thicknessPrediction.basis}).`
+      : `Predicted thickness: ${Number(thicknessPrediction.value.toFixed(3))} mm (${thicknessPrediction.basis}).`;
+    raw.notes = Array.from(new Set([
+      ...(raw.notes || []).map((item) => String(item)),
+      thicknessNote
+    ]));
+  }
+
+  // Normalize the main overall measurements into the editable Dimensions table as well.
+  // This keeps Drawing Review, Part Summary, Material Calculator and quotation views
+  // on one source of truth instead of showing calculated values in only one screen.
+  const normalizedDimensions = [...((raw.dimensions || []) as Record<string, unknown>[])];
+  const hasDimensionLabel = (pattern: RegExp) => normalizedDimensions.some((row) =>
+    pattern.test(String(row.label || row.type || row.description || "").toLowerCase())
+    && normalizedDimensionMm(row) > 0
+  );
+  const addDerivedDimension = (label: string, value: number, basis: string) => {
+    if (!(Number.isFinite(value) && value > 0)) return;
+    normalizedDimensions.push({
+      label,
+      value_mm: Number(value.toFixed(3)),
+      tolerance: "",
+      quantity: 1,
+      confidence: 65,
+      source: basis
+    });
+  };
+
+  const envelope = parsedEngineeringEnvelopeMm({ ...raw, material });
+  const cadSize = raw.cad_geometry?.dimensions_mm || {};
+  const cadAxes = [Number(cadSize.x || 0), Number(cadSize.y || 0), Number(cadSize.z || 0)]
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((a, b) => b - a);
+  const normalizedWidth = Number(envelope?.widthMm || cadAxes[0] || 0);
+  const normalizedHeight = Number(envelope?.heightMm || cadAxes[1] || 0);
+
+  if (!hasDimensionLabel(/(^|\b)(width|overall\s*width|w)(\b|$)/i)) {
+    addDerivedDimension("Overall Width", normalizedWidth, envelope?.basis || "CAD/drawing envelope");
+  }
+  if (!hasDimensionLabel(/(^|\b)(height|overall\s*height|h)(\b|$)/i)) {
+    addDerivedDimension("Overall Height", normalizedHeight, envelope?.basis || "CAD/drawing envelope");
+  }
+  if (!hasDimensionLabel(/thickness|thick|thk|plate\s*t|sheet\s*t|wall|gauge/i) && Number(raw.thickness_mm || 0) > 0) {
+    addDerivedDimension("Thickness", Number(raw.thickness_mm), thicknessPrediction?.basis || "Normalized product thickness");
+  }
+  raw.dimensions = normalizedDimensions;
+
+  const weightMeta = raw as AIExtraction & {
+    drawing_stated_weight_kg?: number;
+    weight_source?: string;
+  };
+  // Authoritative drawing weight must be explicitly tagged by the backend.
+  // Never promote an untagged AI/calculated number into a printed drawing value.
+
+  const prediction = predictedPartWeight({ ...raw, material }, result.drawing);
+  if (prediction) {
+    const authoritative = String((prediction as { source?: string }).source || "") === "drawing_stated";
+    // Keep Drawing Review / Part Summary on the true engineering weight.
+    // Allowance belongs only to costing and must not contaminate the drawing value.
+    raw.weight_kg = authoritative && Number(weightMeta.drawing_stated_weight_kg || 0) > 0
+      ? Number(Number(weightMeta.drawing_stated_weight_kg).toFixed(3))
+      : Number(prediction.baseWeightKg.toFixed(3));
+    raw.weight_prediction = {
+      base_weight_kg: Number(prediction.baseWeightKg.toFixed(3)),
+      allowance_kg: 1,
+      total_weight_kg: Number(prediction.totalWeightKg.toFixed(3)),
+      basis: prediction.basis,
+      source: authoritative ? "drawing_stated" : "geometry_prediction"
+    } as typeof raw.weight_prediction;
+  }
+
+  const hasMaterial = Boolean(String(material.family || material.grade || material.specification || drawingMaterial || "").trim());
+  const hasThickness = Number(raw.thickness_mm || 0) > 0;
+  const hasWeight = Number(raw.weight_kg || 0) > 0;
+  const missing = (raw.missing_or_uncertain || []).map((item) => String(item));
+  raw.missing_or_uncertain = missing.filter((item) => {
+    const lower = item.toLowerCase();
+    if (hasThickness && /thick|thk|sheet gauge/.test(lower)) return false;
+    if (hasWeight && /weight|mass|kg/.test(lower)) return false;
+    if (hasMaterial && /material/.test(lower)) return false;
+    return true;
+  });
+
+  if (!hasMaterial) raw.missing_or_uncertain.push("Material family/grade is required to calculate product weight accurately.");
+  if (!hasThickness) raw.missing_or_uncertain.push("Thickness could not be derived from the drawing; confirm the section/stock thickness.");
+  if (!hasWeight) raw.missing_or_uncertain.push("Weight could not be calculated until usable geometry, thickness and material density are available.");
+  raw.missing_or_uncertain = Array.from(new Set(raw.missing_or_uncertain));
+
+  raw.confidence = {
+    ...(raw.confidence || {}),
+    thickness: hasThickness ? Math.max(Number(raw.confidence?.thickness || 0), thicknessPrediction?.isFallback ? 45 : thicknessPrediction ? 70 : 0) : Number(raw.confidence?.thickness || 0),
+    weight: hasWeight ? Math.max(Number(raw.confidence?.weight || 0), prediction ? 75 : 0) : Number(raw.confidence?.weight || 0)
+  };
+
+  if (raw.engineering_intelligence?.completeness) {
+    const reviewRequired = (raw.engineering_intelligence.completeness.review_required || []).filter((item) => {
+      const lower = String(item).toLowerCase();
+      if (hasThickness && /thick|thk|sheet gauge/.test(lower)) return false;
+      if (hasWeight && /weight|mass|kg/.test(lower)) return false;
+      if (hasMaterial && /material/.test(lower)) return false;
+      return true;
+    });
+    raw.engineering_intelligence = {
+      ...raw.engineering_intelligence,
+      completeness: {
+        ...raw.engineering_intelligence.completeness,
+        review_required: reviewRequired
+      }
+    };
+  }
+
+  const quantityConfidence = Number(raw.confidence?.quantity || 0);
+  if (quantityConfidence <= 0 && Number(raw.product_quantity || 0) === 1) {
+    raw.product_quantity = undefined;
+  }
+
+  const nextDrawing = {
+    ...result.drawing,
+    material: [material.family, material.grade, material.specification].filter(Boolean).join(" ") || result.drawing.material,
+    thickness_mm: raw.thickness_mm == null ? (staleDefaultThickness ? 0 : result.drawing.thickness_mm) : Number(raw.thickness_mm),
+    weight_kg: raw.weight_kg == null ? result.drawing.weight_kg : Number(raw.weight_kg)
+  };
+
+  const costingWeightKg = Number(raw.weight_prediction?.total_weight_kg || raw.weight_kg || 0);
+  const drawingWeightSource = String((raw.weight_prediction as { source?: string } | undefined)?.source || "") === "drawing_stated";
+  let materialApplied = false;
+  let nextRows = result.rows.map((row) => {
+    if (materialApplied || String(row.category || "").toUpperCase() !== "MATERIAL" || !(costingWeightKg > 0)) return row;
+    materialApplied = true;
+    const costingQty = Number(costingWeightKg.toFixed(4));
+    const rate = Number(row.rate || 0);
+    return {
+      ...row,
+      item: String(row.item || "").trim() || nextDrawing.material || "Material",
+      drawingQty: raw.weight_prediction
+        ? `${drawingWeightSource ? "Drawing weight" : "Predicted"}: ${Number(raw.weight_prediction.base_weight_kg || 0).toFixed(3)} kg + 1 kg allowance`
+        : row.drawingQty,
+      costingQty,
+      unit: "kg",
+      cost: costingQty * rate,
+      rateSource: rate > 0 ? `${row.rateSource || "Rate Master"} · ${drawingWeightSource ? "Drawing-stated weight" : "Predicted weight"}` : row.rateSource
+    };
+  });
+
+  if (!materialApplied && costingWeightKg > 0) {
+    nextRows = [{
+      id: `auto-material-${result.file_hash || Date.now()}`,
+      category: "MATERIAL",
+      item: nextDrawing.material || "Material",
+      drawingQty: raw.weight_prediction
+        ? `${drawingWeightSource ? "Drawing weight" : "Predicted"}: ${Number(raw.weight_prediction.base_weight_kg || 0).toFixed(3)} kg + 1 kg allowance`
+        : `${Number(raw.weight_kg).toFixed(3)} kg`,
+      costingQty: Number(costingWeightKg.toFixed(4)),
+      unit: "kg",
+      rate: 0,
+      cost: 0,
+      confidence: drawingWeightSource ? "Exact" : "Estimated",
+      rateId: null,
+      rateSource: drawingWeightSource ? "Drawing-stated weight · rate required" : "Drawing prediction · rate required",
+      criticalScore: 100
+    }, ...nextRows];
+  }
+
+  return { ...result, ai_raw: { ...raw, material }, drawing: nextDrawing, rows: nextRows, summary: undefined };
+}
+
+function materialCalculatorErrors(value: MaterialCalculatorState) {
+  const errors: string[] = [];
+  // A trusted drawing-stated/predicted base weight can be costed directly.
+  // Do not force fake geometry/thickness just to satisfy the calculator UI.
+  if (value.predictedBaseWeightKg > 0 || value.predictedTotalWeightKg > 0) {
+    if (!(value.quantity > 0)) errors.push("Quantity");
+    if (!(value.densityKgM3 > 0)) errors.push("Material density");
+    if (!(value.pricePerKg > 0)) errors.push("Price per kg");
+    return errors;
+  }
+  if (!(value.quantity > 0)) errors.push("Product quantity");
+  if (!(value.densityKgM3 > 0)) errors.push("Material density");
+  if (!(value.pricePerKg > 0)) errors.push("Material price per kg");
+  if (!Number.isFinite(value.allowanceKg) || value.allowanceKg < 0) errors.push("Valid allowance");
+  if (value.predictedBaseWeightKg > 0 || value.predictedTotalWeightKg > 0) return errors;
+  if (!(value.lengthMm > 0)) errors.push("Length");
+
+  if (value.shape === "plate") {
+    if (!(value.widthMm > 0)) errors.push("Width");
+    if (!(value.thicknessMm > 0)) errors.push("Thickness");
+  } else if (value.shape === "round_bar") {
+    if (!(value.diameterMm > 0)) errors.push("Diameter");
+  } else if (value.shape === "pipe") {
+    if (!(value.outerDiameterMm > 0)) errors.push("Outer diameter");
+    if (!(value.innerDiameterMm > 0) || value.innerDiameterMm >= value.outerDiameterMm) errors.push("Valid inner diameter");
+  } else if (value.shape === "rect_tube") {
+    if (!(value.widthMm > 0)) errors.push("Width");
+    if (!(value.heightMm > 0)) errors.push("Height");
+    if (!(value.wallThicknessMm > 0) || value.wallThicknessMm * 2 >= Math.min(value.widthMm || 0, value.heightMm || 0)) errors.push("Valid wall thickness");
+  } else {
+    if (!(value.legAMm > 0)) errors.push("Leg A");
+    if (!(value.legBMm > 0)) errors.push("Leg B");
+    if (!(value.thicknessMm > 0) || value.thicknessMm >= Math.min(value.legAMm || 0, value.legBMm || 0)) errors.push("Valid thickness");
+  }
+
+  return errors;
+}
 
 type PersistedWorkflowDraft = {
   view: View;
@@ -458,7 +1155,30 @@ async function deleteWorkspaceDataset(datasetId: string) {
   db.close();
 }
 
+function findAutomaticMaterialRate(rates: RateItem[], materialName: string) {
+  const clean = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  const target = clean(materialName);
+  if (!target) return null;
+
+  const candidates = rates.filter((rate) => rate.active && rate.category === "MATERIAL" && Number(rate.price || 0) > 0);
+  const exact = candidates.find((rate) => clean(rateChoiceLabel(rate)) === target || clean(rate.name) === target);
+  if (exact) return exact;
+
+  return candidates
+    .map((rate) => {
+      const label = clean(`${rate.name || ""} ${rate.grade || ""}`);
+      const targetTokens = new Set(target.split(" ").filter((token) => token.length > 1));
+      const labelTokens = new Set(label.split(" ").filter((token) => token.length > 1));
+      let score = 0;
+      targetTokens.forEach((token) => { if (labelTokens.has(token)) score += 1; });
+      return { rate, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)[0]?.rate || null;
+}
+
 export default function Page() {
+  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [view, setView] = useState<View>("dashboard");
   const [sideOpen, setSideOpen] = useState(true);
   const [step, setStep] = useState(1);
@@ -466,6 +1186,8 @@ export default function Page() {
   const [files, setFiles] = useState<File[]>([]);
   const [batchItems, setBatchItems] = useState<BatchWorkspace[]>([]);
   const batchItemsRef = useRef<BatchWorkspace[]>([]);
+  // Invalidates asynchronous DFM/BOM callbacks from a quotation that has been ended.
+  const artifactLifecycleRef = useRef(0);
   const [batchFailures, setBatchFailures] = useState<BatchFailure[]>([]);
   const [activeBatchId, setActiveBatchId] = useState("");
   const [quoteMode, setQuoteMode] = useState<BatchQuoteMode>("merge");
@@ -506,6 +1228,58 @@ export default function Page() {
   const [msg, setMsg] = useState("Ready.");
   const [fileUrl, setFileUrl] = useState("");
   const [revisionComparison, setRevisionComparison] = useState<RevisionComparison | null>(null);
+  const [premiumEstimate, setPremiumEstimate] = useState<PremiumEstimate | null>(null);
+  const [premiumBusy, setPremiumBusy] = useState(false);
+  const [premiumKpis, setPremiumKpis] = useState<{ quotes: number; total_value: number; won: number; win_rate: number; actual_samples: number; approval_events: number } | null>(null);
+  const [actualCostDraft, setActualCostDraft] = useState({ actualCost: 0, actualHours: 0, notes: "" });
+  const [estimatorQuestion, setEstimatorQuestion] = useState("");
+  const [estimatorAnswer, setEstimatorAnswer] = useState("");
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("dfab-ui-theme");
+      const initialTheme = saved === "dark" || saved === "light"
+        ? saved
+        : (window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      setTheme(initialTheme);
+      document.documentElement.dataset.theme = initialTheme;
+    } catch {
+      document.documentElement.dataset.theme = "light";
+    }
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    try { localStorage.setItem("dfab-ui-theme", theme); } catch {}
+  }, [theme]);
+
+  // Re-normalize engineering values whenever a drawing workspace becomes active.
+  // This also upgrades older saved workspaces that were analyzed before automatic
+  // thickness/weight prediction was introduced.
+  useEffect(() => {
+    if (!analysis || !drawing) return;
+
+    const normalized = enrichPartSummary({
+      ...analysis,
+      drawing,
+      rows
+    });
+
+    const beforeThickness = Number(analysis.ai_raw?.thickness_mm || drawing.thickness_mm || 0);
+    const afterThickness = Number(normalized.ai_raw?.thickness_mm || normalized.drawing.thickness_mm || 0);
+    const beforeWeight = Number(analysis.ai_raw?.weight_kg || drawing.weight_kg || 0);
+    const afterWeight = Number(normalized.ai_raw?.weight_kg || normalized.drawing.weight_kg || 0);
+    const currentMaterial = rows.find((row) => String(row.category || "").toUpperCase() === "MATERIAL");
+    const normalizedMaterial = normalized.rows.find((row) => String(row.category || "").toUpperCase() === "MATERIAL");
+    const materialChanged = Number(currentMaterial?.costingQty || 0) !== Number(normalizedMaterial?.costingQty || 0);
+
+    if (beforeThickness === afterThickness && beforeWeight === afterWeight && !materialChanged) return;
+
+    setAnalysis(normalized);
+    setDrawing(normalized.drawing);
+    setRows(normalized.rows);
+    void api.calculateQuote(normalized.rows).then(setSummary).catch(() => undefined);
+  }, [analysis?.file_hash, activeBatchId]);
 
   const [settings, setSettings] = useState<Settings | null>(null);
   const [rates, setRates] = useState<RateItem[]>([]);
@@ -520,6 +1294,9 @@ export default function Page() {
   const [customGrade, setCustomGrade] = useState("");
   const [customRateField, setCustomRateField] = useState<"material" | "process" | "labour" | "other" | "unit" | null>(null);
   const [customRateValue, setCustomRateValue] = useState("");
+  const [showMaterialCalculator, setShowMaterialCalculator] = useState(false);
+  const [materialCalculator, setMaterialCalculator] = useState<MaterialCalculatorState>(EMPTY_MATERIAL_CALCULATOR);
+  const [materialCalculatorMissing, setMaterialCalculatorMissing] = useState<string[]>([]);
 
   const mediumCritical = settings?.critical_medium_threshold ?? 40;
   const highCritical = settings?.critical_high_threshold ?? 70;
@@ -539,25 +1316,49 @@ export default function Page() {
       { material: 0, process: 0, labour: 0 }
     );
   }, [rows]);
+
+  // Auto-apply the best saved material rate as soon as drawing-derived weight is available.
+  useEffect(() => {
+    if (!drawing || !rows.length || !rates.length) return;
+    const materialIndex = rows.findIndex((row) => String(row.category || "").toUpperCase() === "MATERIAL");
+    if (materialIndex < 0) return;
+    const current = rows[materialIndex];
+    if (Number(current.rate || 0) > 0 || Number(current.costingQty || 0) <= 0) return;
+
+    const materialName = String(current.item || drawing.material || analysis?.ai_raw?.material?.family || "").trim();
+    const matched = findAutomaticMaterialRate(rates, materialName);
+    if (!matched) return;
+
+    const nextRows = rows.map((row, index) => index === materialIndex ? {
+      ...row,
+      item: row.item || rateChoiceLabel(matched),
+      rate: Number(matched.price || 0),
+      rateId: matched.id,
+      cost: Number(row.costingQty || 0) * Number(matched.price || 0),
+      rateSource: "Rate Master · Auto matched material"
+    } : row);
+    setRows(nextRows);
+    void api.calculateQuote(nextRows).then(setSummary).catch(() => undefined);
+  }, [analysis?.file_hash, drawing?.material, rates, rows]);
+
   const criticalName = (score: number) => criticalLabel(score, mediumCritical, highCritical);
 
   const refresh = useCallback(async () => {
-    try {
-      const [s, r, c, d, q] = await Promise.all([
-        api.getSettings(),
-        api.getRates(),
-        api.getRateCatalog(),
-        api.getDatasetStats(),
-        api.getQuotes()
-      ]);
-      setSettings(s);
-      setRates(r);
-      setCatalog(c);
-      setStats(d);
-      setQuotes(q);
-    } catch {
-      // Backend connection message is handled by task-specific actions.
-    }
+    // Load each resource independently. A slow/failed dataset/history endpoint
+    // must never prevent Rate Master or settings from rendering.
+    const results = await Promise.allSettled([
+      api.getSettings(),
+      api.getRates(),
+      api.getRateCatalog(),
+      api.getDatasetStats(),
+      api.getQuotes()
+    ]);
+
+    if (results[0].status === "fulfilled") setSettings(results[0].value);
+    if (results[1].status === "fulfilled") setRates(results[1].value);
+    if (results[2].status === "fulfilled") setCatalog(results[2].value);
+    if (results[3].status === "fulfilled") setStats(results[3].value);
+    if (results[4].status === "fulfilled") setQuotes(results[4].value);
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
@@ -631,10 +1432,17 @@ export default function Page() {
       setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
     }
 
-    setFile(saved.file || null);
-    setFiles(saved.files || (saved.file ? [saved.file] : []));
-    setBatchItems(saved.batchItems || []);
-    batchItemsRef.current = saved.batchItems || [];
+    const restoredBatchItems = saved.batchItems || [];
+    const restoredDrawingFiles = (saved.files?.length
+      ? saved.files
+      : restoredBatchItems.map((item) => item.file).filter(Boolean)) as File[];
+    const restoredActiveWorkspace = restoredBatchItems.find((item) => item.id === saved.activeBatchId) || restoredBatchItems[0];
+    const restoredPrimaryFile = saved.file || restoredActiveWorkspace?.file || restoredDrawingFiles[0] || null;
+
+    setFile(restoredPrimaryFile);
+    setFiles(restoredDrawingFiles.length ? restoredDrawingFiles : (restoredPrimaryFile ? [restoredPrimaryFile] : []));
+    setBatchItems(restoredBatchItems);
+    batchItemsRef.current = restoredBatchItems;
     setBatchFailures(saved.batchFailures || []);
     setActiveBatchId(saved.activeBatchId || "");
     setQuoteMode(saved.quoteMode || "merge");
@@ -657,7 +1465,8 @@ export default function Page() {
       saved.sourceFiles?.length
         ? saved.sourceFiles
         : [
-            ...(saved.files || []),
+            ...restoredDrawingFiles,
+            ...(restoredPrimaryFile && !restoredDrawingFiles.some((item) => fileKey(item) === fileKey(restoredPrimaryFile)) ? [restoredPrimaryFile] : []),
             ...(saved.modelFile ? [saved.modelFile] : [])
           ];
 
@@ -917,30 +1726,59 @@ export default function Page() {
     message = "Process ended. Upload a file to start a new quotation."
   ) => {
     const oldDatasetId = workspaceDatasetId;
-    const activeHashes = new Set(
-      batchItemsRef.current
-        .map((item) => item.analysis?.file_hash)
-        .filter(Boolean)
-    );
 
-    await Promise.allSettled([
+    // Stop any in-flight DFM/BOM request from writing old results back after
+    // this quotation is ended. Requests cannot be physically cancelled here,
+    // so stale callbacks are ignored using this lifecycle generation.
+    artifactLifecycleRef.current += 1;
+
+    const activeHashes = new Set<string>();
+    for (const item of batchItemsRef.current) {
+      const hash = item.analysis?.file_hash;
+      if (hash) activeHashes.add(hash);
+    }
+    if (analysis?.file_hash) activeHashes.add(analysis.file_hash);
+
+    // Capture hashes embedded in the currently persisted artifacts too. This
+    // covers resumed/partially restored sessions where batchItems may be empty.
+    if (selectedDfm?.file_hash) activeHashes.add(selectedDfm.file_hash);
+    if (selectedBom?.file_hash) activeHashes.add(selectedBom.file_hash);
+
+    // Clear visible quotation state immediately; storage/server cleanup can run
+    // after the UI has returned to a clean upload screen.
+    resetOngoingQuotationState(message);
+
+    setSelectedDfmId("");
+    setSelectedBomId("");
+    setDfmJobs({});
+    setBomJobs({});
+
+    // Delete only the engineering artifacts that belong to this ended process.
+    // Rate Master, completed quotation history and unrelated DFM/BOM history are
+    // intentionally preserved. Persist the filtered lists immediately as well
+    // so a refresh cannot resurrect the ended process artifacts.
+    setDfmReports((current) => {
+      const next = activeHashes.size
+        ? current.filter((item) => !activeHashes.has(item.file_hash))
+        : current;
+      try { localStorage.setItem(DFM_HISTORY_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+    setBomReports((current) => {
+      const next = activeHashes.size
+        ? current.filter((item) => !activeHashes.has(item.file_hash))
+        : current;
+      try { localStorage.setItem(BOM_HISTORY_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+
+    void Promise.allSettled([
       clearWorkflowDraft(),
       deleteWorkspaceDataset(oldDatasetId),
       api.deleteWorkspaceSession(oldDatasetId)
-    ]);
-
-    // Remove only artifacts belonging to the active process.
-    if (activeHashes.size) {
-      setDfmReports((current) =>
-        current.filter((item) => !activeHashes.has(item.file_hash))
-      );
-      setBomReports((current) =>
-        current.filter((item) => !activeHashes.has(item.file_hash))
-      );
-    }
-
-    resetOngoingQuotationState(message);
-    void refreshWorkspaceDatasets();
+    ]).finally(() => {
+      void refreshWorkspaceDatasets();
+    });
   };
 
   const newQuote = () => {
@@ -967,19 +1805,32 @@ export default function Page() {
     }
 
     try {
-      // Strictly restore only the ACTIVE draft.
-      // Never reopen an older workspace/dataset from history.
-      const saved = await loadWorkflowDraft();
+      const hasSavedWork = (saved: PersistedWorkflowDraft | null) => Boolean(
+        saved && (
+          saved.analysis
+          || saved.drawing
+          || saved.file
+          || saved.files?.length
+          || saved.sourceFiles?.length
+          || saved.batchItems?.length
+        )
+      );
 
-      if (saved) {
+      // Prefer the active draft, but recover the latest valid workspace dataset
+      // when that draft is stale/empty. This keeps the Ongoing button tied to
+      // real unfinished drawings instead of opening an empty workflow.
+      let saved = await loadWorkflowDraft();
+      if (!hasSavedWork(saved)) saved = await loadLatestWorkspaceDataset();
+
+      if (hasSavedWork(saved) && saved) {
         applyPersistedWorkflow(saved, false);
         setView("workflow");
         setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
-        setMsg("Ongoing quotation opened.");
+        setMsg(`Ongoing quotation opened with ${Math.max(saved.batchItems?.length || 0, saved.files?.length || 0, saved.file ? 1 : 0)} drawing${Math.max(saved.batchItems?.length || 0, saved.files?.length || 0, saved.file ? 1 : 0) === 1 ? "" : "s"}.`);
         return;
       }
     } catch {
-      // If active draft storage is unavailable, remain on the current app state.
+      // If browser storage is unavailable, remain on the current app state.
     }
 
     setView("workflow");
@@ -1155,6 +2006,7 @@ export default function Page() {
 
   const acceptParallelArtifacts = (workspace: BatchWorkspace) => {
     const key = workspace.analysis.file_hash || workspace.id;
+    const lifecycle = artifactLifecycleRef.current;
     const embeddedDfm = workspace.analysis.dfm;
     const embeddedBom = workspace.analysis.bom;
 
@@ -1182,6 +2034,7 @@ export default function Page() {
         rows: workspace.rows,
         aiRaw: workspace.analysis.ai_raw || {}
       }).then((report) => {
+        if (artifactLifecycleRef.current !== lifecycle) return;
         setDfmReports((current) => [
           ...current.filter((item) => item.file_hash !== report.file_hash),
           report
@@ -1189,6 +2042,7 @@ export default function Page() {
         setSelectedDfmId(report.id);
         setDfmJobs((current) => ({ ...current, [key]: "ready" }));
       }).catch(() => {
+        if (artifactLifecycleRef.current !== lifecycle) return;
         setDfmJobs((current) => ({ ...current, [key]: "failed" }));
       });
     }
@@ -1209,6 +2063,7 @@ export default function Page() {
         rows: workspace.rows,
         aiRaw: workspace.analysis.ai_raw || {}
       }).then((report) => {
+        if (artifactLifecycleRef.current !== lifecycle) return;
         setBomReports((current) => [
           ...current.filter((item) => item.file_hash !== report.file_hash),
           report
@@ -1216,6 +2071,7 @@ export default function Page() {
         setSelectedBomId(report.id);
         setBomJobs((current) => ({ ...current, [key]: "ready" }));
       }).catch(() => {
+        if (artifactLifecycleRef.current !== lifecycle) return;
         setBomJobs((current) => ({ ...current, [key]: "failed" }));
       });
     }
@@ -1234,11 +2090,10 @@ export default function Page() {
       setMsg("Analyzing…");
 
       try {
-        await new Promise<void>((resolve) => window.setTimeout(resolve, 40));
-
-        const result = isModelSource(selected)
+        const analyzedResult = isModelSource(selected)
           ? await api.analyzeCad(await inspectCadFile(selected))
           : await api.analyzeDrawing(selected, false);
+        const result = enrichPartSummary(analyzedResult);
 
         const itemSummary =
           result.summary || await api.calculateQuote(result.rows);
@@ -1283,10 +2138,11 @@ export default function Page() {
     }
 
     try {
-      const fallback = await api.analyzeFallback(
+      const fallbackRaw = await api.analyzeFallback(
         selected,
         lastError || "Automatic extraction did not complete."
       );
+      const fallback = enrichPartSummary(fallbackRaw);
 
       const fallbackSummary =
         fallback.summary || await api.calculateQuote(fallback.rows);
@@ -1402,12 +2258,189 @@ export default function Page() {
     }
   };
 
+  const openMaterialCalculator = (requestedRow?: CostRow) => {
+    const materialRow = requestedRow || rows.find((row) => String(row.category || "").toUpperCase() === "MATERIAL");
+    const geometry = analysis?.ai_raw?.cad_geometry?.dimensions_mm || {};
+    const x = Number(geometry.x || 0);
+    const y = Number(geometry.y || 0);
+    const z = Number(geometry.z || 0);
+    const shape = inferMaterialShape(analysis?.ai_raw);
+    const ai = analysis?.ai_raw;
+    const thicknessPrediction = predictedThickness(ai, drawing!);
+    const weightPrediction = predictedPartWeight(ai, drawing!);
+    const dimensions = ((ai?.dimensions || []) as Record<string, unknown>[]).map((row) => ({
+      label: String(row.label || row.type || "").toLowerCase(),
+      value: normalizedDimensionMm(row)
+    })).filter((row) => Number.isFinite(row.value) && row.value > 0);
+    const dimensionByLabel = (keys: string[]) => dimensions.find((row) => keys.some((key) => row.label.includes(key)))?.value || 0;
+    const overallValues = dimensions.map((row) => row.value).sort((a, b) => b - a);
+    const envelope = ai ? parsedEngineeringEnvelopeMm(ai) : null;
+    const inferredLength = dimensionByLabel(["length", "overall length", "oal"]) || x || envelope?.widthMm || overallValues[0] || 0;
+    const inferredWidth = dimensionByLabel(["width", "breadth", "overall width"]) || y || envelope?.heightMm || overallValues[1] || 0;
+    const inferredHeight = dimensionByLabel(["height", "overall height"]) || z || overallValues[2] || 0;
+    const inferredDiameter = dimensionByLabel(["diameter", "dia", "od", "ø"]) || y || inferredWidth || 0;
+    const inferredOd = dimensionByLabel(["outer diameter", "outside dia", "od"]) || inferredDiameter;
+    const hasDrawingWeight = String((ai as (AIExtraction & { weight_source?: string }) | undefined)?.weight_source || "") === "drawing_stated"
+      && Number((ai as (AIExtraction & { drawing_stated_weight_kg?: number }) | undefined)?.drawing_stated_weight_kg || 0) > 0;
+    const predictedThicknessMm = Number(thicknessPrediction?.value || (hasDrawingWeight ? 0 : DEFAULT_FALLBACK_THICKNESS_MM));
+    const inferredIdRaw = dimensionByLabel(["inner diameter", "inside dia", "id"]);
+    const inferredId = inferredIdRaw > 0
+      ? inferredIdRaw
+      : (inferredOd > predictedThicknessMm * 2 ? inferredOd - predictedThicknessMm * 2 : 0);
+    const materialName = materialRow?.item || drawing?.material || "";
+    const savedRate = materialRow?.rate > 0
+      ? Number(materialRow.rate)
+      : Number(rates.find((rate) =>
+          rate.active
+          && rate.category === "MATERIAL"
+          && rateChoiceLabel(rate) === materialName
+        )?.price || 0);
+
+    setMaterialCalculator({
+      ...EMPTY_MATERIAL_CALCULATOR,
+      rowId: materialRow?.id || "",
+      shape,
+      lengthMm: inferredLength,
+      widthMm: inferredWidth,
+      heightMm: inferredHeight,
+      thicknessMm: predictedThicknessMm,
+      diameterMm: inferredDiameter,
+      outerDiameterMm: inferredOd,
+      innerDiameterMm: inferredId,
+      wallThicknessMm: predictedThicknessMm,
+      legAMm: inferredWidth,
+      legBMm: inferredHeight,
+      quantity: Math.max(1, Number(ai?.product_quantity || drawing?.quantity || 1)),
+      densityKgM3: inferMaterialDensity(drawing?.material || materialName) || 7850,
+      pricePerKg: savedRate,
+      predictedBaseWeightKg: Number(weightPrediction?.baseWeightKg || 0),
+      allowanceKg: 1,
+      predictedTotalWeightKg: Number(weightPrediction?.totalWeightKg || 0),
+      predictionBasis: String(weightPrediction?.basis || thicknessPrediction?.basis || "")
+    });
+    setMaterialCalculatorMissing([]);
+    setShowMaterialCalculator(true);
+  };
+
+  const applyMaterialCalculator = async () => {
+    const missing = materialCalculatorErrors(materialCalculator);
+    if (missing.length) {
+      setMaterialCalculatorMissing(missing);
+      setMsg(`Material calculation needs: ${missing.join(", ")}.`);
+      return;
+    }
+
+    const volumeMm3 = materialVolumeMm3(materialCalculator);
+    const unitWeightKg = volumeMm3 * materialCalculator.densityKgM3 / 1_000_000_000;
+    const geometricTotalWeightKg = unitWeightKg * materialCalculator.quantity;
+    const predictedBaseWeightKg = materialCalculator.predictedBaseWeightKg > 0
+      ? materialCalculator.predictedBaseWeightKg
+      : (materialCalculator.predictedTotalWeightKg > 0 ? Math.max(0, materialCalculator.predictedTotalWeightKg - 1) : 0);
+    const totalWeightKg = predictedBaseWeightKg > 0
+      ? predictedBaseWeightKg + Math.max(0, materialCalculator.allowanceKg)
+      : (geometricTotalWeightKg > 0 ? geometricTotalWeightKg + Math.max(0, materialCalculator.allowanceKg) : 0);
+
+    if (!(totalWeightKg > 0)) {
+      setMaterialCalculatorMissing(["Valid product dimensions"]);
+      setMsg("Material calculation could not produce a valid weight. Check the dimensions.");
+      return;
+    }
+
+    const shapeLabel: Record<MaterialShape, string> = {
+      plate: "Plate / Block",
+      round_bar: "Round Bar",
+      pipe: "Pipe / Tube",
+      rect_tube: "Rectangular Tube",
+      angle: "Angle"
+    };
+
+    const allowanceText = `${Math.max(0, materialCalculator.allowanceKg).toFixed(3)} kg allowance`;
+    const basis = predictedBaseWeightKg > 0
+      ? `Auto drawing prediction · ${predictedBaseWeightKg.toFixed(3)} kg + ${allowanceText}`
+      : `${materialCalculator.quantity} × ${shapeLabel[materialCalculator.shape]} · ${unitWeightKg.toFixed(3)} kg/pc + ${allowanceText}`;
+    const existing = rows.find((row) => row.id === materialCalculator.rowId);
+    const nextMaterialRow: CostRow = {
+      ...(existing || {
+        id: `material-calculator-${Date.now()}`,
+        category: "MATERIAL",
+        item: drawing?.material || "Material",
+        drawingQty: "",
+        costingQty: 0,
+        unit: "kg",
+        rate: 0,
+        cost: 0,
+        confidence: "Exact",
+        rateId: null,
+        rateSource: "Material Calculator",
+        criticalScore: 100
+      }),
+      category: "MATERIAL",
+      drawingQty: basis,
+      costingQty: Number(totalWeightKg.toFixed(4)),
+      unit: "kg",
+      rate: Number(materialCalculator.pricePerKg),
+      cost: Number(totalWeightKg.toFixed(4)) * Number(materialCalculator.pricePerKg),
+      confidence: "Exact",
+      rateSource: materialCalculator.pricePerKg > 0 ? "Material Calculator · Auto/confirmed Rate" : "Material Calculator",
+      criticalScore: Math.max(70, Number(existing?.criticalScore || 100))
+    };
+
+    let appliedMaterialRow = nextMaterialRow;
+
+    // A quotation-entered material ₹/kg rate is also a reusable Rate Master value.
+    // Reuse the existing sync endpoint so material family + grade/spec stay consistent
+    // with manual cost-sheet edits and do not require a second admin entry.
+    if (Number(materialCalculator.pricePerKg || 0) > 0) {
+      try {
+        const synced = await api.syncCostRowRate(
+          nextMaterialRow,
+          analysis?.ai_raw?.material
+        );
+        appliedMaterialRow = synced.row;
+        setRates((current) => {
+          const index = current.findIndex((rate) => rate.id === synced.rate.id);
+          if (index < 0) return [...current, synced.rate];
+          const next = [...current];
+          next[index] = synced.rate;
+          return next;
+        });
+      } catch (error) {
+        // Keep quotation costing usable even if persistence temporarily fails.
+        console.warn("Material Rate Master auto-sync failed", error);
+      }
+    }
+
+    const nextRows = existing
+      ? rows.map((row) => row.id === existing.id ? appliedMaterialRow : row)
+      : [appliedMaterialRow, ...rows];
+
+    await recalc(nextRows);
+    setShowMaterialCalculator(false);
+    setMaterialCalculatorMissing([]);
+    setMsg(`Material calculated: ${totalWeightKg.toFixed(3)} kg × ${money(materialCalculator.pricePerKg)}/kg = ${money(totalWeightKg * materialCalculator.pricePerKg)}. Rate Master synced automatically.`);
+  };
+
   const goWorkflowStep = (targetStep: number) => {
     if (targetStep === 4 && batchFailures.length > 0) {
       setMsg(
         `${batchFailures.length} drawing(s) still failed analysis. Retry them before preparing quotation.`
       );
       return;
+    }
+
+    if (targetStep === 4) {
+      const materialRows = rows.filter((row) => String(row.category || "").toUpperCase() === "MATERIAL");
+      const incompleteMaterial = materialRows.find((row) =>
+        Number(row.costingQty || 0) <= 0
+        || Number(row.rate || 0) <= 0
+        || !String(row.unit || "").trim()
+      );
+
+      if (!materialRows.length || incompleteMaterial) {
+        setMsg("Complete material size, quantity, calculated kg and price before preparing the quotation.");
+        openMaterialCalculator(incompleteMaterial);
+        return;
+      }
     }
 
     if (targetStep === 1 || drawing) {
@@ -1633,6 +2666,87 @@ export default function Page() {
       setBusy(false);
     }
   };
+
+  const refreshPremiumEstimate = useCallback(async (targetDrawing = drawing, targetRows = rows, targetAnalysis = analysis) => {
+    if (!targetDrawing || !targetAnalysis) return;
+    setPremiumBusy(true);
+    try {
+      const result = await api.getPremiumEstimate({
+        drawing: targetDrawing,
+        rows: targetRows,
+        ai_raw: (targetAnalysis.ai_raw || {}) as Record<string, unknown>
+      });
+      setPremiumEstimate(result);
+    } catch (error) {
+      console.warn("Premium estimate unavailable", error);
+    } finally {
+      setPremiumBusy(false);
+    }
+  }, [analysis, drawing, rows]);
+
+  const applyPremiumProcessCosting = useCallback(async () => {
+    if (!premiumEstimate || !drawing) return;
+    const existingNames = new Set(rows.map((row) => `${row.category}:${row.item}`.toLowerCase()));
+    const suggested: CostRow[] = premiumEstimate.process_route
+      .filter((item) => !existingNames.has(`process:${item.process}`.toLowerCase()))
+      .map((item, index) => {
+        const totalHours = Math.max(0, item.setup_hours + item.run_hours_per_piece * Math.max(1, drawing.quantity || 1));
+        const rate = Math.max(0, item.machine_rate + item.labour_rate);
+        return {
+          id: `PREMIUM-PROC-${Date.now()}-${index}`,
+          category: "PROCESS",
+          item: item.process,
+          drawingQty: `${item.setup_hours.toFixed(2)} h setup + ${item.run_hours_per_piece.toFixed(2)} h/pc × ${Math.max(1, drawing.quantity || 1)}`,
+          costingQty: Number(totalHours.toFixed(4)),
+          unit: "hr",
+          rate,
+          cost: Number((totalHours * rate).toFixed(2)),
+          confidence: item.confidence >= 85 ? "Exact" : "Estimated",
+          rateId: null,
+          rateSource: item.rate_source || "Premium Estimator",
+          criticalScore: item.confidence >= 85 ? 35 : 60
+        };
+      });
+    if (!suggested.length) {
+      setMsg("Premium process costing is already present in the cost sheet.");
+      return;
+    }
+    const nextRows = [...rows, ...suggested];
+    await recalc(nextRows);
+    setMsg(`${suggested.length} premium process cost row${suggested.length === 1 ? "" : "s"} applied.`);
+  }, [premiumEstimate, drawing, rows, recalc]);
+
+  const recordActualPerformance = useCallback(async () => {
+    if (!drawing) return;
+    try {
+      await api.saveActualCost({
+        drawing,
+        quoted_cost: summary.manufacturing_cost || summary.direct_cost,
+        actual_cost: Math.max(0, actualCostDraft.actualCost),
+        quoted_hours: premiumEstimate?.process_route.reduce((sum, item) => sum + item.setup_hours + item.run_hours_per_piece * Math.max(1, drawing.quantity || 1), 0) || 0,
+        actual_hours: Math.max(0, actualCostDraft.actualHours),
+        notes: actualCostDraft.notes
+      });
+      setMsg("Actual job performance saved to estimator learning memory.");
+      setActualCostDraft({ actualCost: 0, actualHours: 0, notes: "" });
+      void refreshPremiumEstimate();
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Could not save actual job performance.");
+    }
+  }, [drawing, summary, actualCostDraft, premiumEstimate, refreshPremiumEstimate]);
+
+  const askEstimator = useCallback(() => {
+    const q = estimatorQuestion.trim().toLowerCase();
+    if (!q || !premiumEstimate) return;
+    const top = premiumEstimate.cost_drivers[0];
+    let answer = `Recommended sell is ${money(premiumEstimate.margin.recommended_sell)} with an estimated ${premiumEstimate.margin.gross_margin_pct.toFixed(1)}% gross margin and ${premiumEstimate.lead_time.working_days} working-day lead time.`;
+    if (q.includes("why") || q.includes("cost")) answer = top ? `${top.name} is currently the largest cost driver at ${money(top.amount)}. ${premiumEstimate.savings[0] || "Review process rates and setup/run assumptions before release."}` : answer;
+    else if (q.includes("reduce") || q.includes("save")) answer = premiumEstimate.savings.join(" ") || "No obvious deterministic saving is available from the extracted data; review geometry, quantity and supplier rates.";
+    else if (q.includes("lead") || q.includes("delivery")) answer = `Normal lead time is ${premiumEstimate.lead_time.working_days} working days; expedite planning is approximately ${premiumEstimate.lead_time.expedite_days} days before capacity confirmation.`;
+    else if (q.includes("similar")) answer = premiumEstimate.similar_jobs[0] ? `Closest saved quotation is ${premiumEstimate.similar_jobs[0].drawing_no || premiumEstimate.similar_jobs[0].description} at ${premiumEstimate.similar_jobs[0].score}% similarity and ${money(premiumEstimate.similar_jobs[0].selling_price)} selling price.` : "No sufficiently similar saved quotation was found yet.";
+    else if (q.includes("risk") || q.includes("attention")) answer = [...premiumEstimate.attention, ...premiumEstimate.dfm_warnings.map(x => x.message)].slice(0, 4).join(" ") || "No major deterministic attention item is currently detected.";
+    setEstimatorAnswer(answer);
+  }, [estimatorQuestion, premiumEstimate]);
 
   const comparePreviousRevision = async () => {
     if (!drawing || !analysis) return;
@@ -1952,22 +3066,33 @@ export default function Page() {
     {
       headerName: "Action",
       colId: "action",
-      width: 88,
-      minWidth: 88,
-      maxWidth: 88,
+      width: 178,
+      minWidth: 178,
+      maxWidth: 178,
       sortable: false,
       resizable: false,
       cellRenderer: (p: { data?: CostRow }) => (
-        <button
-          type="button"
-          className="grid-delete-btn"
-          onClick={() => p.data && removeCostRow(p.data.id)}
-        >
-          Remove
-        </button>
+        <div className="grid-row-actions">
+          {String(p.data?.category || "").toUpperCase() === "MATERIAL" && (
+            <button
+              type="button"
+              className="grid-calc-btn"
+              onClick={() => p.data && openMaterialCalculator(p.data)}
+            >
+              Calculate
+            </button>
+          )}
+          <button
+            type="button"
+            className="grid-delete-btn"
+            onClick={() => p.data && removeCostRow(p.data.id)}
+          >
+            Remove
+          </button>
+        </div>
       )
     }
-  ], [rows, rates, catalog]);
+  ], [rows, rates, catalog, drawing, analysis]);
 
   const saveQuotation = async (status = "Draft") => {
     if (!drawing) return;
@@ -2165,7 +3290,13 @@ export default function Page() {
     setView("rates");
     setRateTab("MATERIAL");
     setRateSearch("");
-    void refresh();
+
+    // Rate Master should open immediately from cached state. Refresh only its
+    // two required resources in parallel instead of waiting for dashboard/history.
+    void Promise.allSettled([api.getRates(), api.getRateCatalog()]).then(([rateResult, catalogResult]) => {
+      if (rateResult.status === "fulfilled") setRates(rateResult.value);
+      if (catalogResult.status === "fulfilled") setCatalog(catalogResult.value);
+    });
   };
 
   const restoreStarterRates = async () => {
@@ -2617,6 +3748,29 @@ export default function Page() {
     if (selectedBomId === report.id) setSelectedBomId("");
   };
 
+  useEffect(() => {
+    if (step !== 3 || view !== "workflow" || !drawing || !analysis) return;
+    const timer = window.setTimeout(() => { void refreshPremiumEstimate(); }, 180);
+    return () => window.clearTimeout(timer);
+  }, [step, view, drawing?.drawing_no, drawing?.revision, rows.length, analysis?.extraction_id, refreshPremiumEstimate]);
+
+  useEffect(() => {
+    let active = true;
+    api.getPremiumKpis().then((value) => { if (active) setPremiumKpis(value); }).catch(() => {});
+    return () => { active = false; };
+  }, [quotes.length]);
+
+  const materialCalcVolume = materialVolumeMm3(materialCalculator);
+  const materialCalcUnitWeight = materialCalcVolume * Math.max(0, materialCalculator.densityKgM3) / 1_000_000_000;
+  const materialCalcGeometricWeight = materialCalcUnitWeight * Math.max(0, materialCalculator.quantity);
+  const materialCalcPredictedBaseWeight = materialCalculator.predictedBaseWeightKg > 0
+    ? materialCalculator.predictedBaseWeightKg
+    : (materialCalculator.predictedTotalWeightKg > 0 ? Math.max(0, materialCalculator.predictedTotalWeightKg - 1) : 0);
+  const materialCalcTotalWeight = materialCalcPredictedBaseWeight > 0
+    ? materialCalcPredictedBaseWeight + Math.max(0, materialCalculator.allowanceKg)
+    : (materialCalcGeometricWeight > 0 ? materialCalcGeometricWeight + Math.max(0, materialCalculator.allowanceKg) : 0);
+  const materialCalcAmount = materialCalcTotalWeight * Math.max(0, materialCalculator.pricePerKg);
+
   return (
     <main className={`app ${sideOpen ? "" : "sidebar-collapsed"}`}>
       <aside className={`side ${sideOpen ? "" : "closed"}`}>
@@ -2682,6 +3836,16 @@ export default function Page() {
           >
             Settings
           </button>
+          <button
+            type="button"
+            className="theme-toggle-nav"
+            onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
+            aria-pressed={theme === "dark"}
+            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
+          >
+            <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
+            <span>{theme === "dark" ? "Light Theme" : "Dark Theme"}</span>
+          </button>
         </nav>
         <div className="learn">
           <b>Continuous Dataset</b>
@@ -2705,11 +3869,11 @@ export default function Page() {
 
         {view === "dashboard" && (
           <section>
-            <div className="cards four">
-              <article><small>Total Quotations</small><b>{quotes.length}</b><span>Saved records</span></article>
-              <article><small>Rate Master</small><b>{rates.filter(r => r.active).length}</b><span>Active saved rates</span></article>
-              <article><small>Training Samples</small><b>{stats?.training_samples ?? 0}</b><span>Explicitly approved after quotation</span></article>
-              <article><small>Dataset Version</small><b>v{stats?.dataset_version ?? 1}</b><span>{stats?.batch_ready ? "Training batch ready" : "Collecting reviewed samples"}</span></article>
+            <div className="cards four premium-dashboard-cards">
+              <article><small>Total Quotations</small><b>{premiumKpis?.quotes ?? quotes.length}</b><span>{premiumKpis ? money(premiumKpis.total_value) : "Saved records"}</span></article>
+              <article><small>Win Rate</small><b>{(premiumKpis?.win_rate ?? 0).toFixed(1)}%</b><span>{premiumKpis?.won ?? 0} won / accepted</span></article>
+              <article><small>Estimator Learning</small><b>{premiumKpis?.actual_samples ?? stats?.training_samples ?? 0}</b><span>Actual-vs-quoted samples</span></article>
+              <article><small>Rate Coverage</small><b>{rates.filter(r => r.active).length}</b><span>Active material/process/labour rates</span></article>
             </div>
             <div className="panel">
               <div className="heading row">
@@ -2829,10 +3993,10 @@ export default function Page() {
                               ? batchItem.analysis.learning_source === "independent_fallback"
                                 ? `${extension} · Review Required`
                                 : sourceClass || sourceRoute
-                                  ? `${sourceClass || "Part"} · ${sourceRoute || "Analyzed"}`
+                                  ? `${sourceClass || "Part"} · ${sourceRoute || "Analyzed"} · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
                                   : model
-                                    ? `${extension} · CAD Analyzed`
-                                    : `${extension} · Analyzed`
+                                    ? `${extension} · CAD Analyzed · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
+                                    : `${extension} · Analyzed · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
                               : `${extension} · Ready`}
                         </span>
                       </button>
@@ -2958,9 +4122,12 @@ export default function Page() {
 
                         setUploadedFileStatus((current) => ({
                           ...current,
-                          [key]: "uploaded"
+                          [key]: "uploading"
                         }));
 
+                        // Persist original files without blocking selection/analyze.
+                        // Reflect the real database state instead of marking success
+                        // before the request has completed.
                         window.setTimeout(() => {
                           void api
                             .uploadWorkspaceFile(
@@ -2968,11 +4135,20 @@ export default function Page() {
                               selected,
                               role
                             )
-                            .catch(() => {
+                            .then(() => {
+                              setUploadedFileStatus((current) => ({
+                                ...current,
+                                [key]: "uploaded"
+                              }));
+                            })
+                            .catch((error) => {
                               setUploadedFileStatus((current) => ({
                                 ...current,
                                 [key]: "failed"
                               }));
+                              setMsg(error instanceof Error
+                                ? `File selected and ready to analyze, but database sync failed: ${error.message}`
+                                : "File selected and ready to analyze, but database sync failed.");
                             });
                         }, 0);
                       });
@@ -3054,7 +4230,7 @@ export default function Page() {
 
                           <div className="uploaded-source-actions">
                             <em>
-                              {status === "failed" ? "DB sync failed" : "Uploaded"}
+                              {status === "failed" ? "DB sync failed" : status === "uploading" ? "Saving…" : "Uploaded"}
                             </em>
                             <button
                               type="button"
@@ -3219,7 +4395,7 @@ export default function Page() {
                     <label><span>Revision</span><input value={drawing.revision} onChange={(e) => setDrawing({ ...drawing, revision: e.target.value })}/></label>
                     <label><span>Description</span><input value={drawing.description} onChange={(e) => setDrawing({ ...drawing, description: e.target.value })}/></label>
                     <label><span>Material</span><input value={drawing.material} onChange={(e) => setDrawing({ ...drawing, material: e.target.value })}/></label>
-                    <label><span>Thickness</span><div className="value-with-unit"><input type="number" step=".1" value={drawing.thickness_mm} onChange={(e) => setDrawing({ ...drawing, thickness_mm: +e.target.value })}/><em>mm</em></div></label>
+                    <label><span>Thickness</span><div className="value-with-unit"><input type="number" step=".1" value={drawing.thickness_mm || ""} onChange={(e) => setDrawing({ ...drawing, thickness_mm: +e.target.value || 0 })}/><em>mm</em></div></label>
                     <label><span>Weight</span><div className="value-with-unit"><input type="number" step=".001" value={drawing.weight_kg} onChange={(e) => setDrawing({ ...drawing, weight_kg: +e.target.value })}/><em>kg</em></div></label>
                     <label><span>Product Qty</span><input type="number" min="1" value={drawing.quantity} onChange={(e) => setDrawing({ ...drawing, quantity: +e.target.value })}/></label>
 
@@ -3302,6 +4478,7 @@ export default function Page() {
                     <div><span>COSTING</span><b>Rate Master Cost Rows</b></div>
                     <div className="cost-grid-actions">
                       <small>All input fields are editable</small>
+                      <button type="button" className="material-calc-open-btn" onClick={() => openMaterialCalculator()}>Material Weight & Cost</button>
                       <button type="button" className="table-add-btn" onClick={addCostRow}>+ Add Cost Row</button>
                     </div>
                   </div>
@@ -3320,6 +4497,150 @@ export default function Page() {
                   finalPriceOverride={finalPriceOverride}
                   onChange={updateCommercial}
                 />
+
+                <PremiumEstimatorPanel
+                  estimate={premiumEstimate}
+                  busy={premiumBusy}
+                  onRefresh={() => void refreshPremiumEstimate()}
+                  onApplyProcesses={() => void applyPremiumProcessCosting()}
+                  actualCost={actualCostDraft.actualCost}
+                  actualHours={actualCostDraft.actualHours}
+                  actualNotes={actualCostDraft.notes}
+                  onActualCostChange={(value) => setActualCostDraft((current) => ({ ...current, actualCost: value }))}
+                  onActualHoursChange={(value) => setActualCostDraft((current) => ({ ...current, actualHours: value }))}
+                  onActualNotesChange={(value) => setActualCostDraft((current) => ({ ...current, notes: value }))}
+                  onSaveActual={() => void recordActualPerformance()}
+                  question={estimatorQuestion}
+                  answer={estimatorAnswer}
+                  onQuestionChange={setEstimatorQuestion}
+                  onAsk={askEstimator}
+                />
+
+                {showMaterialCalculator && (
+                  <div className="material-modal-backdrop" role="presentation" onMouseDown={(event) => {
+                    if (event.currentTarget === event.target) setShowMaterialCalculator(false);
+                  }}>
+                    <div className="material-modal" role="dialog" aria-modal="true" aria-labelledby="material-calculator-title">
+                      <div className="material-modal-head">
+                        <div>
+                          <p className="eyebrow">MATERIAL COST</p>
+                          <h3 id="material-calculator-title">Product Size → Weight → Cost</h3>
+                          <p>The system reads the drawing first, predicts thickness and material weight, then applies the editable material allowance and ₹/kg rate to the quotation. Edit any value if engineering review requires it.</p>
+                        </div>
+                        <button type="button" className="material-modal-close" aria-label="Close material calculator" onClick={() => setShowMaterialCalculator(false)}>×</button>
+                      </div>
+
+                      {(materialCalculator.predictedBaseWeightKg > 0 || materialCalculator.predictedTotalWeightKg > 0) && (
+                        <div className="material-auto-prediction-box">
+                          <div><span>Drawing thickness</span><b>{materialCalculator.thicknessMm > 0 ? `${materialCalculator.thicknessMm.toFixed(3)} mm` : "Not stated / not required for stated weight"}</b></div>
+                          <div><span>Drawing material weight</span><b>{materialCalcPredictedBaseWeight.toFixed(3)} kg</b></div>
+                          <div><span>+ Allowance</span><b>{Math.max(0, materialCalculator.allowanceKg).toFixed(3)} kg</b></div>
+                          <div><span>Costing weight</span><b>{materialCalcTotalWeight.toFixed(3)} kg</b></div>
+                          <small>{materialCalculator.predictionBasis}</small>
+                        </div>
+                      )}
+
+                      {materialCalculatorMissing.length > 0 && (
+                        <div className="material-missing-box" role="alert">
+                          <b>Complete these fields before continuing:</b>
+                          <span>{materialCalculatorMissing.join(" · ")}</span>
+                        </div>
+                      )}
+
+                      <div className="material-shape-row">
+                        <label>
+                          <span>Shape</span>
+                          <select value={materialCalculator.shape} onChange={(e) => {
+                            setMaterialCalculator((current) => ({ ...current, shape: e.target.value as MaterialShape }));
+                            setMaterialCalculatorMissing([]);
+                          }}>
+                            <option value="plate">Plate / Block</option>
+                            <option value="round_bar">Round Bar / Rod</option>
+                            <option value="pipe">Pipe / Circular Tube</option>
+                            <option value="rect_tube">Square / Rectangular Tube</option>
+                            <option value="angle">Angle</option>
+                          </select>
+                        </label>
+                        <label>
+                          <span>Product Quantity</span>
+                          <input type="number" min="1" step="1" value={materialCalculator.quantity || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, quantity: Number(e.target.value) }))}/>
+                        </label>
+                        <label>
+                          <span>Density</span>
+                          <div className="material-input-unit"><input type="number" min="1" step="1" value={materialCalculator.densityKgM3 || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, densityKgM3: Number(e.target.value) }))}/><em>kg/m³</em></div>
+                        </label>
+                        <label>
+                          <span>Material Price</span>
+                          <div className="material-input-unit"><input type="number" min="0" step="0.01" value={materialCalculator.pricePerKg || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, pricePerKg: Number(e.target.value) }))}/><em>₹/kg</em></div>
+                        </label>
+                        <label>
+                          <span>Material Allowance</span>
+                          <div className="material-input-unit"><input type="number" min="0" step="0.1" value={materialCalculator.allowanceKg} onChange={(e) => {
+                            const next = Number(e.target.value);
+                            setMaterialCalculator((current) => ({ ...current, allowanceKg: Number.isFinite(next) ? Math.max(0, next) : 0 }));
+                            setMaterialCalculatorMissing([]);
+                          }}/><em>kg</em></div>
+                        </label>
+                      </div>
+
+                      <div className="material-dimension-card">
+                        <div className="material-section-title"><b>Dimensions</b><span>All dimensions in mm</span></div>
+                        <div className="material-dimension-grid">
+                          <label><span>Length</span><input type="number" min="0" step="0.01" value={materialCalculator.lengthMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, lengthMm: Number(e.target.value) }))}/></label>
+
+                          {materialCalculator.shape === "plate" && (
+                            <>
+                              <label><span>Width</span><input type="number" min="0" step="0.01" value={materialCalculator.widthMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, widthMm: Number(e.target.value) }))}/></label>
+                              <label><span>Thickness</span><input type="number" min="0" step="0.01" value={materialCalculator.thicknessMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, thicknessMm: Number(e.target.value) }))}/></label>
+                            </>
+                          )}
+
+                          {materialCalculator.shape === "round_bar" && (
+                            <label><span>Diameter</span><input type="number" min="0" step="0.01" value={materialCalculator.diameterMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, diameterMm: Number(e.target.value) }))}/></label>
+                          )}
+
+                          {materialCalculator.shape === "pipe" && (
+                            <>
+                              <label><span>Outer Diameter</span><input type="number" min="0" step="0.01" value={materialCalculator.outerDiameterMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, outerDiameterMm: Number(e.target.value) }))}/></label>
+                              <label><span>Inner Diameter</span><input type="number" min="0" step="0.01" value={materialCalculator.innerDiameterMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, innerDiameterMm: Number(e.target.value) }))}/></label>
+                            </>
+                          )}
+
+                          {materialCalculator.shape === "rect_tube" && (
+                            <>
+                              <label><span>Outside Width</span><input type="number" min="0" step="0.01" value={materialCalculator.widthMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, widthMm: Number(e.target.value) }))}/></label>
+                              <label><span>Outside Height</span><input type="number" min="0" step="0.01" value={materialCalculator.heightMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, heightMm: Number(e.target.value) }))}/></label>
+                              <label><span>Wall Thickness</span><input type="number" min="0" step="0.01" value={materialCalculator.wallThicknessMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, wallThicknessMm: Number(e.target.value) }))}/></label>
+                            </>
+                          )}
+
+                          {materialCalculator.shape === "angle" && (
+                            <>
+                              <label><span>Leg A</span><input type="number" min="0" step="0.01" value={materialCalculator.legAMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, legAMm: Number(e.target.value) }))}/></label>
+                              <label><span>Leg B</span><input type="number" min="0" step="0.01" value={materialCalculator.legBMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, legBMm: Number(e.target.value) }))}/></label>
+                              <label><span>Thickness</span><input type="number" min="0" step="0.01" value={materialCalculator.thicknessMm || ""} onChange={(e) => setMaterialCalculator((current) => ({ ...current, thicknessMm: Number(e.target.value) }))}/></label>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="material-result-grid">
+                        <div><span>Volume / piece</span><b>{materialCalcVolume > 0 ? `${(materialCalcVolume / 1_000_000).toFixed(3)} cm³` : "—"}</b></div>
+                        <div><span>Weight / piece</span><b>{materialCalcUnitWeight > 0 ? `${materialCalcUnitWeight.toFixed(3)} kg` : "—"}</b></div>
+                        <div className="material-result-primary"><span>Costing Weight (+{Math.max(0, materialCalculator.allowanceKg).toFixed(1)} kg)</span><b>{materialCalcTotalWeight > 0 ? `${materialCalcTotalWeight.toFixed(3)} kg` : "—"}</b></div>
+                        <div className="material-result-cost"><span>Material Amount</span><b>{materialCalcAmount > 0 ? money(materialCalcAmount) : "—"}</b></div>
+                      </div>
+
+                      <div className="material-modal-foot">
+                        <p>Drawing-derived weight is used when available. Material allowance is editable here and is added once per product. The existing quotation wastage control remains unchanged.</p>
+                        <div>
+                          <button type="button" className="btn secondary" onClick={() => setShowMaterialCalculator(false)}>Cancel</button>
+                          <button type="button" className="btn primary" onClick={() => void applyMaterialCalculator()}>Apply Material to Cost Sheet</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </section>
             )}
 
@@ -3352,6 +4673,18 @@ export default function Page() {
                     </button>
                   </div>
                 </div>
+
+                {premiumEstimate && (
+                  <div className="premium-release-bar">
+                    <div><span>COMMERCIAL RELEASE</span><b>{premiumEstimate.margin.approval_role} approval · {premiumEstimate.lead_time.working_days} working days</b><small>{premiumEstimate.margin.approval_reason}</small></div>
+                    <div className="premium-release-metrics"><span>Recommended {money(premiumEstimate.margin.recommended_sell)}</span><span>Margin {premiumEstimate.margin.gross_margin_pct.toFixed(1)}%</span></div>
+                    <div className="premium-release-actions">
+                      <button type="button" className="mini save" onClick={() => void api.savePremiumApproval({ drawing_no: drawing.drawing_no, action: "approve", role: premiumEstimate.margin.approval_role, note: "Approved from quotation preview" }).then(() => setMsg("Quotation approval recorded."))}>Approve</button>
+                      <button type="button" className="mini" onClick={() => void api.savePremiumApproval({ drawing_no: drawing.drawing_no, action: "revision", role: premiumEstimate.margin.approval_role, note: "Revision requested from quotation preview" }).then(() => setMsg("Quotation revision request recorded."))}>Revision</button>
+                      <button type="button" className="mini delete" onClick={() => void api.savePremiumApproval({ drawing_no: drawing.drawing_no, action: "reject", role: premiumEstimate.margin.approval_role, note: "Rejected from quotation preview" }).then(() => setMsg("Quotation rejection recorded."))}>Reject</button>
+                    </div>
+                  </div>
+                )}
 
                 {batchItems.length > 1 ? (
                   <>
@@ -3412,6 +4745,8 @@ export default function Page() {
                               <th>Drawing No.</th>
                               <th>Rev</th>
                               <th>Description</th>
+                              <th>Thickness</th>
+                              <th>Weight</th>
                               <th>Qty</th>
                               <th>Unit Price</th>
                               <th>Total</th>
@@ -3437,6 +4772,8 @@ export default function Page() {
                                   <td><b>{item.drawing.drawing_no}</b></td>
                                   <td>{item.drawing.revision}</td>
                                   <td>{item.drawing.description}</td>
+                                  <td>{Number(item.drawing.thickness_mm || 0) > 0 ? `${Number(item.drawing.thickness_mm).toFixed(3)} mm` : "—"}</td>
+                                  <td>{Number(item.drawing.weight_kg || 0) > 0 ? `${Number(item.drawing.weight_kg).toFixed(3)} kg` : "—"}</td>
                                   <td>{qty}</td>
                                   <td>{money(unitPrice)}</td>
                                   <td><b>{money(total)}</b></td>
@@ -3447,7 +4784,7 @@ export default function Page() {
 
                           <tfoot>
                             <tr>
-                              <td colSpan={6}>
+                              <td colSpan={8}>
                                 {quoteMode === "merge" ? "Grand Total" : "Combined Reference Total"}
                               </td>
                               <td>
@@ -3495,6 +4832,8 @@ export default function Page() {
                         />
                       </label>
                       <div><small>Material</small><b>{drawing.material}</b></div>
+                      <div><small>Thickness</small><b>{Number(drawing.thickness_mm || 0) > 0 ? `${Number(drawing.thickness_mm).toFixed(3)} mm` : "—"}</b></div>
+                      <div><small>Weight</small><b>{Number(drawing.weight_kg || 0) > 0 ? `${Number(drawing.weight_kg).toFixed(3)} kg` : "—"}</b></div>
                       <div><small>Quantity</small><b>{drawing.quantity}</b></div>
                     </div>
 
@@ -5082,7 +6421,7 @@ function EngineeringDetails({
     onChange({
       ...data,
       [key]: key === "product_quantity"
-        ? Math.max(1, Number(nextValue || 1))
+        ? (nextValue == null ? undefined : Math.max(1, Number(nextValue)))
         : nextValue
     });
   };
@@ -5242,7 +6581,7 @@ function EngineeringDetails({
                 <td>
                   <input
                     className="sheet-cell-input"
-                    value={data.drawing_type || "part"}
+                    value={data.drawing_type || ""}
                     onChange={(e) => setFeature("drawing_type", e.target.value)}
                   />
                 </td>
@@ -5250,9 +6589,19 @@ function EngineeringDetails({
               <tr id="sheet-summary-material"><td>Material Family</td><td><input className="sheet-cell-input" value={data.material?.family || ""} onChange={(e) => setMaterial("family", e.target.value)}/></td></tr>
               <tr id="sheet-summary-grade"><td>Grade</td><td><input className="sheet-cell-input" value={data.material?.grade || ""} onChange={(e) => setMaterial("grade", e.target.value)}/></td></tr>
               <tr id="sheet-summary-specification"><td>Specification</td><td><input className="sheet-cell-input" value={data.material?.specification || ""} onChange={(e) => setMaterial("specification", e.target.value)}/></td></tr>
-              <tr id="sheet-summary-thickness"><td>Thickness (mm)</td><td><input className="sheet-cell-input" type="number" step="any" value={data.thickness_mm ?? ""} onChange={(e) => setSummaryNumber("thickness_mm", e.target.value)}/></td></tr>
-              <tr id="sheet-summary-weight"><td>Weight (kg)</td><td><input className="sheet-cell-input" type="number" step="any" value={data.weight_kg ?? ""} onChange={(e) => setSummaryNumber("weight_kg", e.target.value)}/></td></tr>
-              <tr id="sheet-summary-quantity"><td>Product Quantity</td><td><input className="sheet-cell-input" type="number" min="1" step="1" value={data.product_quantity ?? 1} onChange={(e) => setSummaryNumber("product_quantity", e.target.value)}/></td></tr>
+              <tr id="sheet-summary-thickness"><td>Thickness (mm)</td><td><input className="sheet-cell-input" type="number" step="any" value={Number(data.thickness_mm || 0) > 0 ? data.thickness_mm : ""} onChange={(e) => setSummaryNumber("thickness_mm", e.target.value)}/>{(data.notes || []).some((note) => String(note).startsWith("Predicted thickness:")) && <small className="summary-derived-note">Auto-predicted from drawing geometry</small>}{(data.notes || []).some((note) => String(note).startsWith("Default thickness:")) && <small className="summary-derived-note">Defaulted to 100 mm because drawing thickness was unavailable</small>}</td></tr>
+              <tr id="sheet-summary-weight">
+                <td>Weight (kg)</td>
+                <td>
+                  <input className="sheet-cell-input" type="number" step="any" value={data.weight_kg ?? ""} onChange={(e) => setSummaryNumber("weight_kg", e.target.value)}/>
+                  {data.weight_prediction && (
+                    <small className="summary-derived-note" title={data.weight_prediction.basis}>
+                      Predicted {Number(data.weight_prediction.base_weight_kg || 0).toFixed(3)} kg + 1 kg allowance
+                    </small>
+                  )}
+                </td>
+              </tr>
+              <tr id="sheet-summary-quantity"><td>Product Quantity</td><td><input className="sheet-cell-input" type="number" min="1" step="1" value={data.product_quantity ?? ""} onChange={(e) => setSummaryNumber("product_quantity", e.target.value)}/></td></tr>
             </tbody>
           </table>
         </div>
@@ -5328,6 +6677,190 @@ function EngineeringDetails({
         </section>
       )}
     </div>
+  );
+}
+
+function PremiumEstimatorPanel({
+  estimate,
+  busy,
+  onRefresh,
+  onApplyProcesses,
+  actualCost,
+  actualHours,
+  actualNotes,
+  onActualCostChange,
+  onActualHoursChange,
+  onActualNotesChange,
+  onSaveActual,
+  question,
+  answer,
+  onQuestionChange,
+  onAsk
+}: {
+  estimate: PremiumEstimate | null;
+  busy: boolean;
+  onRefresh: () => void;
+  onApplyProcesses: () => void;
+  actualCost: number;
+  actualHours: number;
+  actualNotes: string;
+  onActualCostChange: (value: number) => void;
+  onActualHoursChange: (value: number) => void;
+  onActualNotesChange: (value: string) => void;
+  onSaveActual: () => void;
+  question: string;
+  answer: string;
+  onQuestionChange: (value: string) => void;
+  onAsk: () => void;
+}) {
+  if (!estimate) {
+    return (
+      <section className="premium-estimator-shell">
+        <div className="premium-estimator-head">
+          <div><span>PREMIUM ESTIMATOR</span><b>{busy ? "Calculating engineering intelligence…" : "Premium estimate not loaded"}</b></div>
+          <button type="button" className="btn secondary" onClick={onRefresh} disabled={busy}>{busy ? "Calculating…" : "Generate Premium Estimate"}</button>
+        </div>
+      </section>
+    );
+  }
+
+  const confidenceValues = [estimate.confidence.engineering, estimate.confidence.classification, estimate.confidence.cost, estimate.confidence.rate_coverage];
+  const overallConfidence = confidenceValues.length ? Math.round(confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length) : 0;
+
+  return (
+    <section className="premium-estimator-shell">
+      <div className="premium-estimator-head">
+        <div>
+          <span>PREMIUM ESTIMATOR ENGINE</span>
+          <b>Routing, cost intelligence, margin control & learning</b>
+          <small>Uses extracted geometry + Rate Master + quotation history. No additional AI call is required for this panel.</small>
+        </div>
+        <div className="premium-estimator-actions">
+          <button type="button" className="btn secondary" onClick={onRefresh} disabled={busy}>{busy ? "Refreshing…" : "Refresh"}</button>
+          <button type="button" className="btn primary" onClick={onApplyProcesses}>Apply Process Costing</button>
+        </div>
+      </div>
+
+      <div className="premium-kpi-grid">
+        <article><span>Confidence</span><b>{overallConfidence}%</b><small>Engineering + classification + cost + rates</small></article>
+        <article><span>Recommended Sell</span><b>{money(estimate.margin.recommended_sell)}</b><small>{estimate.margin.gross_margin_pct.toFixed(1)}% estimated gross margin</small></article>
+        <article><span>Lead Time</span><b>{estimate.lead_time.working_days} days</b><small>Expedite planning: {estimate.lead_time.expedite_days} days</small></article>
+        <article><span>Approval</span><b>{estimate.margin.approval_role}</b><small>{estimate.margin.approval_reason}</small></article>
+      </div>
+
+      <div className="premium-two-col">
+        <div className="premium-card wide-card">
+          <div className="premium-card-title"><div><span>PROCESS ROUTE</span><b>Setup + run-time costing</b></div><small>{estimate.process_route.length} stages</small></div>
+          <div className="premium-route">
+            {estimate.process_route.map((item) => (
+              <div className="premium-route-row" key={`${item.sequence}-${item.process}`}>
+                <strong>{item.sequence}</strong>
+                <div><b>{item.process}</b><small>{item.reason}</small></div>
+                <span>{item.setup_hours.toFixed(2)}h setup</span>
+                <span>{item.run_hours_per_piece.toFixed(2)}h/pc</span>
+                <span>{money(item.machine_rate + item.labour_rate)}/hr</span>
+                <b>{money(item.total_cost)}</b>
+                <em className={item.confidence >= 85 ? "good" : "review"}>{item.confidence}%</em>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>QUANTITY BREAKS</span><b>Setup amortization</b></div></div>
+          <div className="premium-mini-table">
+            <div className="premium-mini-head"><span>Qty</span><span>Unit</span><span>Total</span></div>
+            {estimate.quantity_breaks.map((item) => <div key={item.quantity}><b>{item.quantity}</b><span>{money(item.unit_price)}</span><span>{money(item.total_price)}</span></div>)}
+          </div>
+        </div>
+      </div>
+
+      <div className="premium-three-col">
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>REQUIREMENTS</span><b>Drawing notes that affect price</b></div></div>
+          {estimate.requirements.length ? estimate.requirements.map((item, index) => (
+            <div className={`premium-alert ${item.severity}`} key={`${item.name}-${index}`}><b>{item.name}</b><span>{item.action}</span></div>
+          )) : <p className="premium-empty">No special commercial/manufacturing requirements detected.</p>}
+        </div>
+
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>DFM / RISK</span><b>Manufacturability warnings</b></div></div>
+          {estimate.dfm_warnings.length ? estimate.dfm_warnings.map((item, index) => (
+            <div className={`premium-alert ${item.severity}`} key={index}><b>{item.severity === "high" ? "High risk" : "Review"}</b><span>{item.message}</span></div>
+          )) : <p className="premium-empty">No deterministic DFM warning detected.</p>}
+        </div>
+
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>ATTENTION</span><b>Release blockers</b></div></div>
+          {estimate.attention.length ? estimate.attention.slice(0, 8).map((item, index) => <div className="premium-attention" key={index}>⚠ {item}</div>) : <p className="premium-empty">No unresolved extracted requirement.</p>}
+        </div>
+      </div>
+
+      <div className="premium-three-col">
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>SIMILAR JOBS</span><b>Reuse historical knowledge</b></div></div>
+          {estimate.similar_jobs.length ? estimate.similar_jobs.map((item) => (
+            <div className="premium-similar" key={item.id}><div><b>{item.drawing_no || item.description || "Saved quotation"}</b><small>{item.material} · {item.weight_kg ? `${item.weight_kg.toFixed(2)} kg` : "weight n/a"}</small></div><strong>{item.score}%</strong><span>{money(item.selling_price)}</span></div>
+          )) : <p className="premium-empty">No sufficiently similar saved quotation yet.</p>}
+        </div>
+
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>NESTING / SHEET</span><b>Blank utilization estimate</b></div></div>
+          {estimate.nesting.available ? <>
+            <div className="premium-stat-line"><span>Blank</span><b>{estimate.nesting.blank_width_mm.toFixed(1)} × {estimate.nesting.blank_height_mm.toFixed(1)} mm</b></div>
+            <div className="premium-stat-line"><span>Reference sheet</span><b>{estimate.nesting.standard_sheet}</b></div>
+            <div className="premium-stat-line"><span>Parts / sheet</span><b>{estimate.nesting.parts_per_sheet}</b></div>
+            <div className="premium-stat-line"><span>Utilization</span><b>{estimate.nesting.utilization_pct.toFixed(1)}%</b></div>
+            <div className="premium-progress"><i style={{ width: `${Math.min(100, estimate.nesting.utilization_pct)}%` }}/></div>
+            <small>{estimate.nesting.scrap_pct.toFixed(1)}% estimated envelope scrap before true nesting.</small>
+          </> : <p className="premium-empty">Overall blank width/height not available for nesting estimate.</p>}
+        </div>
+
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>ASSEMBLY / BUYOUT</span><b>Component intelligence</b></div></div>
+          <div className="premium-stat-line"><span>Assembly parts</span><b>{estimate.assembly.parts.length}</b></div>
+          <div className="premium-stat-line"><span>Bought-out candidates</span><b>{estimate.assembly.bought_out.length}</b></div>
+          {estimate.assembly.bought_out.slice(0, 5).map((item, index) => <div className="premium-buyout" key={index}>{String(item.part_name || item.item_no || "Standard item")} · Qty {String(item.quantity || 1)}</div>)}
+        </div>
+      </div>
+
+      <div className="premium-two-col">
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>WHAT-IF</span><b>Commercial sensitivity</b></div></div>
+          <div className="premium-whatif">
+            <div><span>Material +5%</span><b>{money(estimate.what_if.material_plus_5)}</b></div>
+            <div><span>Urgent delivery</span><b>{money(estimate.what_if.urgent_delivery)}</b></div>
+            <div><span>Markup -3%</span><b>{money(estimate.what_if.markup_minus_3)}</b></div>
+          </div>
+          <div className="premium-card-title secondary-title"><div><span>COST DRIVERS</span><b>Where the quote is going</b></div></div>
+          {estimate.cost_drivers.map((item) => <div className="premium-stat-line" key={item.name}><span>{item.name}</span><b>{money(item.amount)}</b></div>)}
+          {estimate.savings.map((item, index) => <div className="premium-saving" key={index}>↘ {item}</div>)}
+        </div>
+
+        <div className="premium-card">
+          <div className="premium-card-title"><div><span>ACTUAL vs QUOTED LEARNING</span><b>Close the estimation loop</b></div><small>{estimate.learning.samples} samples</small></div>
+          <div className="premium-learning-summary">
+            <div><span>Historical cost bias</span><b>{estimate.learning.cost_bias_pct > 0 ? "+" : ""}{estimate.learning.cost_bias_pct.toFixed(1)}%</b></div>
+            <div><span>Historical time bias</span><b>{estimate.learning.time_bias_pct > 0 ? "+" : ""}{estimate.learning.time_bias_pct.toFixed(1)}%</b></div>
+          </div>
+          <div className="premium-actual-form">
+            <label><span>Actual job cost</span><input type="number" min="0" value={actualCost || ""} onChange={(e) => onActualCostChange(Number(e.target.value))}/></label>
+            <label><span>Actual total hours</span><input type="number" min="0" step=".1" value={actualHours || ""} onChange={(e) => onActualHoursChange(Number(e.target.value))}/></label>
+            <label className="wide"><span>Learning note</span><input value={actualNotes} onChange={(e) => onActualNotesChange(e.target.value)} placeholder="What differed from the quotation?"/></label>
+            <button type="button" className="btn secondary" onClick={onSaveActual} disabled={actualCost <= 0 && actualHours <= 0}>Save Actual Result</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="premium-card estimator-assistant-card">
+        <div className="premium-card-title"><div><span>ESTIMATOR ASSISTANT</span><b>Ask about cost, risk, savings, lead time or similar jobs</b></div></div>
+        <div className="premium-assistant-row">
+          <input value={question} onChange={(e) => onQuestionChange(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") onAsk(); }} placeholder="Example: Why is this quote expensive?"/>
+          <button type="button" className="btn primary" onClick={onAsk}>Ask</button>
+        </div>
+        {answer && <div className="premium-assistant-answer">{answer}</div>}
+      </div>
+    </section>
   );
 }
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 from app.extraction.pipeline import analyze_pdf_with_ai
 from app.extraction.vision import analyze_engineering_media
 from app.engineering_intelligence import enrich_engineering_intelligence, build_cost_trace
+from app.premium_engine import build_premium_estimate
 from app.db import (
     append_extraction_record,
     append_review_record,
@@ -10,6 +11,7 @@ from app.db import (
     db_ping,
     init_database,
     latest_review_by_hash,
+    latest_extraction_by_hash,
     load_store,
     save_store,
     training_samples_for_export,
@@ -60,15 +62,16 @@ def now() -> str:
 
 
 _HOT_CACHE: dict[str, object] = {}
+_HOT_CACHE_NAMES = {"rates", "settings", "quotations", "actuals"}
 
 
 def load(name: str, default):
-    if name in {"rates", "settings"} and name in _HOT_CACHE:
+    if name in _HOT_CACHE_NAMES and name in _HOT_CACHE:
         return _HOT_CACHE[name]
 
     value = load_store(name, default)
 
-    if name in {"rates", "settings"}:
+    if name in _HOT_CACHE_NAMES:
         _HOT_CACHE[name] = value
 
     return value
@@ -77,7 +80,7 @@ def load(name: str, default):
 def save(name: str, data) -> None:
     save_store(name, data)
 
-    if name in {"rates", "settings"}:
+    if name in _HOT_CACHE_NAMES:
         _HOT_CACHE[name] = data
 
 def defaults_settings():
@@ -280,6 +283,9 @@ def ensure_data():
         ("reviews", []),
         ("quotations", []),
         ("revisions", []),
+        ("actuals", []),
+        ("approvals", []),
+        ("audit", []),
         (
             "dataset_meta",
             {
@@ -297,7 +303,9 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-app = FastAPI(title="AI Manufacturing Quotation API", version="0.11.0")
+EXTRACTION_PIPELINE_VERSION = "source-truth-v5-20261007"
+
+app = FastAPI(title="AI Manufacturing Quotation API", version="0.14.0-premium")
 
 _allowed_origins = [
     "http://localhost:3000",
@@ -416,6 +424,29 @@ class QuoteReq(BaseModel):
     summary: Summary
     rows: list[Row] = Field(default_factory=list)
     status: str = "Draft"
+
+
+class PremiumEstimateReq(BaseModel):
+    drawing: Drawing
+    rows: list[Row] = Field(default_factory=list)
+    ai_raw: dict = Field(default_factory=dict)
+
+
+class ActualCostReq(BaseModel):
+    drawing: Drawing
+    quoted_cost: float = Field(default=0, ge=0)
+    actual_cost: float = Field(default=0, ge=0)
+    quoted_hours: float = Field(default=0, ge=0)
+    actual_hours: float = Field(default=0, ge=0)
+    notes: str = ""
+
+
+class ApprovalReq(BaseModel):
+    quote_id: str = ""
+    drawing_no: str = ""
+    action: Literal["approve", "reject", "revision"]
+    role: str = "Estimator"
+    note: str = ""
 
 
 class QuoteRenameReq(BaseModel):
@@ -1251,6 +1282,84 @@ def analyze_dxf_geometry(content: bytes, filename: str):
         except Exception:pass
 
 
+def _extract_printed_weight_kg(text: str) -> float:
+    """Extract explicit title-block WEIGHT/MASS/WT values only; never infer mass."""
+    source = re.sub(r"[\t ]+", " ", text or "")
+    label = r"(?:NET\s+WEIGHT|UNIT\s+WEIGHT|WEIGHT|MASS|WT\.?)"
+    unit = r"(?:KG|KGS|KILOGRAMS?|G|GRAMS?|LB|LBS|POUNDS?)"
+    number = r"(?:\d+(?:[.,]\d+)?)"
+
+    # Covers common title-block layouts, including:
+    # WEIGHT: 7.67 kg, WEIGHT (kg) 7.67, WT KG 7.67, 7.67 KG WEIGHT.
+    patterns = [
+        rf"\b{label}\s*(?:\(\s*(?P<unit1>{unit})\s*\))?\s*[:=\-]?\s*(?P<value1>{number})\s*(?P<unit2>{unit})?\b",
+        rf"\b{label}\s*[:=\-]?\s*(?P<unit3>{unit})\s*(?P<value2>{number})\b",
+        rf"\b(?P<value3>{number})\s*(?P<unit4>{unit})\s*{label}\b",
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, source, re.I)
+        if not match:
+            continue
+        groups = match.groupdict()
+        raw_value = groups.get("value1") or groups.get("value2") or groups.get("value3")
+        raw_unit = groups.get("unit1") or groups.get("unit2") or groups.get("unit3") or groups.get("unit4") or "KG"
+        try:
+            value = float(str(raw_value).replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        normalized_unit = str(raw_unit).upper().rstrip("S")
+        if normalized_unit in {"G", "GRAM"}:
+            value /= 1000.0
+        elif normalized_unit in {"LB", "POUND"}:
+            value *= 0.45359237
+        if 0 < value < 1_000_000:
+            return value
+    return 0.0
+
+def _ai_has_explicit_weight_evidence(ai_raw: dict | None) -> bool:
+    """Only trust AI weight as printed when the model supplied explicit visual evidence."""
+    if not isinstance(ai_raw, dict):
+        return False
+    for row in ai_raw.get("evidence") or []:
+        if not isinstance(row, dict):
+            continue
+        field = str(row.get("field") or "").lower()
+        basis = str(row.get("basis") or "").lower()
+        value = str(row.get("value") or "").lower()
+        text = f"{field} {basis} {value}"
+        if any(token in text for token in ("weight", "mass", "unit weight", "net weight", " wt ")):
+            try:
+                confidence = int(row.get("confidence") or 0)
+            except Exception:
+                confidence = 0
+            if confidence >= 60 and any(unit in text for unit in ("kg", "kgs", "gram", " lb", "lbs", "pound")):
+                return True
+    return False
+
+
+def _mark_drawing_stated_weight(ai_raw: dict | None, *, require_evidence: bool = False) -> dict | None:
+    """Tag a true printed drawing weight; never promote a geometry/model estimate."""
+    if not isinstance(ai_raw, dict):
+        return ai_raw
+    if require_evidence and not _ai_has_explicit_weight_evidence(ai_raw):
+        # The model may have produced a numeric weight without proving it was
+        # printed. Do not let that number outrank deterministic geometry later.
+        ai_raw.pop("drawing_stated_weight_kg", None)
+        ai_raw.pop("weight_source", None)
+        ai_raw["weight_kg"] = None
+        return ai_raw
+    try:
+        value = float(ai_raw.get("drawing_stated_weight_kg") or ai_raw.get("weight_kg") or 0)
+    except (TypeError, ValueError):
+        value = 0.0
+    if value > 0:
+        ai_raw["drawing_stated_weight_kg"] = value
+        ai_raw["weight_kg"] = value
+        ai_raw["weight_source"] = "drawing_stated"
+    return ai_raw
+
+
 def extract_drawing_fields(content: bytes, filename: str):
     suffix = Path(filename or "").suffix.lower()
     warnings: list[str] = []
@@ -1305,14 +1414,9 @@ def extract_drawing_fields(content: bytes, filename: str):
     )
     thickness = parse_float_match(thickness_match)
 
-    weight_match = first_match(
-        [
-            r"\bWEIGHT\s*[:=]?\s*(\d+(?:[.,]\d+)?)\s*KG\b",
-            r"\b(\d+(?:[.,]\d+)?)\s*KG\s*(?:WEIGHT)?\b",
-        ],
-        hay,
-    )
-    weight = parse_float_match(weight_match)
+    # Explicit drawing/title-block weight has priority over every geometric estimate.
+    # Accept common engineering labels and normalize g/lb to kg.
+    weight = _extract_printed_weight_kg(hay)
 
     qty_match = first_match(
         [
@@ -3792,8 +3896,19 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
     file_hash = sha256(content).hexdigest()
     extraction_id = "EXT-" + uuid.uuid4().hex[:10].upper()
 
-    # Reuse corrected data ONLY for the exact same file hash.
+    # Exact-hash reuse is the fastest path. Engineer-reviewed corrections always
+    # win; otherwise reuse the latest successful extraction instead of paying for
+    # a second Vision AI call when the same drawing is analyzed again/resumed.
     memory = None if force_ai else reviewed_memory(file_hash)
+    # Reviews created by older extraction pipelines may contain frontend-derived
+    # fallback values (for example 100 mm thickness / predicted weight).  They
+    # must not outrank newly visible title-block source data.  Future reviews
+    # carry the pipeline version and can still be reused normally.
+    if memory and memory.get("pipeline_version") != EXTRACTION_PIPELINE_VERSION:
+        memory = None
+    extraction_memory = None if (force_ai or memory) else latest_extraction_by_hash(file_hash)
+    if extraction_memory and extraction_memory.get("pipeline_version") != EXTRACTION_PIPELINE_VERSION:
+        extraction_memory = None
 
     ai_raw = None
     text_preview = ""
@@ -3812,13 +3927,44 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
             "Exact previously reviewed drawing found. Saved engineer corrections were reused."
         ]
 
+    elif extraction_memory and extraction_memory.get("drawing") and extraction_memory.get("rows"):
+        drawing = Drawing(**extraction_memory["drawing"])
+        rows = [Row(**x) for x in extraction_memory["rows"]]
+        ai_raw = extraction_memory.get("ai_raw") or {}
+        ai_raw = enrich_engineering_intelligence(
+            ai_raw,
+            filename=filename,
+            source_format=extension.lstrip(".").upper(),
+            rows=rows,
+        )
+        source = "extraction_cache"
+        warnings = ["Exact drawing hash found. Previous extraction reused for faster analysis."]
+
     elif extension == ".pdf":
         try:
             # PDF -> 300 DPI page image -> Vision AI -> structured JSON
-            ai_raw = analyze_pdf_with_ai(content)
+            ai_raw = _mark_drawing_stated_weight(analyze_pdf_with_ai(content), require_evidence=True)
 
             if not isinstance(ai_raw, dict):
                 raise ValueError("Vision AI did not return a JSON object.")
+
+            # Text-layer title blocks are deterministic and faster/more reliable
+            # than asking Vision to reinterpret an already printed mass. If an
+            # explicit WEIGHT/WT/MASS is present, it is authoritative.
+            try:
+                pdf_text = extract_pdf_text(content)
+                printed_weight_kg = _extract_printed_weight_kg(pdf_text)
+            except Exception:
+                printed_weight_kg = 0.0
+            if printed_weight_kg > 0:
+                ai_raw["drawing_stated_weight_kg"] = printed_weight_kg
+                ai_raw["weight_kg"] = printed_weight_kg
+                ai_raw["weight_source"] = "drawing_stated"
+                ai_raw.setdefault("notes", [])
+                if isinstance(ai_raw["notes"], list):
+                    ai_raw["notes"].append(
+                        f"Authoritative drawing/title-block weight: {printed_weight_kg:g} kg"
+                    )
 
             ai_raw = enrich_engineering_intelligence(
                 ai_raw, filename=filename, source_format="PDF"
@@ -3909,7 +4055,7 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
 
     elif extension in {".png", ".jpg", ".jpeg", ".webp"}:
         mime_map={".png":"image/png",".jpg":"image/jpeg",".jpeg":"image/jpeg",".webp":"image/webp"}
-        ai_raw=analyze_engineering_media(content,mime_map[extension])
+        ai_raw=_mark_drawing_stated_weight(analyze_engineering_media(content,mime_map[extension]), require_evidence=True)
         ai_raw=enrich_engineering_intelligence(ai_raw,filename=filename,source_format=extension.lstrip(".").upper())
         drawing=ai_result_to_drawing(ai_raw); rows=ai_result_to_rows(ai_raw,drawing)
         ai_raw=enrich_engineering_intelligence(ai_raw,filename=filename,source_format=extension.lstrip(".").upper(),rows=rows); source="vision_ai_image"
@@ -3935,6 +4081,8 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
                 "material": {"family": drawing.material, "grade": "", "specification": ""},
                 "thickness_mm": drawing.thickness_mm or None,
                 "weight_kg": drawing.weight_kg or None,
+                "drawing_stated_weight_kg": drawing.weight_kg or None,
+                "weight_source": "drawing_stated" if drawing.weight_kg > 0 else "",
                 "product_quantity": drawing.quantity,
                 "notes": drawing.notes,
                 "manufacturing_processes": [],
@@ -3955,6 +4103,7 @@ async def analyze(file: UploadFile = File(...), force_ai: bool = True):
                 "filename": filename,
                 "file_hash": file_hash,
                 "source": source,
+                "pipeline_version": EXTRACTION_PIPELINE_VERSION,
                 "warnings": warnings,
                 "drawing": drawing.model_dump(),
                 "rows": [row.model_dump() for row in rows],
@@ -4004,6 +4153,7 @@ def review(value: ReviewReq):
         "created_at": now(),
         "extraction_id": value.extraction_id,
         "file_hash": value.file_hash,
+        "pipeline_version": EXTRACTION_PIPELINE_VERSION,
         "drawing": value.drawing.model_dump(),
         "rows": [r.model_dump() for r in value.rows],
         "ai_raw": enrich_engineering_intelligence(
@@ -4315,6 +4465,103 @@ def compare_current_revision(value: RevisionReq):
         "current_revision": value.drawing.revision,
         "changes": changes,
         "cost_delta": round(cost_delta, 2),
+    }
+
+
+@app.post("/api/premium/estimate")
+def premium_estimate(value: PremiumEstimateReq):
+    rates = load("rates", [])
+    settings = load("settings", defaults_settings())
+    quotations = load("quotations", [])
+    actuals = load("actuals", [])
+    return build_premium_estimate(
+        drawing=value.drawing.model_dump(),
+        rows=[row.model_dump() for row in value.rows],
+        ai_raw=value.ai_raw or {},
+        rates=rates if isinstance(rates, list) else [],
+        settings=settings if isinstance(settings, dict) else defaults_settings(),
+        quotations=quotations if isinstance(quotations, list) else [],
+        actuals=actuals if isinstance(actuals, list) else [],
+    )
+
+
+@app.post("/api/premium/actuals")
+def save_actual_cost(value: ActualCostReq):
+    rows = load("actuals", [])
+    if not isinstance(rows, list):
+        rows = []
+    item = {
+        "id": "ACT-" + uuid.uuid4().hex[:10].upper(),
+        "created_at": now(),
+        "drawing": value.drawing.model_dump(),
+        "quoted_cost": value.quoted_cost,
+        "actual_cost": value.actual_cost,
+        "quoted_hours": value.quoted_hours,
+        "actual_hours": value.actual_hours,
+        "notes": value.notes,
+    }
+    rows.insert(0, item)
+    save("actuals", rows[:2000])
+    return item
+
+
+@app.get("/api/premium/actuals")
+def list_actual_costs():
+    rows = load("actuals", [])
+    return rows if isinstance(rows, list) else []
+
+
+@app.post("/api/premium/approvals")
+def save_approval(value: ApprovalReq):
+    rows = load("approvals", [])
+    if not isinstance(rows, list):
+        rows = []
+    item = {
+        "id": "APR-" + uuid.uuid4().hex[:10].upper(),
+        "created_at": now(),
+        **value.model_dump(),
+    }
+    rows.insert(0, item)
+    save("approvals", rows[:2000])
+    audit = load("audit", [])
+    if not isinstance(audit, list):
+        audit = []
+    audit.insert(0, {
+        "id": "AUD-" + uuid.uuid4().hex[:10].upper(),
+        "created_at": now(),
+        "event": f"Quotation {value.action}",
+        "drawing_no": value.drawing_no,
+        "role": value.role,
+        "note": value.note,
+    })
+    save("audit", audit[:5000])
+    return item
+
+
+@app.get("/api/premium/audit")
+def list_audit():
+    rows = load("audit", [])
+    return rows if isinstance(rows, list) else []
+
+
+@app.get("/api/premium/kpis")
+def premium_kpis():
+    quotes = load("quotations", [])
+    actuals = load("actuals", [])
+    approvals = load("approvals", [])
+    quotes = quotes if isinstance(quotes, list) else []
+    actuals = actuals if isinstance(actuals, list) else []
+    approvals = approvals if isinstance(approvals, list) else []
+    total = len(quotes)
+    won = sum(1 for q in quotes if str(q.get("status", "")).lower() in {"won", "accepted", "approved"})
+    total_value = sum(float((q.get("summary") or {}).get("selling_price") or q.get("selling_price") or 0) for q in quotes)
+    return {
+        "quotes": total,
+        "total_value": round(total_value, 2),
+        "won": won,
+        "win_rate": round((won / total * 100) if total else 0, 1),
+        "actual_samples": len(actuals),
+        "approval_events": len(approvals),
     }
 
 

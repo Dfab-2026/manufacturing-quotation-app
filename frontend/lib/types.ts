@@ -120,6 +120,12 @@ export type AIExtraction = {
   };
   thickness_mm?: number | null;
   weight_kg?: number | null;
+  weight_prediction?: {
+    base_weight_kg: number;
+    allowance_kg: number;
+    total_weight_kg: number;
+    basis: string;
+  };
   product_quantity?: number;
   dimensions?: EngineeringFeature[];
   holes?: EngineeringFeature[];
@@ -327,4 +333,38 @@ export type BomReport = {
   status: ArtifactStatus | string;
   items: BomItem[];
   notes: string[];
+};
+
+export type PremiumProcessEstimate = {
+  sequence: number;
+  process: string;
+  setup_hours: number;
+  run_hours_per_piece: number;
+  machine_rate: number;
+  labour_rate: number;
+  setup_cost: number;
+  run_cost_per_piece: number;
+  total_cost: number;
+  lead_days: number;
+  rate_source: string;
+  confidence: number;
+  reason: string;
+};
+
+export type PremiumEstimate = {
+  process_route: PremiumProcessEstimate[];
+  requirements: Array<{ name: string; severity: string; action: string }>;
+  dfm_warnings: Array<{ severity: string; message: string }>;
+  confidence: { engineering: number; classification: number; cost: number; rate_coverage: number };
+  attention: string[];
+  similar_jobs: Array<{ id: string; score: number; drawing_no: string; description: string; material: string; weight_kg: number; selling_price: number; status: string; created_at: string }>;
+  quantity_breaks: Array<{ quantity: number; unit_price: number; total_price: number; setup_cost: number }>;
+  lead_time: { working_days: number; basis: string; expedite_days: number };
+  margin: { estimated_direct_cost: number; recommended_sell: number; gross_margin_pct: number; target_markup_pct: number; approval_role: string; approval_reason: string };
+  nesting: { available: boolean; blank_width_mm: number; blank_height_mm: number; standard_sheet: string; parts_per_sheet: number; utilization_pct: number; scrap_pct: number };
+  assembly: { parts: Array<Record<string, unknown>>; bought_out: Array<Record<string, unknown>> };
+  learning: { samples: number; cost_bias_pct: number; time_bias_pct: number };
+  cost_drivers: Array<{ name: string; amount: number }>;
+  savings: string[];
+  what_if: { material_plus_5: number; urgent_delivery: number; markup_minus_3: number };
 };

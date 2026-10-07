@@ -7,8 +7,12 @@ from pathlib import Path
 from typing import Optional, Literal
 
 from dotenv import load_dotenv
-from google import genai
-from google.genai import types
+try:
+    from google import genai
+    from google.genai import types
+except Exception:
+    genai = None
+    types = None
 from pydantic import BaseModel, Field
 
 
@@ -16,12 +20,16 @@ load_dotenv()
 
 API_KEY = os.getenv("GEMINI_API_KEY")
 
-if not API_KEY:
-    raise RuntimeError(
-        "GEMINI_API_KEY is missing. Add GEMINI_API_KEY=your_key to backend/.env"
-    )
+client = genai.Client(api_key=API_KEY) if (genai is not None and API_KEY) else None
 
-client = genai.Client(api_key=API_KEY)
+def _require_ai_client():
+    if genai is None or types is None:
+        raise RuntimeError("google-genai is not installed correctly. Run: pip install -U google-genai")
+    if not API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is missing. Add GEMINI_API_KEY=your_key to backend/.env")
+    if client is None:
+        raise RuntimeError("Gemini client is unavailable.")
+    return client
 
 
 # -----------------------------
@@ -37,6 +45,9 @@ class Material(BaseModel):
 class Dimension(BaseModel):
     label: str = ""
     value_mm: Optional[float] = None
+    original_value: Optional[float] = None
+    original_unit: str = "mm"
+    callout: str = ""
     tolerance: str = ""
     quantity: int = 1
     confidence: int = Field(default=0, ge=0, le=100)
@@ -129,6 +140,59 @@ class Confidence(BaseModel):
     classification: int = Field(default=0, ge=0, le=100)
 
 
+
+
+class PrintedWeightDetection(BaseModel):
+    found: bool = False
+    value: Optional[float] = None
+    unit: str = ""
+    weight_kg: Optional[float] = None
+    label: str = ""
+    evidence: str = ""
+    confidence: int = Field(default=0, ge=0, le=100)
+
+
+def detect_printed_weight_from_image(image_bytes: bytes) -> PrintedWeightDetection:
+    """
+    Focused second-pass reader for title blocks.
+
+    This intentionally does one job only: read a visibly printed drawing weight.
+    It must never calculate mass from dimensions or infer a likely value.
+    """
+    if not image_bytes:
+        return PrintedWeightDetection()
+
+    prompt = """You are reading ONLY the title block / notes region of an engineering drawing.
+
+Your single task is to find a visibly PRINTED product mass/weight.
+Look carefully for labels such as WEIGHT, WT, MASS, NET WEIGHT, UNIT WEIGHT, APPROX. WEIGHT, or similar title-block wording.
+
+Rules:
+- Do NOT calculate or estimate weight from geometry, material, dimensions, density, or part type.
+- Do NOT use unrelated numeric values such as drawing number, revision, dimensions, pressure rating, DN size, dates, quantities, or item numbers.
+- Return found=true only when you can see a weight/mass label and its numeric value in the image.
+- Copy the visible number exactly into value.
+- Copy the visible unit into unit. Supported units include kg, g, lb/lbs, and tonne/t.
+- Convert only the unit into weight_kg: 1000 g = 1 kg; 1 lb = 0.45359237 kg; 1 tonne = 1000 kg.
+- Put the exact visible label/value wording into evidence, for example "Weight: 3.53 kg".
+- If the value or unit is unclear, return found=false rather than guessing.
+
+The image may be a very tight crop containing only one title-block row. Read the label and the adjacent value cell carefully, including faint decimal digits.\nRead small/faint text carefully."""
+
+    response = _require_ai_client().models.generate_content(
+        model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+        contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")],
+        config=types.GenerateContentConfig(
+            response_mime_type="application/json",
+            response_schema=PrintedWeightDetection,
+            temperature=0,
+        ),
+    )
+    if not response.text:
+        return PrintedWeightDetection()
+    return PrintedWeightDetection.model_validate_json(response.text)
+
+
 class EngineeringDrawingExtraction(BaseModel):
     drawing_no: str = ""
     revision: str = ""
@@ -192,10 +256,10 @@ Also identify part_form such as Plate, Sheet, Block / Prismatic, Shaft / Cylindr
 
 For classification, provide classification_confidence 0-100 and evidence rows. Each evidence row must name the field/value, state the exact drawing basis/callout/geometry signal, page when known, and confidence.
 
-Extract drawing number, revision, description, drawing_type, assembly_parts, material, thickness, dimensions, holes, threads, chamfers, bends, studs, welds, surface_finish, manufacturing_processes, notes, confidence and missing_or_uncertain.
+Extract drawing number, revision, description, drawing_type, assembly_parts, material, thickness, dimensions, holes, threads, chamfers, bends, studs, welds, surface_finish, manufacturing_processes, notes, confidence and missing_or_uncertain. If the drawing prints WEIGHT, WT, MASS, NET WEIGHT or UNIT WEIGHT, treat that printed value as authoritative and return it in weight_kg; do not replace a printed weight with a geometry estimate. Normalize explicit weight units to kilograms (1 lb = 0.45359237 kg; 1000 g = 1 kg). If no explicit weight/mass is printed, leave weight_kg empty; the application will calculate a fallback from dimensions, thickness and material density. For every dimension, normalize the engineering value to millimetres in value_mm. If the source uses inches/feet/cm/metres, also return original_value, original_unit and the visible callout so the conversion is auditable. Use exactly 1 in = 25.4 mm, 1 ft = 304.8 mm, 1 cm = 10 mm, 1 m = 1000 mm. For plate/sheet/bracket/cover/panel parts, thickness is a required engineering output whenever it can be derived from a THK/T callout, L x W x T stock size, section/detail view, BOM row, or clearly uniform-thickness geometry. If inferred, return the best engineering estimate with reduced confidence and explain the basis in evidence/notes. Also extract complete geometry and quantity so the application can calculate weight from material density.
 
-For assemblies/weldments keep every component separate in BOM/item order. Never mix dimensions between components. Never invent values, material, dimensions, rates, labour hours, machine time or costs. Mark uncertain values for review."""
-    response = client.models.generate_content(
+For assemblies/weldments keep every component separate in BOM/item order. Never mix dimensions between components. Never invent prices, rates, labour hours, machine time or costs. Engineering inferences are allowed only when directly supported by drawing geometry/callouts and must be marked with lower confidence and evidence. Mark unresolved values for review."""
+    response = _require_ai_client().models.generate_content(
         model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
         contents=[prompt, types.Part.from_bytes(data=content_bytes, mime_type=mime_type)],
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=EngineeringDrawingExtraction, temperature=0.1),
@@ -209,6 +273,7 @@ def analyze_engineering_drawing(
     pdf_bytes: bytes,
     extracted_pdf_text: str = "",
     title_crop_bytes: bytes | None = None,
+    weight_crop_bytes: bytes | None = None,
     layout_context: str = "",
 ) -> dict:
     """
@@ -226,7 +291,7 @@ You are a senior manufacturing engineer.
 Analyze the attached engineering drawing with very high care.
 
 The primary attachment is the original engineering PDF.
-A second attachment may be an enlarged title-block crop.
+A second attachment is an enlarged title-block crop. Treat that crop as the preferred source for title-block values such as drawing number, revision, material and especially printed WEIGHT/MASS.
 
 Extract all useful manufacturing information visible in the drawing.
 
@@ -246,9 +311,16 @@ Important:
 - Example: Plate 1 must be one row with its own L/W/T; Plate 2 must be the next independent row; Plate 3 another row. Never mix dimensions from different components.
 - If a component dimension is not visible/reliable, keep it null and lower confidence instead of inventing it.
 - Extract material FAMILY, GRADE and SPECIFICATION separately.
-- Extract thickness only when the part is sheet/plate/strip and thickness is actually shown.
-- For machined solid parts, thickness may be null.
-- Extract weight only if visible/reliable. Do not estimate it.
+- For sheet/plate/strip/bracket/cover/panel parts, thickness is a REQUIRED engineering output whenever it can be derived. Determine it with this priority: explicit THK/T/thickness callout; plate/stock size such as L x W x T; section/detail view; BOM/component thickness; then the smallest physical axis when the drawing clearly represents a uniform-thickness part. If inferred, return the best engineering estimate with lower confidence and record the exact basis in evidence/notes. Do not leave thickness null merely because the word THK is absent. Do not make arbitrary standard-gauge assumptions.
+- For assemblies/weldments, populate thickness_mm independently for every plate/sheet component when its own geometry/callout supports it; never copy one component thickness to another unless the drawing explicitly indicates they are the same.
+- For machined solid parts, thickness may be null unless a meaningful stock/section thickness can be inferred.
+- Never invent a thickness merely to make costing work. If no reliable thickness is visible or inferable, return thickness_mm=null. The application may use an internal temporary costing fallback, but that fallback must never be presented as a drawing-extracted thickness.
+- WIDTH and HEIGHT are REQUIRED weight-basis outputs whenever two overall orthogonal dimensions are visible. Prefer dimensions explicitly labelled WIDTH/HEIGHT; otherwise use the two overall envelope dimensions shown by the principal views and record the basis in evidence. Do not confuse hole diameters, radii, chamfers, pitch, thread sizes or local feature dimensions with the product width/height.
+- When a drawing shows an overall size as W x H, L x W, SIZE A x B, plate/blank size, or two clear overall dimensions on orthogonal views, return both values in dimensions with meaningful labels even if the title block does not name them.
+- Extract weight ONLY when a value is visibly printed beside a title-block/notes label such as WEIGHT, WT, MASS, NET WEIGHT or UNIT WEIGHT. A printed drawing weight is authoritative: copy the exact visible number and unit, convert only the unit to kg, return it in weight_kg, and add an evidence row whose field is Weight and whose basis quotes the visible label/value. Do NOT calculate, estimate or infer weight inside this model. If no explicit printed weight is visible, return weight_kg=null. Geometry calculation is handled later by the application.
+- Normalize ALL linear measurements to millimetres before returning them. Imperial drawings are valid inputs: convert inch/in/" using 25.4 mm per inch and foot/ft/' using 304.8 mm per foot. Also convert cm using 10 mm/cm and metres using 1000 mm/m. For each dimension preserve original_value, original_unit and the visible callout while value_mm contains the converted millimetre value. Fractions such as 1/2", 3/4", 1-1/4" and decimal inches must be converted accurately.
+- If weight is not printed, prioritize extracting the complete geometry needed for deterministic mass calculation: material, quantity, overall length/width/height, diameter/OD/ID, wall thickness and component sizes. For plate/bracket/panel/cover-like products the application will deterministically fall back to WIDTH × HEIGHT × normalized thickness × density when a more exact volume is unavailable, and then add its configured allowance.
+- Product quantity is REQUIRED when visible in the title block, BOM, item balloon, note or quantity callout.
 - Capture overall dimensions and important feature dimensions.
 - Capture hole diameter, quantity, THRU/slot/counterbore/countersink notes.
 - Capture metric threads such as M16-6H THRU.
@@ -303,7 +375,7 @@ Important:
 
     for attempt in range(1, 3):
         try:
-            response = client.models.generate_content(
+            response = _require_ai_client().models.generate_content(
                 model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
                 contents=contents,
                 config=types.GenerateContentConfig(
@@ -320,7 +392,51 @@ Important:
                 response.text
             )
 
-            return parsed.model_dump()
+            result = parsed.model_dump()
+
+            # Weight is a first-class engineering field. If the main extraction
+            # did not return a proven printed value, run one focused title-block
+            # pass instead of allowing a geometry estimate to masquerade as a
+            # drawing value. This extra call happens only for missing/unproven
+            # weight and is deliberately narrow for speed and reliability.
+            weight_evidence = [
+                row for row in (result.get("evidence") or [])
+                if isinstance(row, dict)
+                and any(token in str(row.get("field") or "").lower() for token in ("weight", "mass", "wt"))
+                and int(row.get("confidence") or 0) >= 60
+            ]
+            has_proven_weight = bool(result.get("weight_kg")) and bool(weight_evidence)
+
+            focused_weight_image = weight_crop_bytes or title_crop_bytes
+            if not has_proven_weight and focused_weight_image:
+                try:
+                    focused = detect_printed_weight_from_image(focused_weight_image)
+                    if focused.found and focused.weight_kg and focused.weight_kg > 0 and focused.confidence >= 50:
+                        result["weight_kg"] = float(focused.weight_kg)
+                        result["drawing_stated_weight_kg"] = float(focused.weight_kg)
+                        result["weight_source"] = "drawing_stated"
+                        result.setdefault("evidence", []).append({
+                            "field": "Weight",
+                            "value": f"{focused.weight_kg:g} kg",
+                            "basis": focused.evidence or f"{focused.label}: {focused.value} {focused.unit}",
+                            "page": 1,
+                            "confidence": int(focused.confidence),
+                        })
+                        confidence = result.setdefault("confidence", {})
+                        if isinstance(confidence, dict):
+                            confidence["weight"] = max(int(confidence.get("weight") or 0), int(focused.confidence))
+                        result.setdefault("notes", []).append(
+                            f"Focused title-block weight detection: {focused.weight_kg:g} kg"
+                        )
+                except Exception as weight_exc:
+                    # Never fail the full drawing extraction merely because the
+                    # focused weight reader could not complete. The application
+                    # can still use deterministic geometry fallback later.
+                    result.setdefault("missing_or_uncertain", []).append(
+                        f"Printed weight requires review ({weight_exc})"
+                    )
+
+            return result
 
         except Exception as exc:
             last_error = exc
