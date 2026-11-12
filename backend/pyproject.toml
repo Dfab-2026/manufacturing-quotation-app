@@ -13,8 +13,14 @@ dependencies = [
   "alembic",
   "pypdf",
   "pymupdf",
-  "ezdxf>=1.4,<2",
   "pillow",
   "openpyxl",
   "reportlab",
+  "ezdxf>=1.4,<2",
+  "numpy>=1.26,<3",
+  "rapidocr>=3.10,<4",
+  "onnxruntime>=1.18,<2",
 ]
+
+[tool.vercel]
+entrypoint = "api.index:app"

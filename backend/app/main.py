@@ -3937,14 +3937,30 @@ def root():
 
 @app.get("/api/health")
 def health():
+    import importlib.util
+
     connected = db_ping()
+    rapidocr_installed = importlib.util.find_spec("rapidocr") is not None
+    onnxruntime_installed = importlib.util.find_spec("onnxruntime") is not None
+    pymupdf_installed = importlib.util.find_spec("pymupdf") is not None
+    pypdf_installed = importlib.util.find_spec("pypdf") is not None
+    ezdxf_installed = importlib.util.find_spec("ezdxf") is not None
+    ocr_ready = rapidocr_installed and onnxruntime_installed
+    extraction_ready = all((pymupdf_installed, pypdf_installed, ezdxf_installed, ocr_ready))
 
     return {
-        "status": "ok" if connected else "degraded",
+        "status": "ok" if extraction_ready else "degraded",
         "version": "0.15.0",
         "database": "connected" if connected else "unavailable",
         "analysis": "fastapi_local_free",
-        "local_ocr": "rapidocr + onnxruntime",
+        "local_ocr": "ready" if ocr_ready else "missing_dependency",
+        "dependencies": {
+            "pymupdf": pymupdf_installed,
+            "pypdf": pypdf_installed,
+            "ezdxf": ezdxf_installed,
+            "rapidocr": rapidocr_installed,
+            "onnxruntime": onnxruntime_installed,
+        },
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
     }
 
