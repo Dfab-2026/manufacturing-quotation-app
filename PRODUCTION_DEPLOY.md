@@ -1,40 +1,54 @@
-# Production deployment
+# Production deployment — slim Vercel backend
 
-## Backend Vercel project
+This build is intentionally split into two dependency profiles.
 
-- Root Directory: `backend`
-- Preset: FastAPI
-- Python: 3.12
-- `pyproject.toml` and `requirements.txt` contain the same runtime dependencies, including RapidOCR and ONNX Runtime.
-- `backend/vercel.json` sets the FastAPI function duration to 300 seconds.
+## Vercel production
 
-Required environment variables:
+Vercel installs `backend/pyproject.toml`. It contains only the runtime packages
+needed for FastAPI, PDF/DXF parsing, database access, Excel/PDF export and the
+local deterministic engineering parser.
 
-```env
-DATABASE_URL=postgresql+psycopg://postgres.PROJECT_REF:PASSWORD@POOLER_HOST:6543/postgres?sslmode=require
-FRONTEND_ORIGIN=https://YOUR-FRONTEND.vercel.app
-MAX_UPLOAD_MB=100
-DB_POOL_SIZE=1
-DB_MAX_OVERFLOW=0
-```
+RapidOCR, ONNX Runtime and NumPy are intentionally excluded from the Vercel
+bundle because they pushed the previous function above the 500 MB standard
+Python bundle limit.
 
-Verify after deploy:
+Production extraction order:
+1. PyPDF + PyMuPDF + deterministic engineering rules.
+2. DXF geometry parser for DXF.
+3. If mandatory fields/features are incomplete and `GEMINI_API_KEY` is set,
+   FastAPI uses the server-side Gemini fallback.
+4. Existing geometry/material weight calculations and Rate Master logic.
 
-- `/` returns service status
-- `/api/health` reports `rapidocr: true` and `onnxruntime: true`
-- `/docs` opens FastAPI docs
+Recommended backend Vercel environment variables:
 
-## Frontend Vercel project
+- `DATABASE_URL`
+- `FRONTEND_ORIGIN`
+- `GEMINI_API_KEY` — recommended for scanned/image-only drawings
+- `GEMINI_MODEL=gemini-3.5-flash-lite`
+- `MAX_UPLOAD_MB=100`
+- `DB_POOL_SIZE=1`
+- `DB_MAX_OVERFLOW=0`
 
-- Root Directory: `frontend`
-- Preset: Next.js
+After deployment test:
 
-Environment variables:
+- `/api/health`
+- `/api/analyze`
 
-```env
-NEXT_PUBLIC_API_BASE_URL=/backend-api
-FASTAPI_INTERNAL_URL=https://YOUR-BACKEND.vercel.app
-NEXT_PUBLIC_FASTAPI_URL=https://YOUR-BACKEND.vercel.app
-```
+`/api/health` should report the core PDF/DXF extraction dependencies as ready.
+`local_ocr` will report `optional_not_bundled` on the slim Vercel deployment;
+that is expected, not an error.
 
-Redeploy the backend first, verify `/api/health`, then redeploy the frontend.
+## Local Windows/full OCR
+
+Local development still uses:
+
+`python -m pip install -r requirements.txt`
+
+That file installs `requirements-local-ocr.txt`, which includes:
+
+- RapidOCR
+- ONNX Runtime
+- NumPy
+- Uvicorn standard extras
+
+So your local machine keeps the full OCR path that already worked in terminal.

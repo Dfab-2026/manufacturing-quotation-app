@@ -10,6 +10,7 @@ from sqlalchemy import (
     Boolean,
     Float,
     Integer,
+    JSON,
     LargeBinary,
     String,
     Text,
@@ -22,15 +23,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
+from sqlalchemy.pool import StaticPool
 
 load_dotenv()
 
 RAW_DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+DATABASE_CONFIGURED = bool(RAW_DATABASE_URL)
 
+# Keep extraction/analyze available even before a production database is
+# configured. Persistence calls will fail safely and the API layer falls back
+# to in-process defaults; once DATABASE_URL is supplied, normal PostgreSQL
+# persistence is used without any code change.
 if not RAW_DATABASE_URL:
-    raise RuntimeError(
-        "DATABASE_URL is missing. Add the Neon PostgreSQL DATABASE_URL to backend/.env"
-    )
+    RAW_DATABASE_URL = "sqlite+pysqlite:///:memory:"
 
 if RAW_DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = RAW_DATABASE_URL.replace(
@@ -52,11 +57,16 @@ class Base(DeclarativeBase):
     pass
 
 
+# Use native JSONB on PostgreSQL and portable JSON on the local in-memory
+# fallback. This keeps FastAPI upload/analyze usable without a configured DB.
+JSON_TYPE = JSON().with_variant(JSONB(), "postgresql")
+
+
 class SettingsRecord(Base):
     __tablename__ = "app_settings"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class RateRecord(Base):
@@ -87,7 +97,7 @@ class DrawingRecord(Base):
     weight_kg: Mapped[float] = mapped_column(Float, default=0)
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     updated_at: Mapped[str] = mapped_column(String(64), default="")
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class ExtractionRecord(Base):
@@ -99,7 +109,7 @@ class ExtractionRecord(Base):
     file_hash: Mapped[str] = mapped_column(String(128), default="", index=True)
     source: Mapped[str] = mapped_column(String(60), default="")
     drawing_no: Mapped[str] = mapped_column(String(120), default="", index=True)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class ReviewRecord(Base):
@@ -110,7 +120,7 @@ class ReviewRecord(Base):
     extraction_id: Mapped[str] = mapped_column(String(80), default="", index=True)
     file_hash: Mapped[str] = mapped_column(String(128), default="", index=True)
     drawing_no: Mapped[str] = mapped_column(String(120), default="", index=True)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class RevisionRecord(Base):
@@ -123,7 +133,7 @@ class RevisionRecord(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     material: Mapped[str] = mapped_column(Text, default="")
     note: Mapped[str] = mapped_column(Text, default="")
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class QuotationRecord(Base):
@@ -138,7 +148,7 @@ class QuotationRecord(Base):
     selling_price: Mapped[float] = mapped_column(Float, default=0)
     status: Mapped[str] = mapped_column(String(60), default="Draft", index=True)
     batch_mode: Mapped[str] = mapped_column(String(30), default="")
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class QuotationItemRecord(Base):
@@ -152,7 +162,7 @@ class QuotationItemRecord(Base):
     description: Mapped[str] = mapped_column(Text, default="")
     quantity: Mapped[int] = mapped_column(Integer, default=1)
     selling_price: Mapped[float] = mapped_column(Float, default=0)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class CostRowRecord(Base):
@@ -168,7 +178,7 @@ class CostRowRecord(Base):
     unit: Mapped[str] = mapped_column(String(30), default="")
     rate: Mapped[float] = mapped_column(Float, default=0)
     cost: Mapped[float] = mapped_column(Float, default=0)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class WorkspaceSessionRecord(Base):
@@ -178,7 +188,7 @@ class WorkspaceSessionRecord(Base):
     name: Mapped[str] = mapped_column(String(240), default="Quotation Dataset")
     created_at: Mapped[str] = mapped_column(String(64), default="", index=True)
     updated_at: Mapped[str] = mapped_column(String(64), default="", index=True)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class WorkspaceFileRecord(Base):
@@ -208,31 +218,42 @@ class TrainingSampleRecord(Base):
     customer: Mapped[str] = mapped_column(Text, default="")
     file_size: Mapped[int] = mapped_column(Integer, default=0)
     file_content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class DatasetMetaRecord(Base):
     __tablename__ = "dataset_meta"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, default=1)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
 class SystemStateRecord(Base):
     __tablename__ = "system_state"
 
     key: Mapped[str] = mapped_column(String(120), primary_key=True)
-    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON_TYPE, nullable=False)
 
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_size=int(os.getenv("DB_POOL_SIZE", "3")),
-    max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "2")),
-    pool_timeout=10,
-    pool_recycle=300,
-)
+if DATABASE_CONFIGURED:
+    engine = create_engine(
+        DATABASE_URL,
+        pool_pre_ping=True,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "3")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "2")),
+        pool_timeout=10,
+        pool_recycle=300,
+    )
+else:
+    # A single shared in-memory SQLite connection keeps optional local
+    # persistence available across FastAPI worker threads when DATABASE_URL is
+    # not configured. Without StaticPool, each connection gets a different
+    # empty in-memory database and background saves report "no such table".
+    engine = create_engine(
+        DATABASE_URL,
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
 
 SessionLocal = sessionmaker(
     bind=engine,
@@ -1082,6 +1103,8 @@ def database_stats() -> dict:
 
 
 def db_ping() -> bool:
+    if not DATABASE_CONFIGURED:
+        return False
     try:
         with engine.connect() as connection:
             connection.execute(text("SELECT 1"))

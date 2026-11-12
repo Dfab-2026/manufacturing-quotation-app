@@ -30,6 +30,7 @@ from typing import Literal
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 import base64
+import importlib
 import json
 import os
 import math
@@ -37,6 +38,8 @@ import re
 import uuid
 import tempfile
 import zipfile
+import urllib.error
+import urllib.request
 
 import pymupdf as fitz
 
@@ -1476,6 +1479,10 @@ _LOCAL_OCR_ENGINE = None
 _LOCAL_OCR_ERROR = ""
 
 
+def _local_ocr_runtime_available() -> bool:
+    return importlib.util.find_spec("rapidocr") is not None and importlib.util.find_spec("onnxruntime") is not None
+
+
 def _get_local_ocr_engine():
     """Lazy-load the free local OCR engine used by FastAPI.
 
@@ -2081,7 +2088,7 @@ def _mandatory_measurements_complete(values: dict[str, float]) -> bool:
     return all(float(values.get(key) or 0) > 0 for key in ("length_mm", "width_mm", "thickness_mm"))
 
 
-def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[dict, Drawing, list[Row], list[str], str]:
+def _local_fastapi_engineering_extract(content: bytes, filename: str, include_ocr: bool = True) -> tuple[dict, Drawing, list[Row], list[str], str]:
     """Free/local engineering extraction used by FastAPI.
 
     No cloud AI is called here. Vector/text PDFs are parsed with PyPDF/PyMuPDF
@@ -2108,7 +2115,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
     # previously working navigation/analyze behavior.
     initial_measurements = _quick_mandatory_measurements(vector_text, first_drawing)
     mandatory_missing = not _mandatory_measurements_complete(initial_measurements)
-    needs_ocr = (
+    needs_ocr = include_ocr and (
         suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
         or (suffix == ".pdf" and len(vector_text.strip()) < 100)
     )
@@ -2119,7 +2126,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
         ocr_started = perf_counter()
         ocr_text, ocr_warnings = _extract_local_ocr_text(content, filename, text_hint=vector_text)
         stage_timings["ocr_ms"] = round((perf_counter() - ocr_started) * 1000, 1)
-    elif suffix == ".pdf" and (
+    elif include_ocr and suffix == ".pdf" and (
         first_drawing.material == "Not detected"
         or first_drawing.thickness_mm <= 0
         or mandatory_missing
@@ -2146,7 +2153,8 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
         _merge_text_sources(vector_text, ocr_text), drawing
     )
     if (
-        suffix == ".pdf"
+        include_ocr
+        and suffix == ".pdf"
         and not needs_ocr
         and not _mandatory_measurements_complete(recovered_measurements)
     ):
@@ -2650,6 +2658,230 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
         "processes": len(processes),
     }
     return ai_raw, drawing, local_rows, local_warnings, raw_text[:1500]
+
+def _gemini_api_key() -> str:
+    return str(os.getenv("GEMINI_API_KEY") or "").strip()
+
+
+def _gemini_model_candidates() -> list[str]:
+    configured = str(os.getenv("GEMINI_MODEL") or "").strip().removeprefix("models/")
+    ordered = [configured] if configured else []
+    # Flash-Lite is the latency-first fallback; 3.8 Flash is the quality fallback.
+    ordered.extend(["gemini-3.5-flash-lite", "gemini-3.8-flash"])
+    seen: set[str] = set()
+    return [m for m in ordered if m and not (m in seen or seen.add(m))]
+
+
+def _json_from_gemini_response(payload: dict) -> dict:
+    try:
+        parts = payload["candidates"][0]["content"]["parts"]
+        text = "".join(str(part.get("text") or "") for part in parts if isinstance(part, dict)).strip()
+    except Exception:
+        return {}
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        value = json.loads(text)
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        match = re.search(r"\{.*\}", text, re.S)
+        if not match:
+            return {}
+        try:
+            value = json.loads(match.group(0))
+            return value if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+
+
+def _gemini_extract_engineering(content: bytes, filename: str, extracted_text: str = "") -> tuple[dict, str]:
+    """Optional server-side Gemini fallback. Returns ({}, reason) on any failure.
+
+    The API key never reaches the browser. Text is preferred for latency; the
+    original PDF/image is attached only when local extraction produced too little
+    readable text and the upload is small enough for a bounded fallback request.
+    """
+    api_key = _gemini_api_key()
+    if not api_key:
+        return {}, "Gemini fallback not configured"
+
+    prompt = """Extract manufacturing drawing data into JSON only. Never invent values.
+Return this shape (empty arrays / null when absent):
+{
+  "drawing_no":"", "revision":"", "description":"",
+  "material":{"family":"","grade":"","specification":""},
+  "length_mm":null, "width_mm":null, "thickness_mm":null,
+  "weight_kg":null, "product_quantity":1,
+  "dimensions":[{"label":"","value_mm":0,"tolerance":"","quantity":1,"callout":""}],
+  "holes":[{"diameter_mm":0,"quantity":1,"type":"Hole","through":false,"depth_mm":null,"callout":""}],
+  "threads":[{"designation":"","quantity":1,"through":false,"depth_mm":null,"callout":""}],
+  "chamfers":[{"size_mm":null,"angle_deg":null,"quantity":1,"callout":""}],
+  "bends":[{"angle_deg":null,"radius_mm":null,"quantity":1,"callout":""}],
+  "studs":[{"size":"","length_mm":null,"quantity":1,"callout":""}],
+  "welds":[{"type":"","size_mm":null,"length_mm":null,"quantity":1,"callout":""}],
+  "surface_finish":[{"type":"Ra","value":"","unit":"µm","callout":""}],
+  "manufacturing_processes":[{"process":"","reason":"","confidence":0}],
+  "notes":[]
+}
+Rules:
+- Inspect the actual drawing visually, including title block, section views, overall dimensions and callouts; do not rely only on extracted text.
+- Never invent a value. Use null when it is genuinely absent/unreadable.
+- Printed drawing weight/mass is authoritative. Convert g to kg when needed.
+- Preserve hole/slot/thread/bend/weld quantities and original callouts.
+- Use mm and kg.
+- Distinguish overall Length, Width and Thickness from hole diameters, radii, chamfers and other feature dimensions.
+- For sheet-metal/fabrication drawings, look carefully for thickness in section views, plate/stock size strings and THK/T callouts.
+"""
+    parts: list[dict] = [{"text": prompt + f"\nFilename: {filename}\n"}]
+    text = (extracted_text or "").strip()
+    if text:
+        parts.append({"text": "Locally extracted drawing text (use only as supporting evidence; inspect the actual drawing too):\n" + text[:28000]})
+
+    # When Gemini is invoked it means local extraction is incomplete. Always
+    # attach the actual PDF/image as visual evidence when bounded in size, even
+    # if a text layer exists. Many CAD dimensions are vector glyphs/geometry and
+    # do not survive ordinary PDF text extraction reliably.
+    suffix = Path(filename).suffix.lower()
+    mime = {
+        ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg", ".webp": "image/webp"
+    }.get(suffix)
+    if mime and len(content) <= 12 * 1024 * 1024:
+        parts.append({"inline_data": {"mime_type": mime, "data": base64.b64encode(content).decode("ascii")}})
+    elif len(text) < 80:
+        return {}, "Gemini fallback skipped: drawing could not be attached and local text is insufficient"
+
+    body = json.dumps({
+        "contents": [{"parts": parts}],
+        "generationConfig": {
+            "temperature": 0,
+            "maxOutputTokens": 2200,
+            "responseMimeType": "application/json"
+        }
+    }).encode("utf-8")
+
+    last_reason = "Gemini fallback failed"
+    for model in _gemini_model_candidates():
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        request = urllib.request.Request(
+            url, data=body, method="POST",
+            headers={"Content-Type": "application/json", "x-goog-api-key": api_key},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=12) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            parsed = _json_from_gemini_response(payload)
+            if parsed:
+                parsed["gemini_model"] = model
+                return parsed, ""
+            last_reason = f"{model} returned no structured extraction"
+        except urllib.error.HTTPError as exc:
+            try:
+                detail = exc.read().decode("utf-8")[:500]
+            except Exception:
+                detail = ""
+            last_reason = f"{model} HTTP {exc.code}: {detail or exc.reason}"
+            # Try the second model for model-access, quota or transient service errors.
+            if exc.code not in {404, 429, 500, 502, 503, 504}:
+                break
+        except Exception as exc:
+            last_reason = f"{model}: {type(exc).__name__}: {exc}"
+    return {}, last_reason
+
+
+def _merge_engineering_candidate(local: dict, candidate: dict, drawing: Drawing, source_tag: str) -> dict:
+    """Merge a second extraction pass into the current engineering result.
+
+    Existing authoritative local values win. Missing scalars are filled and
+    feature arrays are unioned so a partial Gemini/OCR result cannot suppress
+    holes, bends, threads or dimensions found by another engine.
+    """
+    merged = dict(local or {})
+    candidate = candidate or {}
+
+    material = dict(merged.get("material") or {})
+    cmat = candidate.get("material") if isinstance(candidate.get("material"), dict) else {}
+    for key in ("family", "grade", "specification"):
+        if not str(material.get(key) or "").strip() and str(cmat.get(key) or "").strip():
+            material[key] = str(cmat.get(key)).strip()
+    merged["material"] = material
+
+    for key in ("drawing_no", "revision", "description", "length_mm", "width_mm", "thickness_mm", "product_quantity"):
+        current = merged.get(key)
+        candidate_value = candidate.get(key)
+        if current in (None, "", 0, 0.0) and candidate_value not in (None, "", 0, 0.0):
+            merged[key] = candidate_value
+
+    # Never overwrite an already resolved/printed weight. A secondary engine
+    # may fill it only when the current result truly has no usable weight.
+    try:
+        local_weight = float(merged.get("weight_kg") or drawing.weight_kg or 0)
+    except Exception:
+        local_weight = 0.0
+    if local_weight <= 0:
+        try:
+            candidate_weight = float(candidate.get("drawing_stated_weight_kg") or candidate.get("weight_kg") or 0)
+        except Exception:
+            candidate_weight = 0.0
+        if candidate_weight > 0:
+            merged["weight_kg"] = candidate_weight
+            if candidate.get("drawing_stated_weight_kg") or str(candidate.get("weight_source") or "").startswith("drawing"):
+                merged["drawing_stated_weight_kg"] = candidate_weight
+            merged["weight_source"] = str(candidate.get("weight_source") or source_tag)
+
+    array_fields = ("dimensions", "holes", "threads", "chamfers", "bends", "studs", "welds", "surface_finish", "manufacturing_processes")
+    for key in array_fields:
+        current_items = list(merged.get(key) or []) if isinstance(merged.get(key), list) else []
+        candidate_items = list(candidate.get(key) or []) if isinstance(candidate.get(key), list) else []
+        if not candidate_items:
+            continue
+        seen = {json.dumps(item, sort_keys=True, default=str) for item in current_items}
+        for item in candidate_items:
+            signature = json.dumps(item, sort_keys=True, default=str)
+            if signature not in seen:
+                current_items.append(item)
+                seen.add(signature)
+        merged[key] = current_items
+
+    notes = list(merged.get("notes") or [])
+    for note in candidate.get("notes") or []:
+        text = str(note).strip()
+        if text and text not in notes:
+            notes.append(text)
+    merged["notes"] = notes
+    merged.setdefault("fallback_sources", [])
+    if source_tag not in merged["fallback_sources"]:
+        merged["fallback_sources"].append(source_tag)
+    return merged
+
+
+def _merge_gemini_into_local(local: dict, gemini: dict, drawing: Drawing) -> dict:
+    merged = _merge_engineering_candidate(local, gemini, drawing, "gemini")
+    merged["gemini_fallback_used"] = True
+    merged["gemini_model"] = gemini.get("gemini_model")
+    return merged
+
+
+def _mandatory_or_feature_incomplete(ai_raw: dict, drawing: Drawing, text_hint: str = "") -> bool:
+    mandatory = ai_raw.get("mandatory_fields") if isinstance(ai_raw, dict) else {}
+    if not isinstance(mandatory, dict):
+        mandatory = {}
+    mandatory_ok = all(bool(mandatory.get(k)) for k in ("length_mm", "width_mm", "thickness_mm", "material", "weight_kg"))
+    if not mandatory_ok:
+        return True
+
+    upper = str(text_hint or "").upper()
+    feature_checks = [
+        (("HOLE", "DIA", "Ø", "⌀", "CBORE", "CSK", "SLOT"), "holes"),
+        (("BEND", "FOLD"), "bends"),
+        (("THREAD", "TAP", "UNC", "UNF"), "threads"),
+    ]
+    for tokens, field in feature_checks:
+        if any(token in upper for token in tokens) and not list(ai_raw.get(field) or []):
+            return True
+    return False
+
 
 def ai_result_to_drawing(ai_data: dict) -> Drawing:
     """Convert Vision-AI JSON into the Drawing model used by the web app."""
@@ -3946,14 +4178,16 @@ def health():
     pypdf_installed = importlib.util.find_spec("pypdf") is not None
     ezdxf_installed = importlib.util.find_spec("ezdxf") is not None
     ocr_ready = rapidocr_installed and onnxruntime_installed
-    extraction_ready = all((pymupdf_installed, pypdf_installed, ezdxf_installed, ocr_ready))
+    core_ready = all((pymupdf_installed, pypdf_installed, ezdxf_installed))
+    gemini_ready = bool(_gemini_api_key())
 
     return {
-        "status": "ok" if extraction_ready else "degraded",
+        "status": "ok" if core_ready else "degraded",
         "version": "0.15.0",
         "database": "connected" if connected else "unavailable",
-        "analysis": "fastapi_local_free",
-        "local_ocr": "ready" if ocr_ready else "missing_dependency",
+        "analysis": "fastapi_local_with_optional_visual_fallback",
+        "local_ocr": "ready" if ocr_ready else "optional_not_bundled",
+        "gemini_fallback": "configured" if gemini_ready else "not_configured",
         "dependencies": {
             "pymupdf": pymupdf_installed,
             "pypdf": pypdf_installed,
@@ -4982,8 +5216,9 @@ def extraction_capabilities():
     return {
         "pipeline_version": EXTRACTION_PIPELINE_VERSION,
         "formats": ["PDF", "PNG", "JPG", "JPEG", "WEBP", "BMP", "TIF", "TIFF", "DXF", "STEP/STP/IGES/STL/OBJ/GLB via CAD geometry endpoint"],
-        "engines": ["PyPDF", "PyMuPDF", "RapidOCR/ONNX", "ezdxf", "deterministic engineering parser", "geometry weight", "Rate Master"],
+        "engines": ["PyPDF", "PyMuPDF", "ezdxf", "deterministic engineering parser", "Gemini fallback when configured", "RapidOCR/ONNX when locally installed", "geometry weight", "Rate Master"],
         "cloud_ai_required": False,
+        "production_fallback": "Gemini when GEMINI_API_KEY is configured; local RapidOCR remains optional for desktop/local use",
         "mandatory_targets": ["length_mm", "width_mm", "thickness_mm", "material", "material_grade", "weight_kg"],
         "weight_policy": "Use printed weight when present; otherwise calculate per-piece weight only from detected geometry plus a recognized material density.",
         "fields": [
@@ -5055,16 +5290,87 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
         warnings = ["Exact drawing hash found. Previous extraction reused for faster analysis."]
 
     elif extension == ".pdf":
-        ai_raw, drawing, rows, warnings, text_preview = await run_in_threadpool(
-            _local_fastapi_engineering_extract, content, filename
-        )
-        source = "fastapi_local"
+        # Latency-first orchestration:
+        # 1) local PDF text/rules without OCR (normally tens/hundreds of ms),
+        # 2) Gemini fallback only when mandatory engineering data is incomplete,
+        # 3) local RapidOCR only if Gemini is not configured/unavailable.
+        try:
+            ai_raw, drawing, rows, warnings, text_preview = await run_in_threadpool(
+                _local_fastapi_engineering_extract, content, filename, False
+            )
+            source = "fastapi_local_fast"
+        except Exception as exc:
+            ai_raw = None
+            text_preview = ""
+            warnings = [f"Fast local extraction failed: {type(exc).__name__}: {exc}"]
+            drawing = Drawing(drawing_no="", revision="", description=clean_filename_description(filename), material="Not detected", thickness_mm=0.0, weight_kg=0.0, quantity=1, notes=[])
+            rows = []
+            source = "fastapi_local_failed"
+
+        if ai_raw is None or _mandatory_or_feature_incomplete(ai_raw, drawing, text_preview):
+            gemini_raw, gemini_reason = await run_in_threadpool(
+                _gemini_extract_engineering, content, filename, text_preview
+            )
+            if gemini_raw:
+                ai_raw = _merge_gemini_into_local(ai_raw or {}, gemini_raw, drawing)
+                drawing = ai_result_to_drawing(ai_raw)
+                rows = ai_result_to_rows(ai_raw, drawing) or rows
+                source = "fastapi_local+gemini_fallback"
+            elif gemini_reason and _gemini_api_key():
+                print(f"[GEMINI FALLBACK WARNING] {gemini_reason}")
+
+            # A partial Gemini response must not terminate recovery. If any
+            # mandatory field/expected feature is still incomplete, run the
+            # local OCR pass as well and merge its evidence into the result.
+            if (ai_raw is None or _mandatory_or_feature_incomplete(ai_raw, drawing, text_preview)) and _local_ocr_runtime_available():
+                try:
+                    ocr_raw, ocr_drawing, ocr_rows, ocr_warnings, ocr_text = await run_in_threadpool(
+                        _local_fastapi_engineering_extract, content, filename, True
+                    )
+                    ai_raw = _merge_engineering_candidate(ai_raw or {}, ocr_raw or {}, drawing, "rapidocr")
+                    drawing = ai_result_to_drawing(ai_raw)
+                    rows = ai_result_to_rows(ai_raw, drawing) or ocr_rows or rows
+                    text_preview = "\n".join(x for x in (text_preview, ocr_text) if x).strip()
+                    warnings = list(dict.fromkeys([*warnings, *ocr_warnings]))
+                    source = source + "+ocr" if "ocr" not in source else source
+                except Exception as exc:
+                    warnings.append(f"Local OCR fallback failed: {type(exc).__name__}: {exc}")
 
     elif extension in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
-        ai_raw, drawing, rows, warnings, text_preview = await run_in_threadpool(
-            _local_fastapi_engineering_extract, content, filename
-        )
-        source = "fastapi_local_ocr"
+        if _local_ocr_runtime_available():
+            try:
+                ai_raw, drawing, rows, warnings, text_preview = await run_in_threadpool(
+                    _local_fastapi_engineering_extract, content, filename, True
+                )
+                source = "fastapi_local_ocr"
+            except Exception as exc:
+                ai_raw = None
+                drawing = Drawing(drawing_no="", revision="", description=clean_filename_description(filename), material="Not detected", thickness_mm=0.0, weight_kg=0.0, quantity=1, notes=[])
+                rows = []
+                warnings = [f"Local OCR extraction failed: {type(exc).__name__}: {exc}"]
+                text_preview = ""
+                source = "fastapi_local_ocr_failed"
+        else:
+            ai_raw = None
+            drawing = Drawing(drawing_no="", revision="", description=clean_filename_description(filename), material="Not detected", thickness_mm=0.0, weight_kg=0.0, quantity=1, notes=[])
+            rows = []
+            warnings = []
+            text_preview = ""
+            source = "fastapi_visual"
+
+        if ai_raw is None or _mandatory_or_feature_incomplete(ai_raw or {}, drawing, text_preview):
+            gemini_raw, gemini_reason = await run_in_threadpool(
+                _gemini_extract_engineering, content, filename, text_preview
+            )
+            if gemini_raw:
+                ai_raw = _merge_gemini_into_local(ai_raw or {}, gemini_raw, drawing)
+                drawing = ai_result_to_drawing(ai_raw)
+                rows = ai_result_to_rows(ai_raw, drawing) or rows
+                source = "fastapi_visual+gemini_fallback"
+            elif gemini_reason and _gemini_api_key():
+                warnings.append(f"Visual fallback unavailable: {gemini_reason}")
+            elif not _local_ocr_runtime_available():
+                warnings.append("Image/scanned drawing requires GEMINI_API_KEY in production or the optional local OCR package for desktop use.")
     elif extension==".dxf":
         try:
             ai_raw,drawing,rows,warnings=analyze_dxf_geometry(content,filename)

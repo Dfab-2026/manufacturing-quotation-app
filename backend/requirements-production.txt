@@ -1,0 +1,12 @@
+fastapi
+python-multipart
+pydantic
+python-dotenv
+sqlalchemy>=2.0
+psycopg[binary]
+pypdf
+pymupdf
+pillow
+openpyxl
+reportlab
+ezdxf>=1.4,<2
