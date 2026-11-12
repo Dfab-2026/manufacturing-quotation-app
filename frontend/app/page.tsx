@@ -6714,7 +6714,7 @@ function EngineeringDetails({
               </tr>
               <tr id="sheet-summary-material"><td>Material Family</td><td><input className="sheet-cell-input" value={data.material?.family || ""} onChange={(e) => setMaterial("family", e.target.value)}/></td></tr>
               <tr id="sheet-summary-grade"><td>Grade</td><td><input className="sheet-cell-input" value={data.material?.grade || ""} onChange={(e) => setMaterial("grade", e.target.value)}/></td></tr>
-              <tr id="sheet-summary-thickness"><td>Thickness (mm)</td><td><input className="sheet-cell-input" type="number" step="any" value={Number(data.thickness_mm || 0) > 0 ? data.thickness_mm : ""} onChange={(e) => setSummaryNumber("thickness_mm", e.target.value)}/>{(data.notes || []).some((note) => String(note).startsWith("Predicted thickness:")) && <small className="summary-derived-note">Auto-predicted from drawing geometry</small>}{(data.notes || []).some((note) => String(note).startsWith("Default thickness:")) && <small className="summary-derived-note">Defaulted to 100 mm because drawing thickness was unavailable</small>}</td></tr>
+              <tr id="sheet-summary-thickness"><td>Thickness (mm)</td><td><input className="sheet-cell-input" type="number" step="any" value={Number(data.thickness_mm ?? 0) > 0 ? Number(data.thickness_mm ?? 0) : ""} onChange={(e) => setSummaryNumber("thickness_mm", e.target.value)}/>{(data.notes || []).some((note) => String(note).startsWith("Predicted thickness:")) && <small className="summary-derived-note">Auto-predicted from drawing geometry</small>}</td></tr>
               <tr id="sheet-summary-weight">
                 <td>Weight (kg)</td>
                 <td>
