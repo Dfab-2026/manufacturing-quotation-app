@@ -30,6 +30,7 @@ from typing import Literal
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 import base64
+import asyncio
 import json
 import os
 import math
@@ -4456,16 +4457,33 @@ async def save_workspace_file(
     file_hash = sha256(content).hexdigest()
     file_id = f"WF-{session_id[:16]}-{file_hash[:20]}"
 
-    return save_workspace_file_db(
-        session_id=session_id,
-        file_id=file_id,
-        filename=file.filename or "upload.bin",
-        mime_type=file.content_type or "application/octet-stream",
-        role=role,
-        size_bytes=len(content),
-        file_hash=file_hash,
-        content=content,
-        stamp=now(),
+    # Hosted PostgreSQL may need a short cold-start/reconnect window. Retry the
+    # persistence operation before reporting a failure to the frontend. The
+    # file bytes are already in memory, so retries do not re-read the upload.
+    last_error: Exception | None = None
+    for attempt in range(3):
+        try:
+            return await run_in_threadpool(
+                save_workspace_file_db,
+                session_id,
+                file_id,
+                file.filename or "upload.bin",
+                file.content_type or "application/octet-stream",
+                role,
+                len(content),
+                file_hash,
+                content,
+                now(),
+            )
+        except Exception as exc:
+            last_error = exc
+            if attempt < 2:
+                await asyncio.sleep(0.35 * (2 ** attempt))
+
+    print(f"[WORKSPACE FILE PERSISTENCE ERROR] {type(last_error).__name__ if last_error else 'Unknown'}: {last_error}")
+    raise HTTPException(
+        status_code=503,
+        detail="Database save is temporarily unavailable. The drawing can still be analyzed; retry the save shortly.",
     )
 
 
