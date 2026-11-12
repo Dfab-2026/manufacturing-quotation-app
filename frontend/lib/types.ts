@@ -236,6 +236,10 @@ export type QuoteRecord = {
   description: string;
   selling_price: number;
   status: string;
+  drawing?: DrawingDetails;
+  rows?: CostRow[];
+  summary?: QuoteSummary;
+  revision_of?: string;
 };
 
 export type RevisionRecord = {

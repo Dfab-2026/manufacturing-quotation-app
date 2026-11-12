@@ -152,6 +152,167 @@ class PrintedWeightDetection(BaseModel):
     confidence: int = Field(default=0, ge=0, le=100)
 
 
+
+_MODEL_CACHE: list[str] | None = None
+
+
+def _clean_model_name(value: str) -> str:
+    """Normalize Gemini model identifiers for the google-genai SDK.
+
+    The SDK expects the short model id (for example ``gemini-3.8-flash``).
+    Model-list responses and copied documentation may include ``models/``;
+    passing that prefix back through some SDK versions produces
+    ``GenerateContentRequest.model: unexpected model name format``.
+    """
+    value = (value or "").strip().strip("'\"")
+    while value.lower().startswith("models/"):
+        value = value[len("models/"):].strip()
+    return value
+
+
+def _gemini_model_candidates() -> list[str]:
+    """Return SDK-safe generateContent model ids in preference order.
+
+    Discovery is useful because availability differs by API key, but every
+    discovered name is normalized before use.  Static current fallbacks are
+    retained so analysis still works when ``models.list`` is unavailable.
+    """
+    global _MODEL_CACHE
+    if _MODEL_CACHE:
+        return list(_MODEL_CACHE)
+
+    configured = _clean_model_name(os.getenv("GEMINI_MODEL", "gemini-3.8-flash"))
+    retired = {"gemini-2.5-flash"}
+    if configured in retired:
+        configured = "gemini-3.8-flash"
+
+    candidates: list[str] = []
+
+    def add(name: str | None) -> None:
+        cleaned = _clean_model_name(name or "")
+        if cleaned and cleaned not in candidates and cleaned not in retired:
+            candidates.append(cleaned)
+
+    add(configured)
+
+    try:
+        discovered = list(_require_ai_client().models.list(config={"page_size": 100}))
+        ranked: list[tuple[int, str]] = []
+        for model in discovered:
+            name = _clean_model_name(str(getattr(model, "name", "") or ""))
+            actions = [str(x).lower() for x in (getattr(model, "supported_actions", None) or [])]
+            if not name:
+                continue
+            if actions and not any("generatecontent" in action.replace("_", "") for action in actions):
+                continue
+            lower = name.lower()
+            if "gemini" not in lower:
+                continue
+            score = 0
+            if "flash" in lower:
+                score += 100
+            if "3.8" in lower:
+                score += 50
+            elif "3.5" in lower:
+                score += 40
+            elif "3.1" in lower:
+                score += 30
+            if "lite" in lower:
+                score -= 5
+            if any(token in lower for token in ("image", "embedding", "tts", "live")):
+                score -= 100
+            ranked.append((score, name))
+        for _, name in sorted(ranked, key=lambda item: item[0], reverse=True):
+            add(name)
+    except Exception:
+        pass
+
+    # Current Gemini Developer API fallbacks. Keep all names in short SDK form.
+    add("gemini-3.8-flash")
+    add("gemini-3.5-flash-lite")
+    add("gemini-3.1-flash-lite")
+
+    _MODEL_CACHE = candidates
+    return list(candidates)
+
+
+def _is_model_selection_error(message: str) -> bool:
+    upper = message.upper()
+    return any(marker in upper for marker in (
+        "UNEXPECTED MODEL NAME FORMAT",
+        "MODEL NAME FORMAT",
+        "NOT_FOUND",
+        "MODEL_NOT_FOUND",
+        "NO LONGER AVAILABLE",
+        "INVALID MODEL",
+        "MODEL IS NOT FOUND",
+    ))
+
+
+def _is_transient_ai_error(message: str) -> bool:
+    upper = message.upper()
+    return any(marker in upper for marker in (
+        "429",
+        "RESOURCE_EXHAUSTED",
+        "RATE LIMIT",
+        "503",
+        "UNAVAILABLE",
+        "TIMEOUT",
+        "DEADLINE_EXCEEDED",
+        "INTERNAL",
+    ))
+
+
+def _generate_content(*, contents, config):
+    """Generate content with model normalization and bounded recovery.
+
+    - Never passes a ``models/``-prefixed name to google-genai.
+    - Tries another eligible model when the selected model is unavailable.
+    - Retries temporary 429/503/timeout failures once per model.
+    """
+    last_error: Exception | None = None
+    candidates = _gemini_model_candidates()
+
+    for model_name in candidates:
+        safe_model = _clean_model_name(model_name)
+        if not safe_model:
+            continue
+
+        for attempt in range(2):
+            try:
+                return _require_ai_client().models.generate_content(
+                    model=safe_model,
+                    contents=contents,
+                    config=config,
+                )
+            except Exception as exc:
+                last_error = exc
+                message = str(exc)
+
+                if _is_model_selection_error(message):
+                    # This model cannot serve the request; move to the next one.
+                    break
+
+                if _is_transient_ai_error(message) and attempt == 0:
+                    time.sleep(0.8)
+                    continue
+
+                # Authentication, malformed payload/schema and other permanent
+                # errors should be surfaced immediately instead of being hidden.
+                raise
+
+    if last_error is not None:
+        raise RuntimeError(
+            "No available Gemini generateContent model accepted the analysis request. "
+            f"Last provider error: {last_error}"
+        ) from last_error
+    raise RuntimeError("No Gemini generateContent model is available for this API key.")
+
+
+def _gemini_model() -> str:
+    # Kept for health/config reporting compatibility.
+    return _gemini_model_candidates()[0]
+
 def detect_printed_weight_from_image(image_bytes: bytes) -> PrintedWeightDetection:
     """
     Focused second-pass reader for title blocks.
@@ -179,8 +340,7 @@ Rules:
 
 The image may be a very tight crop containing only one title-block row. Read the label and the adjacent value cell carefully, including faint decimal digits.\nRead small/faint text carefully."""
 
-    response = _require_ai_client().models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+    response = _generate_content(
         contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")],
         config=types.GenerateContentConfig(
             response_mime_type="application/json",
@@ -259,8 +419,7 @@ For classification, provide classification_confidence 0-100 and evidence rows. E
 Extract drawing number, revision, description, drawing_type, assembly_parts, material, thickness, dimensions, holes, threads, chamfers, bends, studs, welds, surface_finish, manufacturing_processes, notes, confidence and missing_or_uncertain. If the drawing prints WEIGHT, WT, MASS, NET WEIGHT or UNIT WEIGHT, treat that printed value as authoritative and return it in weight_kg; do not replace a printed weight with a geometry estimate. Normalize explicit weight units to kilograms (1 lb = 0.45359237 kg; 1000 g = 1 kg). If no explicit weight/mass is printed, leave weight_kg empty; the application will calculate a fallback from dimensions, thickness and material density. For every dimension, normalize the engineering value to millimetres in value_mm. If the source uses inches/feet/cm/metres, also return original_value, original_unit and the visible callout so the conversion is auditable. Use exactly 1 in = 25.4 mm, 1 ft = 304.8 mm, 1 cm = 10 mm, 1 m = 1000 mm. For plate/sheet/bracket/cover/panel parts, thickness is a required engineering output whenever it can be derived from a THK/T callout, L x W x T stock size, section/detail view, BOM row, or clearly uniform-thickness geometry. If inferred, return the best engineering estimate with reduced confidence and explain the basis in evidence/notes. Also extract complete geometry and quantity so the application can calculate weight from material density.
 
 For assemblies/weldments keep every component separate in BOM/item order. Never mix dimensions between components. Never invent prices, rates, labour hours, machine time or costs. Engineering inferences are allowed only when directly supported by drawing geometry/callouts and must be marked with lower confidence and evidence. Mark unresolved values for review."""
-    response = _require_ai_client().models.generate_content(
-        model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+    response = _generate_content(
         contents=[prompt, types.Part.from_bytes(data=content_bytes, mime_type=mime_type)],
         config=types.GenerateContentConfig(response_mime_type="application/json", response_schema=EngineeringDrawingExtraction, temperature=0.1),
     )
@@ -375,8 +534,7 @@ Important:
 
     for attempt in range(1, 3):
         try:
-            response = _require_ai_client().models.generate_content(
-                model=os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+            response = _generate_content(
                 contents=contents,
                 config=types.GenerateContentConfig(
                     response_mime_type="application/json",

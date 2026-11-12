@@ -157,7 +157,6 @@ function StatusDot({ signal, label }: { signal: Signal; label?: string }) {
 
 
 const REVIEW_SECTION_MAP: Array<[string[], string]> = [
-  [["specification", "material spec", "spec"], "sheet-summary-specification"],
   [["grade"], "sheet-summary-grade"],
   [["material"], "sheet-summary-material"],
   [["drawing type", "document type"], "sheet-summary-drawing-type"],
@@ -643,7 +642,7 @@ function predictedPartWeight(data: AIExtraction | null | undefined, drawing: Dra
       const thickness = numericFeatureValue(part, "thickness_mm");
       const partQty = Math.max(1, Number(part.quantity || 1));
       if (!(length > 0 && width > 0)) continue;
-      const third = thickness > 0 ? thickness : (height > 0 ? height : DEFAULT_FALLBACK_THICKNESS_MM);
+      const third = thickness > 0 ? thickness : (height > 0 ? height : 0);
       if (!(third > 0)) continue;
       assemblyWeight += length * width * third * partDensity / 1_000_000_000 * partQty;
       derivedParts += 1;
@@ -709,7 +708,7 @@ function predictedPartWeight(data: AIExtraction | null | undefined, drawing: Dra
 
   if (!(volumeMm3 > 0)) {
     const envelope = parsedEngineeringEnvelopeMm(data);
-    const normalizedThickness = thickness > 0 ? thickness : DEFAULT_FALLBACK_THICKNESS_MM;
+    const normalizedThickness = thickness > 0 ? thickness : 0;
     if (envelope && normalizedThickness > 0) {
       volumeMm3 = envelope.widthMm * envelope.heightMm * normalizedThickness;
       basis = `${envelope.basis} × ${normalizedThickness.toFixed(3)} mm thickness × ${densityBasis} × quantity + 1 kg allowance`;
@@ -812,9 +811,14 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
     const authoritative = String((prediction as { source?: string }).source || "") === "drawing_stated";
     // Keep Drawing Review / Part Summary on the true engineering weight.
     // Allowance belongs only to costing and must not contaminate the drawing value.
+    // The visible drawing weight is always PER PIECE. The prediction base is
+    // the total required weight across product quantity and is used only by
+    // costing/allowance. This prevents quantity from being applied twice.
+    const productQty = Math.max(1, Number(raw.product_quantity || result.drawing?.quantity || 1));
+    const backendUnitWeight = Number(raw.weight_kg || 0);
     raw.weight_kg = authoritative && Number(weightMeta.drawing_stated_weight_kg || 0) > 0
       ? Number(Number(weightMeta.drawing_stated_weight_kg).toFixed(3))
-      : Number(prediction.baseWeightKg.toFixed(3));
+      : Number((backendUnitWeight > 0 ? backendUnitWeight : prediction.baseWeightKg / productQty).toFixed(3));
     raw.weight_prediction = {
       base_weight_kg: Number(prediction.baseWeightKg.toFixed(3)),
       allowance_kg: 1,
@@ -1178,7 +1182,6 @@ function findAutomaticMaterialRate(rates: RateItem[], materialName: string) {
 }
 
 export default function Page() {
-  const [theme, setTheme] = useState<"light" | "dark">("light");
   const [view, setView] = useState<View>("dashboard");
   const [sideOpen, setSideOpen] = useState(true);
   const [step, setStep] = useState(1);
@@ -1226,6 +1229,8 @@ export default function Page() {
   const restoringHistoryRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("Ready.");
+  const [costSheetSaveState, setCostSheetSaveState] = useState<"idle" | "saving" | "saved" | "deferred">("idle");
+  const costSheetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fileUrl, setFileUrl] = useState("");
   const [revisionComparison, setRevisionComparison] = useState<RevisionComparison | null>(null);
   const [premiumEstimate, setPremiumEstimate] = useState<PremiumEstimate | null>(null);
@@ -1234,24 +1239,6 @@ export default function Page() {
   const [actualCostDraft, setActualCostDraft] = useState({ actualCost: 0, actualHours: 0, notes: "" });
   const [estimatorQuestion, setEstimatorQuestion] = useState("");
   const [estimatorAnswer, setEstimatorAnswer] = useState("");
-
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("dfab-ui-theme");
-      const initialTheme = saved === "dark" || saved === "light"
-        ? saved
-        : (window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light");
-      setTheme(initialTheme);
-      document.documentElement.dataset.theme = initialTheme;
-    } catch {
-      document.documentElement.dataset.theme = "light";
-    }
-  }, []);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = theme;
-    try { localStorage.setItem("dfab-ui-theme", theme); } catch {}
-  }, [theme]);
 
   // Re-normalize engineering values whenever a drawing workspace becomes active.
   // This also upgrades older saved workspaces that were analyzed before automatic
@@ -1286,6 +1273,7 @@ export default function Page() {
   const [catalog, setCatalog] = useState<RateCatalog | null>(null);
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [quotes, setQuotes] = useState<QuoteRecord[]>([]);
+  const [revisionSourceQuoteId, setRevisionSourceQuoteId] = useState("");
 
   const [rateTab, setRateTab] = useState<RateTab>("MATERIAL");
   const [rateSearch, setRateSearch] = useState("");
@@ -1317,6 +1305,42 @@ export default function Page() {
     );
   }, [rows]);
 
+  const reviewedEngineeringData = useMemo<AIExtraction | null>(() => {
+    if (!analysis?.ai_raw && !drawing) return null;
+
+    const raw = analysis?.ai_raw || {};
+    const rawMaterial = raw.material || {};
+    const reviewedMaterial = String(drawing?.material || "").trim();
+    const materialHasStructuredValue = Boolean(
+      String(rawMaterial.family || "").trim()
+      || String(rawMaterial.grade || "").trim()
+      || String(rawMaterial.specification || "").trim()
+    );
+
+    const processRoute = raw.engineering_intelligence?.process_route || raw.process_route || [];
+    const manufacturingProcesses = (raw.manufacturing_processes || []).length
+      ? raw.manufacturing_processes
+      : processRoute.map((process) => ({ process, reason: "Extracted manufacturing route" }));
+
+    return {
+      ...raw,
+      drawing_no: String(drawing?.drawing_no || raw.drawing_no || ""),
+      revision: String(drawing?.revision || raw.revision || ""),
+      description: String(drawing?.description || raw.description || ""),
+      material: materialHasStructuredValue
+        ? rawMaterial
+        : { family: reviewedMaterial, grade: "", specification: "" },
+      thickness_mm: Number(drawing?.thickness_mm || 0) > 0
+        ? Number(drawing?.thickness_mm)
+        : raw.thickness_mm,
+      weight_kg: Number(drawing?.weight_kg || 0) > 0
+        ? Number(drawing?.weight_kg)
+        : raw.weight_kg,
+      product_quantity: Math.max(1, Number(drawing?.quantity || raw.product_quantity || 1)),
+      manufacturing_processes: manufacturingProcesses
+    };
+  }, [analysis?.ai_raw, drawing]);
+
   // Auto-apply the best saved material rate as soon as drawing-derived weight is available.
   useEffect(() => {
     if (!drawing || !rows.length || !rates.length) return;
@@ -1340,6 +1364,36 @@ export default function Page() {
     setRows(nextRows);
     void api.calculateQuote(nextRows).then(setSummary).catch(() => undefined);
   }, [analysis?.file_hash, drawing?.material, rates, rows]);
+
+  useEffect(() => {
+    if (step !== 3 || !analysis || !drawing) return;
+
+    if (costSheetSaveTimerRef.current) {
+      globalThis.clearTimeout(costSheetSaveTimerRef.current);
+    }
+
+    setCostSheetSaveState("saving");
+    costSheetSaveTimerRef.current = globalThis.setTimeout(() => {
+      void api.saveWorkingReview({
+        extraction_id: analysis.extraction_id,
+        file_hash: analysis.file_hash,
+        drawing,
+        rows,
+        ai_raw: analysis.ai_raw || {}
+      }).then((result) => {
+        setCostSheetSaveState(result.status === "saved" ? "saved" : "deferred");
+      }).catch((error) => {
+        console.warn("Cost Sheet autosave failed", error);
+        setCostSheetSaveState("deferred");
+      });
+    }, 850);
+
+    return () => {
+      if (costSheetSaveTimerRef.current) {
+        globalThis.clearTimeout(costSheetSaveTimerRef.current);
+      }
+    };
+  }, [step, analysis?.extraction_id, analysis?.file_hash, analysis?.ai_raw, drawing, rows]);
 
   const criticalName = (score: number) => criticalLabel(score, mediumCritical, highCritical);
 
@@ -1719,6 +1773,7 @@ export default function Page() {
     setWorkspaceDatasetId(createWorkspaceDatasetId());
     setWorkspaceDatasetName("Untitled Quotation Dataset");
     setRevisionComparison(null);
+    setRevisionSourceQuoteId("");
     setMsg(message);
   };
 
@@ -1781,10 +1836,17 @@ export default function Page() {
     });
   };
 
-  const newQuote = () => {
-    // Only one ongoing quotation is allowed.
-    // Starting New Quotation automatically deletes the previous ongoing process.
-    void deleteOngoingQuotation("New quotation ready. Upload a file to begin.");
+  const newQuote = async () => {
+    // Preserve unfinished work in Quotation History instead of deleting it.
+    if (drawing && (analysis || rows.length)) {
+      try {
+        await api.saveQuote({ customer, drawing, rows, summary, status: "Draft / Incomplete" });
+        await refresh();
+      } catch {
+        // Browser/local workspace still remains available even if history save is temporarily unavailable.
+      }
+    }
+    await deleteOngoingQuotation("New quotation ready. Previous unfinished quotation saved as Draft / Incomplete.");
   };
 
   const resumeWorkingQuotation = async () => {
@@ -2092,7 +2154,7 @@ export default function Page() {
       try {
         const analyzedResult = isModelSource(selected)
           ? await api.analyzeCad(await inspectCadFile(selected))
-          : await api.analyzeDrawing(selected, false);
+          : await api.analyzeDrawing(selected, true);
         const result = enrichPartSummary(analyzedResult);
 
         const itemSummary =
@@ -2137,30 +2199,10 @@ export default function Page() {
       }
     }
 
-    try {
-      const fallbackRaw = await api.analyzeFallback(
-        selected,
-        lastError || "Automatic extraction did not complete."
-      );
-      const fallback = enrichPartSummary(fallbackRaw);
-
-      const fallbackSummary =
-        fallback.summary || await api.calculateQuote(fallback.rows);
-
-      const fallbackWorkspace: BatchWorkspace = {
-        id: fileKey(selected),
-        file: selected,
-        analysis: fallback,
-        drawing: fallback.drawing,
-        rows: fallback.rows,
-        summary: fallbackSummary
-      };
-
-      acceptParallelArtifacts(fallbackWorkspace);
-      return fallbackWorkspace;
-    } catch {
-      throw new Error(lastError);
-    }
+    // Do not fabricate an "independent fallback" when extraction fails.
+    // The normal FastAPI endpoint already contains the free local parser + OCR
+    // fallback and returns structured review warnings when a field is uncertain.
+    throw new Error(lastError);
   };
 
   const sortBatchBySelectedFiles = (items: BatchWorkspace[]) => {
@@ -2282,7 +2324,7 @@ export default function Page() {
     const inferredOd = dimensionByLabel(["outer diameter", "outside dia", "od"]) || inferredDiameter;
     const hasDrawingWeight = String((ai as (AIExtraction & { weight_source?: string }) | undefined)?.weight_source || "") === "drawing_stated"
       && Number((ai as (AIExtraction & { drawing_stated_weight_kg?: number }) | undefined)?.drawing_stated_weight_kg || 0) > 0;
-    const predictedThicknessMm = Number(thicknessPrediction?.value || (hasDrawingWeight ? 0 : DEFAULT_FALLBACK_THICKNESS_MM));
+    const predictedThicknessMm = Number(thicknessPrediction?.value || 0);
     const inferredIdRaw = dimensionByLabel(["inner diameter", "inside dia", "id"]);
     const inferredId = inferredIdRaw > 0
       ? inferredIdRaw
@@ -2448,6 +2490,31 @@ export default function Page() {
     }
   };
 
+  const updateWeightAllowance = async (rawValue: string) => {
+    if (!analysis || !drawing) return;
+    const allowance = Math.max(0, Number(rawValue) || 0);
+    const prediction = analysis.ai_raw?.weight_prediction;
+    const baseWeight = Number(prediction?.base_weight_kg || drawing.weight_kg || 0);
+    const totalWeight = baseWeight > 0 ? baseWeight + allowance : 0;
+    const nextRaw: AIExtraction = {
+      ...(analysis.ai_raw || {}),
+      weight_prediction: {
+        base_weight_kg: baseWeight,
+        allowance_kg: allowance,
+        total_weight_kg: totalWeight,
+        basis: prediction?.basis || "Reviewed drawing weight + editable allowance"
+      }
+    };
+    const nextRows = rows.map((row) =>
+      String(row.category || "").toUpperCase() === "MATERIAL" && totalWeight > 0
+        ? { ...row, costingQty: Number(totalWeight.toFixed(4)), cost: Number(totalWeight.toFixed(4)) * Number(row.rate || 0), drawingQty: `${baseWeight.toFixed(3)} kg + ${allowance.toFixed(3)} kg allowance` }
+        : row
+    );
+    setAnalysis({ ...analysis, ai_raw: nextRaw, rows: nextRows });
+    setRows(nextRows);
+    try { setSummary(await api.calculateQuote(nextRows)); } catch { setMsg("Allowance updated locally; backend recalculation pending."); }
+  };
+
   const recalc = useCallback(async (
     nextRows: CostRow[],
     overrides?: {
@@ -2521,6 +2588,31 @@ export default function Page() {
       markup_override: nextOverrides.markup,
       selling_price_override: null
     });
+  };
+
+
+  const updateCommercialPercent = async (field: "material_wastage_pct" | "overhead_pct" | "markup_pct", rawValue: string) => {
+    const pct = Math.max(0, Number(rawValue) || 0);
+    const nextOverrides = { ...commercialAmountOverrides };
+    if (field === "material_wastage_pct") nextOverrides.material_wastage = null;
+    if (field === "overhead_pct") nextOverrides.overhead = null;
+    if (field === "markup_pct") nextOverrides.markup = null;
+    setCommercialAmountOverrides(nextOverrides);
+    setFinalPriceOverride(null);
+    try {
+      const next = await api.calculateQuote(rows, {
+        material_wastage_pct: field === "material_wastage_pct" ? pct : summary.material_wastage_pct,
+        overhead_pct: field === "overhead_pct" ? pct : summary.overhead_pct,
+        markup_pct: field === "markup_pct" ? pct : summary.markup_pct,
+        material_wastage_override: nextOverrides.material_wastage,
+        overhead_override: nextOverrides.overhead,
+        markup_override: nextOverrides.markup,
+        selling_price_override: null
+      });
+      setSummary(next);
+    } catch {
+      setMsg("Could not update commercial percentage. Check backend connection.");
+    }
   };
 
 
@@ -2772,34 +2864,56 @@ export default function Page() {
   };
 
   const saveReview = async () => {
-    if (!analysis || !drawing) return;
+    if (!analysis || !drawing || busy) return;
+
+    // Capture the exact reviewed values first. Step 3 must never be blocked by
+    // database latency, a history write, or a temporary backend persistence fault.
     snapshotActiveBatch();
-    setBusy(true);
-    try {
-      await Promise.all([
-        api.saveReview({
-          extraction_id: analysis.extraction_id,
-          file_hash: analysis.file_hash,
-          drawing,
-          rows,
-          ai_raw: analysis.ai_raw || {}
-        }),
-        api.saveRevision({
-          drawing,
-          summary,
-          rows,
-          ai_raw: analysis.ai_raw || {},
-          note: "Reviewed extraction saved"
-        })
-      ]);
-      setStep(3);
-      setMsg("Review saved. Continue with engineering and costing.");
+
+    const reviewPayload = {
+      extraction_id: analysis.extraction_id,
+      file_hash: analysis.file_hash,
+      drawing,
+      rows,
+      ai_raw: analysis.ai_raw || {}
+    };
+
+    const revisionPayload = {
+      drawing,
+      summary,
+      rows,
+      ai_raw: analysis.ai_raw || {},
+      note: "Reviewed extraction saved"
+    };
+
+    // Continue immediately using the captured state. Persistence runs in the
+    // background and reports its result without making the button appear stuck.
+    setStep(3);
+    setMsg("Review captured. Engineering & Cost Sheet is ready; saving review in the background…");
+
+    void Promise.allSettled([
+      api.saveReview(reviewPayload),
+      api.saveRevision(revisionPayload)
+    ]).then(([reviewResult, revisionResult]) => {
+      if (reviewResult.status === "fulfilled") {
+        const result = reviewResult.value as { status?: string; warning?: string } | undefined;
+        if (result?.status === "saved") {
+          setMsg("Review saved. Continue with engineering and costing.");
+        } else {
+          setMsg(result?.warning || "Costing can continue. Review persistence is pending and can be retried before final release.");
+        }
+      } else {
+        console.warn("Review persistence failed", reviewResult.reason);
+        const detail = reviewResult.reason instanceof Error ? reviewResult.reason.message : "backend persistence failed";
+        setMsg(`Costing can continue. Review save needs retry before final release: ${detail}`);
+      }
+
+      if (revisionResult.status === "rejected") {
+        console.warn("Revision history save failed", revisionResult.reason);
+      }
+
       void refresh();
-    } catch (error) {
-      setMsg(error instanceof Error ? error.message : "Save failed");
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
 
@@ -2940,6 +3054,9 @@ export default function Page() {
 
       return {
         ...current,
+        drawing_no: String(next.drawing_no || current.drawing_no || ""),
+        revision: String(next.revision || current.revision || ""),
+        description: String(next.description || current.description || ""),
         material: materialParts.join(" ") || current.material,
         thickness_mm: next.thickness_mm == null ? 0 : Number(next.thickness_mm),
         weight_kg: next.weight_kg == null ? 0 : Number(next.weight_kg),
@@ -3140,7 +3257,7 @@ export default function Page() {
           drawing,
           rows,
           summary,
-          status: "Downloaded"
+          status: revisionSourceQuoteId ? "Revised" : "Completed"
         });
         setQuotes((current) => [
           ...current.filter((quote) => quote.id !== saved.id),
@@ -3151,7 +3268,7 @@ export default function Page() {
           customer,
           quoteMode,
           items,
-          "Downloaded"
+          revisionSourceQuoteId ? "Revised" : "Completed"
         );
         setQuotes((current) => [
           ...current,
@@ -3184,6 +3301,23 @@ export default function Page() {
     } catch (error) {
       setMsg(error instanceof Error ? error.message : "Rename failed.");
     }
+  };
+
+  const editSavedQuote = (quote: QuoteRecord) => {
+    if (!quote.drawing || !quote.rows || !quote.summary) {
+      setMsg("This older history record does not contain editable quotation details.");
+      return;
+    }
+    setDrawing(quote.drawing);
+    setRows(quote.rows);
+    setSummary(quote.summary);
+    setCustomer(quote.customer || "Sample Customer");
+    setFinalPriceOverride(null);
+    setCommercialAmountOverrides({ material_wastage: null, overhead: null, markup: null });
+    setRevisionSourceQuoteId(quote.id);
+    setView("workflow");
+    setStep(3);
+    setMsg(`Opened ${quote.id} for revision. Saving/downloading will create a new revised quotation; the original remains in history.`);
   };
 
   const deleteSavedQuote = async (quote: QuoteRecord) => {
@@ -3836,16 +3970,6 @@ export default function Page() {
           >
             Settings
           </button>
-          <button
-            type="button"
-            className="theme-toggle-nav"
-            onClick={() => setTheme((current) => current === "dark" ? "light" : "dark")}
-            aria-pressed={theme === "dark"}
-            title={`Switch to ${theme === "dark" ? "light" : "dark"} theme`}
-          >
-            <span aria-hidden="true">{theme === "dark" ? "☀" : "☾"}</span>
-            <span>{theme === "dark" ? "Light Theme" : "Dark Theme"}</span>
-          </button>
         </nav>
         <div className="learn">
           <b>Continuous Dataset</b>
@@ -4293,7 +4417,7 @@ export default function Page() {
                   </div>
                 </div>
                 <div className="extraction-status">
-                  <span className={`source-badge ${["vision_ai", "vision_ai_image", "cad_geometry", "reviewed_memory", "dxf_geometry"].includes(analysis?.learning_source || "") ? "good" : "warn"}`}>
+                  <span className={`source-badge ${["fastapi_local", "cad_geometry", "reviewed_memory", "dxf_geometry"].includes(analysis?.learning_source || "") ? "good" : "warn"}`}>
                     Source: {analysis?.learning_source || "unknown"}
                   </span>
                   {analysis?.extraction_warnings?.map((warning, i) => (
@@ -4416,12 +4540,33 @@ export default function Page() {
                 <div className="heading row">
                   <div><p className="eyebrow">STEP 3</p><h2>Engineering & Cost Sheet</h2><p>Edit each extracted table directly. Tables are arranged one-by-one in a single vertical sheet.</p></div>
                   <div className="actions compact">
+                    <span className={`cost-sheet-save-state ${costSheetSaveState}`}>
+                      {costSheetSaveState === "saving" ? "Saving…" : costSheetSaveState === "saved" ? "✓ Saved to database" : costSheetSaveState === "deferred" ? "⚠ Save pending" : ""}
+                    </span>
                     <button className="btn secondary" disabled={busy} onClick={refreshCostRates}>↻ Refresh Saved Rates</button>
                     <button className="btn secondary" onClick={() => api.exportExcel(drawing, rows, summary)}>Export Excel</button>
                     <button
                       className="btn primary"
                       disabled={batchFailures.length > 0}
-                      onClick={() => goWorkflowStep(4)}
+                      onClick={() => {
+                        if (!analysis || !drawing) return;
+                        setCostSheetSaveState("saving");
+                        void api.saveWorkingReview({
+                          extraction_id: analysis.extraction_id,
+                          file_hash: analysis.file_hash,
+                          drawing,
+                          rows,
+                          ai_raw: analysis.ai_raw || {}
+                        }).then((result) => {
+                          setCostSheetSaveState(result.status === "saved" ? "saved" : "deferred");
+                          if (result.status !== "saved") {
+                            setMsg(result.warning || "Cost Sheet is ready, but database save needs retry.");
+                          }
+                        }).catch((error) => {
+                          setCostSheetSaveState("deferred");
+                          setMsg(error instanceof Error ? `Cost Sheet save warning: ${error.message}` : "Cost Sheet save needs retry.");
+                        }).finally(() => goWorkflowStep(4));
+                      }}
                       title={
                         batchFailures.length > 0
                           ? "Retry failed drawings before preparing quotation"
@@ -4432,46 +4577,32 @@ export default function Page() {
                     </button>
                   </div>
                 </div>
-                <div className="sheet-details-header">
+                <div className="sheet-details-header compact-sheet-head">
                   <div>
-                    <p className="eyebrow">EXTRACTED DRAWING SHEET</p>
-                    <h3>Engineering Details</h3>
-                    <p>Every extracted section is a full-width editable table. Add, correct or remove rows before final costing.</p>
+                    <p className="eyebrow">EXTRACTED DRAWING DATA</p>
+                    <h3>Reviewed Engineering Inputs</h3>
+                    <p>Values below come from the drawing extraction and your Step 2 review. Edit only where engineering correction is needed.</p>
                   </div>
                 </div>
 
-                <EngineeringDetails data={analysis?.ai_raw || null} onChange={updateEngineeringData}/>
-
-                <div className="sheet-status-legend">
-                  <span><i className="sheet-dot green"/>Ready</span>
-                  <span><i className="sheet-dot yellow"/>Review</span>
-                  <span><i className="sheet-dot red"/>Attention</span>
-                  <b>Feature tables use status; classification and evidence show confidence.</b>
-                </div>
-                <div className="charge-cards">
-                  <div><span>Material Charges</span><b>{money(chargeTotals.material)}</b></div>
-                  <div><span>Processing Charges</span><b>{money(chargeTotals.process)}</b></div>
-                  <div><span>Labour Charges</span><b>{money(chargeTotals.labour)}</b></div>
+                <div className="cost-input-overview" aria-label="Reviewed costing inputs">
+                  <div><span>Drawing No.</span><b>{drawing.drawing_no || "—"}</b></div>
+                  <div><span>Material</span><b>{drawing.material || "—"}</b></div>
+                  <div><span>Thickness</span><b>{Number(drawing.thickness_mm || 0) > 0 ? `${Number(drawing.thickness_mm).toFixed(3)} mm` : "—"}</b></div>
+                  <div><span>Weight / Piece</span><b>{Number(drawing.weight_kg || 0) > 0 ? `${Number(drawing.weight_kg).toFixed(3)} kg` : "—"}</b></div>
+                  <div className="cost-input-edit"><span>Weight Allowance (kg)</span><input type="number" min="0" step="0.1" value={analysis?.ai_raw?.weight_prediction?.allowance_kg ?? 1} onChange={(e) => void updateWeightAllowance(e.target.value)}/></div>
+                  <div><span>Product Qty</span><b>{drawing.quantity || 1}</b></div>
+                  <div><span>Primary Process</span><b>{reviewedEngineeringData?.engineering_intelligence?.primary_manufacturing_type || reviewedEngineeringData?.primary_manufacturing_type || "—"}</b></div>
                 </div>
 
-                {rows.length ? (
-                  <div className="cost-trace-panel">
-                    <div className="cost-trace-head">
-                      <div><span>COST TRACEABILITY</span><b>Live quantity × rate explanation</b></div>
-                      <small>{rows.length} rows</small>
-                    </div>
-                    <div className="cost-trace-list">
-                      {rows.slice(0, 8).map((item) => (
-                        <div key={item.id || `${item.category}-${item.item}`}>
-                          <span>{item.category}</span>
-                          <b>{item.item}</b>
-                          <code>{Number(item.costingQty || 0)} {item.unit} × {money(Number(item.rate || 0))}/{item.unit || "unit"} = {money(Number(item.costingQty || 0) * Number(item.rate || 0))}</code>
-                          <small>{item.rateSource || "Manual / Included"} · {item.confidence || "Review"}</small>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
+                <EngineeringDetails data={reviewedEngineeringData} onChange={updateEngineeringData}/>
+
+                <div className="charge-cards clean-charge-cards">
+                  <div><span>Material</span><b>{money(chargeTotals.material)}</b></div>
+                  <div><span>Processing</span><b>{money(chargeTotals.process)}</b></div>
+                  <div><span>Labour</span><b>{money(chargeTotals.labour)}</b></div>
+                  <div className="charge-total"><span>Direct Cost</span><b>{money(summary.direct_cost)}</b></div>
+                </div>
 
                 <div className="cost-grid-shell">
                   <div className="cost-grid-title">
@@ -4496,25 +4627,9 @@ export default function Page() {
                   commercialAmountOverrides={commercialAmountOverrides}
                   finalPriceOverride={finalPriceOverride}
                   onChange={updateCommercial}
+                  onPercentChange={updateCommercialPercent}
                 />
 
-                <PremiumEstimatorPanel
-                  estimate={premiumEstimate}
-                  busy={premiumBusy}
-                  onRefresh={() => void refreshPremiumEstimate()}
-                  onApplyProcesses={() => void applyPremiumProcessCosting()}
-                  actualCost={actualCostDraft.actualCost}
-                  actualHours={actualCostDraft.actualHours}
-                  actualNotes={actualCostDraft.notes}
-                  onActualCostChange={(value) => setActualCostDraft((current) => ({ ...current, actualCost: value }))}
-                  onActualHoursChange={(value) => setActualCostDraft((current) => ({ ...current, actualHours: value }))}
-                  onActualNotesChange={(value) => setActualCostDraft((current) => ({ ...current, notes: value }))}
-                  onSaveActual={() => void recordActualPerformance()}
-                  question={estimatorQuestion}
-                  answer={estimatorAnswer}
-                  onQuestionChange={setEstimatorQuestion}
-                  onAsk={askEstimator}
-                />
 
                 {showMaterialCalculator && (
                   <div className="material-modal-backdrop" role="presentation" onMouseDown={(event) => {
@@ -4837,11 +4952,18 @@ export default function Page() {
                       <div><small>Quantity</small><b>{drawing.quantity}</b></div>
                     </div>
 
+                    <div className="cost-grid-shell quotation-cost-editor">
+                      <div className="cost-grid-title"><div><span>COST INPUTS</span><b>Editable Cost Rows</b></div><small>Entering a missing rate automatically updates Rate Master</small></div>
+                      <div className="ag-theme-quartz grid neat-grid">
+                        <AgGridReact<CostRow> rowData={rows} columnDefs={columns} onCellValueChanged={onCostCellChanged} getRowId={(p) => p.data.id} defaultColDef={{ sortable: true, resizable: true }} />
+                      </div>
+                    </div>
                     <SummaryView
                       summary={summary}
                       commercialAmountOverrides={commercialAmountOverrides}
                       finalPriceOverride={finalPriceOverride}
                       onChange={updateCommercial}
+                      onPercentChange={updateCommercialPercent}
                     />
                   </div>
                 )}
@@ -4860,6 +4982,7 @@ export default function Page() {
             <Recent
               quotes={quotes}
               onRename={renameSavedQuote}
+              onEdit={editSavedQuote}
               onDelete={deleteSavedQuote}
             />
           </section>
@@ -6362,7 +6485,6 @@ function EngineeringDetails({
 
   const intelligence = data.engineering_intelligence;
   const completeness = intelligence?.completeness;
-  const evidence = intelligence?.evidence || data.evidence || [];
 
   const setIntelligence = (key: string, value: unknown) => {
     const current = data.engineering_intelligence || {
@@ -6426,42 +6548,56 @@ function EngineeringDetails({
     });
   };
 
+  const setSummaryText = (key: "drawing_no" | "revision" | "description" | "drawing_type", value: string) => {
+    onChange({ ...data, [key]: value });
+  };
+
   const dimensionsColumns: EditableColumn[] = [
     { key: "label", label: "Label" },
     { key: "value_mm", label: "Value (mm)", kind: "number" },
     { key: "tolerance", label: "Tolerance" },
-    { key: "quantity", label: "Qty", kind: "number" }
+    { key: "quantity", label: "Qty", kind: "number" },
+    { key: "callout", label: "Drawing Callout" }
   ];
 
   const holesColumns: EditableColumn[] = [
-    { key: "diameter_mm", label: "Diameter (mm)", kind: "number" },
+    { key: "diameter_mm", label: "Diameter / Width (mm)", kind: "number" },
+    { key: "slot_length_mm", label: "Slot Length (mm)", kind: "number" },
     { key: "quantity", label: "Qty", kind: "number" },
     { key: "type", label: "Type" },
-    { key: "callout", label: "Callout" }
+    { key: "through", label: "Through", kind: "boolean" },
+    { key: "depth_mm", label: "Depth (mm)", kind: "number" },
+    { key: "callout", label: "Drawing Callout" }
   ];
 
   const threadsColumns: EditableColumn[] = [
     { key: "designation", label: "Designation" },
     { key: "quantity", label: "Qty", kind: "number" },
-    { key: "through", label: "Through", kind: "boolean" }
+    { key: "through", label: "Through", kind: "boolean" },
+    { key: "depth_mm", label: "Depth (mm)", kind: "number" },
+    { key: "callout", label: "Drawing Callout" }
   ];
 
   const chamferColumns: EditableColumn[] = [
     { key: "size_mm", label: "Size (mm)", kind: "number" },
     { key: "angle_deg", label: "Angle (°)", kind: "number" },
-    { key: "quantity", label: "Qty", kind: "number" }
+    { key: "quantity", label: "Qty", kind: "number" },
+    { key: "callout", label: "Drawing Callout" }
   ];
 
   const bendsColumns: EditableColumn[] = [
     { key: "angle_deg", label: "Angle (°)", kind: "number" },
-    { key: "quantity", label: "Qty", kind: "number" }
+    { key: "radius_mm", label: "Radius (mm)", kind: "number" },
+    { key: "quantity", label: "Qty", kind: "number" },
+    { key: "callout", label: "Drawing Callout" }
   ];
 
   const studsColumns: EditableColumn[] = [
     { key: "size", label: "Size" },
     { key: "length_mm", label: "Length (mm)", kind: "number" },
     { key: "quantity", label: "Qty", kind: "number" },
-    { key: "material", label: "Material" }
+    { key: "material", label: "Material" },
+    { key: "callout", label: "Drawing Callout" }
   ];
 
   const weldsColumns: EditableColumn[] = [
@@ -6469,7 +6605,8 @@ function EngineeringDetails({
     { key: "size_mm", label: "Size (mm)", kind: "number" },
     { key: "length_mm", label: "Length (mm)", kind: "number" },
     { key: "location", label: "Location" },
-    { key: "quantity", label: "Qty", kind: "number" }
+    { key: "quantity", label: "Qty", kind: "number" },
+    { key: "callout", label: "Drawing Callout" }
   ];
 
   const assemblyColumns: EditableColumn[] = [
@@ -6490,7 +6627,17 @@ function EngineeringDetails({
     { key: "reason", label: "Reason / Drawing Basis" }
   ];
 
-  const finishes = (data.surface_finish || []).map((x) => String(x));
+  const finishColumns: EditableColumn[] = [
+    { key: "type", label: "Finish Type" },
+    { key: "value", label: "Value" },
+    { key: "unit", label: "Unit" },
+    { key: "location", label: "Location / Callout" }
+  ];
+
+  const finishes = (data.surface_finish || []).map((item) => {
+    if (item && typeof item === "object" && !Array.isArray(item)) return item as Record<string, unknown>;
+    return { type: "Finish", value: String(item || ""), unit: "", location: "", confidence: 80 };
+  });
   const notes = (data.notes || []).map((x) => String(x));
   const uncertain = Array.from(new Set([
     ...(data.missing_or_uncertain || []).map((x) => String(x)),
@@ -6532,11 +6679,6 @@ function EngineeringDetails({
               {["Plate", "Sheet", "Block / Prismatic", "Shaft / Cylindrical", "Flange", "Bracket", "Frame", "Tube / Pipe", "Enclosure / Cover", "Gear", "Casting", "Assembly", "Standard Part", "Unknown"].map((item) => <option key={item}>{item}</option>)}
             </select>
           </label>
-          <div className="classification-score-card">
-            <span>Classification Confidence</span>
-            <b>{Number(intelligence?.classification_confidence || data.classification_confidence || 0)}%</b>
-            <small>{completeness?.release_state || "REVIEW"}</small>
-          </div>
         </div>
 
         {(intelligence?.process_route || data.process_route || []).length > 0 && (
@@ -6551,20 +6693,6 @@ function EngineeringDetails({
             </div>
           </div>
         )}
-
-        <div className="completeness-grid">
-          {[
-            ["Engineering Data", completeness?.engineering_data || 0],
-            ["Cost Confidence", completeness?.cost_confidence || 0],
-            ["Rate Coverage", completeness?.rate_coverage || 0]
-          ].map(([label, value]) => (
-            <div key={String(label)}>
-              <span>{label}</span>
-              <b>{Number(value)}%</b>
-              <i><em style={{ width: `${Math.max(0, Math.min(100, Number(value)))}%` }}/></i>
-            </div>
-          ))}
-        </div>
       </section>
 
       <section className="sheet-section">
@@ -6576,19 +6704,14 @@ function EngineeringDetails({
           <table>
             <thead><tr><th>Field</th><th>Value</th></tr></thead>
             <tbody>
+              <tr id="sheet-summary-drawing-no"><td>Drawing No.</td><td><input className="sheet-cell-input" value={data.drawing_no || ""} onChange={(e) => setSummaryText("drawing_no", e.target.value)}/></td></tr>
+              <tr id="sheet-summary-revision"><td>Revision</td><td><input className="sheet-cell-input" value={data.revision || ""} onChange={(e) => setSummaryText("revision", e.target.value)}/></td></tr>
               <tr id="sheet-summary-drawing-type">
                 <td>Drawing Type</td>
-                <td>
-                  <input
-                    className="sheet-cell-input"
-                    value={data.drawing_type || ""}
-                    onChange={(e) => setFeature("drawing_type", e.target.value)}
-                  />
-                </td>
+                <td><input className="sheet-cell-input" value={data.drawing_type || ""} onChange={(e) => setSummaryText("drawing_type", e.target.value)}/></td>
               </tr>
               <tr id="sheet-summary-material"><td>Material Family</td><td><input className="sheet-cell-input" value={data.material?.family || ""} onChange={(e) => setMaterial("family", e.target.value)}/></td></tr>
               <tr id="sheet-summary-grade"><td>Grade</td><td><input className="sheet-cell-input" value={data.material?.grade || ""} onChange={(e) => setMaterial("grade", e.target.value)}/></td></tr>
-              <tr id="sheet-summary-specification"><td>Specification</td><td><input className="sheet-cell-input" value={data.material?.specification || ""} onChange={(e) => setMaterial("specification", e.target.value)}/></td></tr>
               <tr id="sheet-summary-thickness"><td>Thickness (mm)</td><td><input className="sheet-cell-input" type="number" step="any" value={Number(data.thickness_mm || 0) > 0 ? data.thickness_mm : ""} onChange={(e) => setSummaryNumber("thickness_mm", e.target.value)}/>{(data.notes || []).some((note) => String(note).startsWith("Predicted thickness:")) && <small className="summary-derived-note">Auto-predicted from drawing geometry</small>}{(data.notes || []).some((note) => String(note).startsWith("Default thickness:")) && <small className="summary-derived-note">Defaulted to 100 mm because drawing thickness was unavailable</small>}</td></tr>
               <tr id="sheet-summary-weight">
                 <td>Weight (kg)</td>
@@ -6613,20 +6736,10 @@ function EngineeringDetails({
         </div>
 
         <div className="engineering-feature-stack">
-          {(data.drawing_type === "assembly"
-            || data.drawing_type === "weldment"
-            || (data.assembly_parts || []).length > 0) && (
-            <EditableFeatureTable
-              sectionKey="assembly_parts"
-              title="Assembly Components / Plates"
-              columns={assemblyColumns}
-              items={(data.assembly_parts || []) as Record<string, unknown>[]}
-              onChange={(items) => setFeature("assembly_parts", items)}
-            />
-          )}
-          <EditableFeatureTable sectionKey="dimensions" title="Dimensions" columns={dimensionsColumns} items={(data.dimensions || []) as Record<string, unknown>[]} onChange={(items) => setFeature("dimensions", items)}/>
-          <EditableFeatureTable sectionKey="holes" title="Holes / Slots" columns={holesColumns} items={(data.holes || []) as Record<string, unknown>[]} onChange={(items) => setFeature("holes", items)}/>
-          <EditableFeatureTable sectionKey="threads" title="Threads" columns={threadsColumns} items={(data.threads || []) as Record<string, unknown>[]} onChange={(items) => setFeature("threads", items)}/>
+          <EditableFeatureTable sectionKey="assembly_parts" title="Assembly Components / Plates" columns={assemblyColumns} items={(data.assembly_parts || []) as Record<string, unknown>[]} onChange={(items) => setFeature("assembly_parts", items)}/>
+          <EditableFeatureTable sectionKey="dimensions" title="Dimensions & Tolerances" columns={dimensionsColumns} items={(data.dimensions || []) as Record<string, unknown>[]} onChange={(items) => setFeature("dimensions", items)}/>
+          <EditableFeatureTable sectionKey="holes" title="Holes / Slots / Counterbores" columns={holesColumns} items={(data.holes || []) as Record<string, unknown>[]} onChange={(items) => setFeature("holes", items)}/>
+          <EditableFeatureTable sectionKey="threads" title="Threads / Tapping" columns={threadsColumns} items={(data.threads || []) as Record<string, unknown>[]} onChange={(items) => setFeature("threads", items)}/>
           <EditableFeatureTable sectionKey="chamfers" title="Chamfers" columns={chamferColumns} items={(data.chamfers || []) as Record<string, unknown>[]} onChange={(items) => setFeature("chamfers", items)}/>
           <EditableFeatureTable sectionKey="bends" title="Bends" columns={bendsColumns} items={(data.bends || []) as Record<string, unknown>[]} onChange={(items) => setFeature("bends", items)}/>
           <EditableFeatureTable sectionKey="studs" title="Studs / Fasteners" columns={studsColumns} items={(data.studs || []) as Record<string, unknown>[]} onChange={(items) => setFeature("studs", items)}/>
@@ -6637,45 +6750,14 @@ function EngineeringDetails({
 
       <section className="sheet-section">
         <div className="sheet-section-title">
-          <div><span>04</span><div><b>Notes & Review</b><small>Editable drawing notes kept one table after another</small></div></div>
+          <div><span>04</span><div><b>Finish, Notes & Review</b><small>Editable drawing requirements retained with the costing record</small></div></div>
         </div>
-
         <div className="engineering-feature-stack notes-stack">
-          <div id="sheet-surface-finish"><EditableTextList title="Surface Finish" items={finishes} status="green" onChange={(items) => setFeature("surface_finish", items)}/></div>
-          <div id="sheet-notes"><EditableTextList title="Drawing Notes" items={notes} status="green" onChange={(items) => setFeature("notes", items)}/></div>
-          <div id="sheet-review">
-            <ReviewItems
-              items={uncertain}
-              data={data}
-              onChange={(items) => setFeature("missing_or_uncertain", items)}
-            />
-          </div>
+          <EditableFeatureTable sectionKey="surface-finish" title="Surface Finish / Coating" columns={finishColumns} items={finishes} onChange={(items) => setFeature("surface_finish", items)}/>
+          <div id="sheet-notes"><EditableTextList title="Drawing Notes / Special Requirements" items={notes} status="green" onChange={(items) => setFeature("notes", items)}/></div>
+          {uncertain.length > 0 && <div id="sheet-review"><ReviewItems items={uncertain} data={data} onChange={(items) => setFeature("missing_or_uncertain", items)}/></div>}
         </div>
       </section>
-
-      {evidence.length > 0 && (
-        <section className="sheet-section engineering-evidence-section">
-          <div className="sheet-section-title">
-            <div><span>05</span><div><b>Evidence & Provenance</b><small>Why the system classified and extracted these values</small></div></div>
-          </div>
-          <div className="evidence-table-wrap">
-            <table className="evidence-table">
-              <thead><tr><th>Field</th><th>Value</th><th>Drawing Basis</th><th>Page</th><th>Confidence</th></tr></thead>
-              <tbody>
-                {evidence.map((item, index) => (
-                  <tr key={`${item.field}-${index}`}>
-                    <td><b>{item.field}</b></td>
-                    <td>{item.value}</td>
-                    <td>{item.basis}</td>
-                    <td>{item.page ? item.page : "—"}</td>
-                    <td><span className={`evidence-confidence ${item.confidence >= 80 ? "good" : item.confidence >= 60 ? "review" : "attention"}`}>{item.confidence}%</span></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </section>
-      )}
     </div>
   );
 }
@@ -6868,7 +6950,8 @@ function SummaryView({
   summary,
   commercialAmountOverrides,
   finalPriceOverride,
-  onChange
+  onChange,
+  onPercentChange
 }: {
   summary: QuoteSummary;
   commercialAmountOverrides: CommercialAmountOverrides;
@@ -6877,6 +6960,7 @@ function SummaryView({
     field: "material_wastage" | "overhead" | "markup" | "selling_price",
     value: string
   ) => void;
+  onPercentChange: (field: "material_wastage_pct" | "overhead_pct" | "markup_pct", value: string) => void;
 }) {
   return (
     <div className="summary clean-summary editable-summary">
@@ -6896,7 +6980,7 @@ function SummaryView({
           value={commercialAmountOverrides.material_wastage ?? summary.material_wastage}
           onChange={(e) => void onChange("material_wastage", e.target.value)}
         />
-        <small>{Number(summary.material_wastage_pct || 0)}% from Settings · amount editable</small>
+        <small className="summary-percent-edit">Wastage % <input type="number" min="0" step="0.1" value={summary.material_wastage_pct} onChange={(e) => void onPercentChange("material_wastage_pct", e.target.value)}/></small>
       </div>
 
       <div>
@@ -6909,7 +6993,7 @@ function SummaryView({
           value={commercialAmountOverrides.overhead ?? summary.overhead}
           onChange={(e) => void onChange("overhead", e.target.value)}
         />
-        <small>{Number(summary.overhead_pct || 0)}% from Settings · amount editable</small>
+        <small className="summary-percent-edit">Overhead % <input type="number" min="0" step="0.1" value={summary.overhead_pct} onChange={(e) => void onPercentChange("overhead_pct", e.target.value)}/></small>
       </div>
 
       <div className="blue">
@@ -6928,7 +7012,7 @@ function SummaryView({
           value={commercialAmountOverrides.markup ?? summary.markup}
           onChange={(e) => void onChange("markup", e.target.value)}
         />
-        <small>{Number(summary.markup_pct || 0)}% from Settings · amount editable</small>
+        <small className="summary-percent-edit">Markup % <input type="number" min="0" step="0.1" value={summary.markup_pct} onChange={(e) => void onPercentChange("markup_pct", e.target.value)}/></small>
       </div>
 
       <div className="green">
@@ -6952,10 +7036,12 @@ function SummaryView({
 function Recent({
   quotes,
   onRename,
+  onEdit,
   onDelete
 }: {
   quotes: QuoteRecord[];
   onRename: (quote: QuoteRecord) => void;
+  onEdit: (quote: QuoteRecord) => void;
   onDelete: (quote: QuoteRecord) => void;
 }) {
   return (
@@ -6986,7 +7072,10 @@ function Recent({
             <span><i className="history-status">{quote.status}</i></span>
             <span><b>{money(quote.selling_price)}</b></span>
             <span className="history-actions">
-              <button type="button" className="mini save" onClick={() => onRename(quote)}>
+              <button type="button" className="mini save" onClick={() => onEdit(quote)}>
+                {String(quote.status).toLowerCase().includes("draft") ? "Continue" : "Edit / Revise"}
+              </button>
+              <button type="button" className="mini" onClick={() => onRename(quote)}>
                 Rename
               </button>
               <button type="button" className="mini delete" onClick={() => onDelete(quote)}>

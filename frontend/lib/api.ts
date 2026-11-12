@@ -16,15 +16,14 @@ import type {
   PremiumEstimate
 } from "./types";
 
-const API = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
+const configuredApi = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
+const API = /^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):8000$/i.test(configuredApi)
+  ? "/backend-api"
+  : (configuredApi || "/backend-api");
 
-async function j<T>(
-  url: string,
-  init?: RequestInit,
-  timeoutMs = 45000
-): Promise<T> {
+async function request(url: string, init?: RequestInit, timeoutMs = 45000): Promise<Response> {
   const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), timeoutMs);
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch(API + url, {
@@ -33,19 +32,37 @@ async function j<T>(
     });
 
     if (!response.ok) {
-      throw new Error((await response.text()) || "Request failed");
+      let message = `Request failed (${response.status})`;
+      const raw = await response.text();
+      if (raw.trim()) {
+        try {
+          const body = JSON.parse(raw);
+          message = body?.detail || body?.message || message;
+        } catch {
+          message = raw;
+        }
+      }
+      throw new Error(message);
     }
 
-    return response.json();
+    return response;
   } catch (error) {
-    if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("Request timed out.");
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Backend request timed out. Check the FastAPI service and retry.");
     }
-
+    if (error instanceof TypeError) {
+      throw new Error(`Cannot reach the FastAPI extraction service through ${API}. Make sure FastAPI is running and FASTAPI_INTERNAL_URL points to it.`);
+    }
     throw error;
   } finally {
-    window.clearTimeout(timer);
+    globalThis.clearTimeout(timer);
   }
+}
+
+
+async function j<T>(url: string, init?: RequestInit, timeoutMs = 45000): Promise<T> {
+  const response = await request(url, init, timeoutMs);
+  return response.json();
 }
 
 export async function analyzeFallback(
@@ -93,12 +110,20 @@ export async function analyzeDrawing(file: File, forceAI = false) {
   return j<AnalysisResponse>(`/api/analyze?force_ai=${forceAI ? "true" : "false"}`, {
     method: "POST",
     body: form
-  }, 45000);
+  }, 120000);
 }
 
 export async function saveReview(payload: unknown) {
   return j("/api/review", {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+}
+
+export async function saveWorkingReview(payload: unknown) {
+  return j<{ status: string; reviewed_samples?: number; warning?: string }>("/api/review/current", {
+    method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
@@ -226,7 +251,7 @@ export async function generateBom(payload: {
 }
 
 export async function exportDfm(report: DfmReport) {
-  await dl(await fetch(API + "/api/dfm/export", {
+  await dl(await request("/api/dfm/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(report)
@@ -234,7 +259,7 @@ export async function exportDfm(report: DfmReport) {
 }
 
 export async function exportBomPdf(report: BomReport) {
-  await dl(await fetch(API + "/api/bom/export", {
+  await dl(await request("/api/bom/export", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(report)
@@ -329,7 +354,7 @@ async function dl(response: Response, fallback: string) {
 }
 
 export async function exportExcel(drawing: DrawingDetails, rows: CostRow[], summary: QuoteSummary) {
-  await dl(await fetch(API + "/api/export/excel", {
+  await dl(await request("/api/export/excel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ drawing, rows, summary })
@@ -337,7 +362,7 @@ export async function exportExcel(drawing: DrawingDetails, rows: CostRow[], summ
 }
 
 export async function exportPdf(drawing: DrawingDetails, rows: CostRow[], summary: QuoteSummary, customer: string) {
-  await dl(await fetch(API + "/api/export/pdf", {
+  await dl(await request("/api/export/pdf", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ drawing, rows, summary, customer })
@@ -345,7 +370,7 @@ export async function exportPdf(drawing: DrawingDetails, rows: CostRow[], summar
 }
 
 export async function exportDataset() {
-  await dl(await fetch(API + "/api/dataset/export"), "quotation_training_dataset.zip");
+  await dl(await request("/api/dataset/export", undefined, 120000), "quotation_training_dataset.zip");
 }
 
 
@@ -376,7 +401,7 @@ export async function exportBatchPdf(
     ? "merged_quotation.pdf"
     : "separate_quotations.zip";
 
-  await dl(await fetch(API + "/api/export/pdf-batch", {
+  await dl(await request("/api/export/pdf-batch", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ customer, mode, items })

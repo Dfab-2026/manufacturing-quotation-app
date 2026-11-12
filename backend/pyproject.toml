@@ -1,6 +1,6 @@
 [project]
 name = "dfab-quotation-api"
-version = "0.11.0"
+version = "0.14.0"
 requires-python = ">=3.12"
 dependencies = [
   "fastapi",
@@ -15,7 +15,6 @@ dependencies = [
   "pymupdf",
   "ezdxf>=1.4,<2",
   "pillow",
-  "google-genai",
   "openpyxl",
   "reportlab",
 ]

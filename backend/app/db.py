@@ -16,6 +16,7 @@ from sqlalchemy import (
     create_engine,
     delete,
     func,
+    inspect,
     select,
     text,
 )
@@ -261,20 +262,27 @@ def _upsert_drawing(
     file_hash: str = "",
     updated_at: str = "",
 ) -> None:
+    """Upsert drawing data without assuming the database is on the newest schema.
+
+    Some deployed databases were created with an older ``drawings`` table (for
+    example one containing ``file_name`` but not ``file_hash``). Loading that row
+    through the ORM makes SQLAlchemy SELECT every mapped column and raises
+    ``UndefinedColumn`` before an update can happen.  This compatibility upsert
+    intentionally uses only columns that actually exist in the connected table.
+
+    ``init_database`` still performs additive migrations when the DB user has DDL
+    permission.  This function is the safety net for existing installations where
+    DDL is delayed/restricted, so analysis/review never fails just because one
+    optional drawing-cache column is absent.
+    """
     if not isinstance(drawing, dict):
         return
 
     drawing_no = str(drawing.get("drawing_no") or "")
     revision = str(drawing.get("revision") or "")
+    drawing_id = file_hash or (f"{drawing_no}::{revision}" if (drawing_no or revision) else "unknown")
 
-    if file_hash:
-        drawing_id = file_hash
-    else:
-        drawing_id = f"{drawing_no}::{revision}" or "unknown"
-
-    row = session.get(DrawingRecord, drawing_id)
-
-    values = {
+    values: dict[str, Any] = {
         "id": drawing_id,
         "file_hash": file_hash,
         "drawing_no": drawing_no,
@@ -288,11 +296,48 @@ def _upsert_drawing(
         "payload": drawing,
     }
 
-    if row is None:
-        session.add(DrawingRecord(**values))
+    # Inspect through the same transaction connection so this works reliably with
+    # pooled/remote PostgreSQL connections. Never reference a column that is not
+    # physically present in the current database.
+    connection = session.connection()
+    existing_columns = {
+        column["name"] for column in inspect(connection).get_columns("drawings")
+    }
+    usable = {key: value for key, value in values.items() if key in existing_columns}
+
+    if "id" not in usable:
+        # A malformed legacy table should not be allowed to break the primary
+        # analysis flow. Other extraction/review tables still retain the payload.
+        return
+
+    insert_columns = list(usable.keys())
+    quoted_columns = ", ".join(f'"{name}"' for name in insert_columns)
+    bind_names = ", ".join(f':{name}' for name in insert_columns)
+    update_columns = [name for name in insert_columns if name != "id"]
+
+    if update_columns:
+        update_sql = ", ".join(
+            f'"{name}" = EXCLUDED."{name}"' for name in update_columns
+        )
+        conflict_sql = f" ON CONFLICT (id) DO UPDATE SET {update_sql}"
     else:
-        for key, value in values.items():
-            setattr(row, key, value)
+        conflict_sql = " ON CONFLICT (id) DO NOTHING"
+
+    # JSONB needs an explicit cast when using a textual statement.
+    if "payload" in usable:
+        bind_names = ", ".join(
+            "CAST(:payload AS JSONB)" if name == "payload" else f':{name}'
+            for name in insert_columns
+        )
+        usable["payload"] = json.dumps(drawing)
+
+    session.execute(
+        text(
+            f'INSERT INTO drawings ({quoted_columns}) VALUES ({bind_names})'
+            f'{conflict_sql}'
+        ),
+        usable,
+    )
 
 
 def _replace_cost_rows(
@@ -1251,8 +1296,82 @@ def delete_workspace_session_db(session_id: str) -> None:
             session.delete(row)
 
 
+def _ensure_schema_compatibility() -> dict:
+    """Apply additive, non-destructive compatibility migrations.
+
+    Each DDL statement runs in its own transaction. This is important for hosted
+    PostgreSQL: if one optional ALTER/INDEX operation is not permitted, PostgreSQL
+    marks that transaction aborted. Running operations independently lets the app
+    continue and the runtime compatibility upsert still supports the legacy table.
+    """
+    applied: list[str] = []
+    warnings: list[str] = []
+
+    try:
+        inspector = inspect(engine)
+        tables = set(inspector.get_table_names())
+    except Exception as exc:
+        return {
+            "applied": applied,
+            "warnings": [f"Schema inspection unavailable: {type(exc).__name__}"],
+        }
+
+    if "drawings" not in tables:
+        return {"applied": applied, "warnings": warnings}
+
+    existing = {column["name"] for column in inspector.get_columns("drawings")}
+    required_columns = {
+        "file_hash": "VARCHAR(128) DEFAULT ''",
+        "drawing_no": "VARCHAR(120) DEFAULT ''",
+        "revision": "VARCHAR(80) DEFAULT ''",
+        "description": "TEXT DEFAULT ''",
+        "material": "TEXT DEFAULT ''",
+        "thickness_mm": "DOUBLE PRECISION DEFAULT 0",
+        "weight_kg": "DOUBLE PRECISION DEFAULT 0",
+        "quantity": "INTEGER DEFAULT 1",
+        "updated_at": "VARCHAR(64) DEFAULT ''",
+        "payload": "JSONB DEFAULT '{}'::jsonb",
+    }
+
+    for name, sql_type in required_columns.items():
+        if name in existing:
+            continue
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(f'ALTER TABLE drawings ADD COLUMN IF NOT EXISTS "{name}" {sql_type}')
+                )
+            applied.append(f"drawings.{name}")
+            existing.add(name)
+        except Exception as exc:
+            warnings.append(
+                f"Could not add drawings.{name}: {type(exc).__name__}; legacy-compatible mode remains active."
+            )
+
+    for index_name, column_name in (
+        ("ix_drawings_file_hash", "file_hash"),
+        ("ix_drawings_drawing_no", "drawing_no"),
+    ):
+        if column_name not in existing:
+            continue
+        try:
+            with engine.begin() as connection:
+                connection.execute(
+                    text(
+                        f'CREATE INDEX IF NOT EXISTS "{index_name}" '
+                        f'ON drawings ("{column_name}")'
+                    )
+                )
+        except Exception as exc:
+            warnings.append(
+                f"Could not create {index_name}: {type(exc).__name__}."
+            )
+
+    return {"applied": applied, "warnings": warnings}
+
 def init_database(legacy_data_dir: Path | None = None) -> dict:
     Base.metadata.create_all(engine)
+    schema_migration = _ensure_schema_compatibility()
 
     migration = {
         "migrated": [],
@@ -1264,5 +1383,6 @@ def init_database(legacy_data_dir: Path | None = None) -> dict:
 
     return {
         "database": "connected",
+        "schema_migration": schema_migration,
         "legacy_migration": migration,
     }
