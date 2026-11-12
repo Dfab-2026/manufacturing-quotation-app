@@ -4008,6 +4008,7 @@ export default function Page() {
               <Recent
                 quotes={quotes}
                 onRename={renameSavedQuote}
+                onEdit={editSavedQuote}
                 onDelete={deleteSavedQuote}
               />
             </div>

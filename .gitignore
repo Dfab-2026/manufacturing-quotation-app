@@ -1,31 +1,58 @@
-frontend/node_modules/
-frontend/.next/
-backend/.venv/
-backend/__pycache__/
-backend/app/__pycache__/
-*.pyc
-.env
-
-# Node / Next.js
+# Dependencies
 node_modules/
 frontend/node_modules/
+
+# Next.js build output
 .next/
 frontend/.next/
+out/
+frontend/out/
 
-# Python environments
+# Python virtual environments
 .venv/
 venv/
+env/
 backend/.venv/
 backend/venv/
 
-# Python cache
+# Python cache / test artifacts
 __pycache__/
-backend/__pycache__/
-backend/app/__pycache__/
-*.pyc
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
 
-# Secrets
+# Environment files / secrets
 .env
-.env.local
+.env.*
+!.env.example
 backend/.env
-frontend/.env.local
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# Logs / runtime artifacts
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+*.pid.lock
+
+# Build / package artifacts
+dist/
+build/
+coverage/
+*.zip
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
