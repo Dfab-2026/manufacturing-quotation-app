@@ -2330,8 +2330,9 @@ export default function Page() {
       ? inferredIdRaw
       : (inferredOd > predictedThicknessMm * 2 ? inferredOd - predictedThicknessMm * 2 : 0);
     const materialName = materialRow?.item || drawing?.material || "";
-    const savedRate = materialRow?.rate > 0
-      ? Number(materialRow.rate)
+    const materialRowRate = Number(materialRow?.rate ?? 0);
+    const savedRate = materialRowRate > 0
+      ? materialRowRate
       : Number(rates.find((rate) =>
           rate.active
           && rate.category === "MATERIAL"
