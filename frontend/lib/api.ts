@@ -21,6 +21,46 @@ const API = /^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):8000$/i.test(configured
   ? "/backend-api"
   : (configuredApi || "/backend-api");
 
+const DIRECT_FASTAPI = (process.env.NEXT_PUBLIC_FASTAPI_URL || "").replace(/\/$/, "");
+
+async function parseErrorResponse(response: Response): Promise<Error> {
+  let message = `Request failed (${response.status})`;
+  const raw = await response.text();
+  if (raw.trim()) {
+    try {
+      const body = JSON.parse(raw);
+      message = body?.detail || body?.message || message;
+    } catch {
+      message = raw;
+    }
+  }
+  return new Error(message);
+}
+
+async function postAnalyzeTo(base: string, file: File, forceAI: boolean, timeoutMs = 300000): Promise<AnalysisResponse> {
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  const form = new FormData();
+  form.append("file", file);
+
+  try {
+    const response = await fetch(`${base}/api/analyze?force_ai=${forceAI ? "true" : "false"}`, {
+      method: "POST",
+      body: form,
+      signal: controller.signal
+    });
+    if (!response.ok) throw await parseErrorResponse(response);
+    return response.json();
+  } catch (error) {
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new Error("Analyze timed out while waiting for FastAPI.");
+    }
+    throw error;
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
 async function request(url: string, init?: RequestInit, timeoutMs = 45000): Promise<Response> {
   const controller = new AbortController();
   const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
@@ -105,12 +145,25 @@ export async function analyzeCad(payload: {
 }
 
 export async function analyzeDrawing(file: File, forceAI = false) {
-  const form = new FormData();
-  form.append("file", file);
-  return j<AnalysisResponse>(`/api/analyze?force_ai=${forceAI ? "true" : "false"}`, {
-    method: "POST",
-    body: form
-  }, 120000);
+  // For hosted deployments, send large multipart drawing uploads directly to
+  // FastAPI when NEXT_PUBLIC_FASTAPI_URL is configured. If that route is
+  // temporarily unavailable, fall back to the existing Next.js proxy.
+  const targets = DIRECT_FASTAPI
+    ? [DIRECT_FASTAPI, API].filter((value, index, values) => value && values.indexOf(value) === index)
+    : [API];
+
+  let lastError: unknown = null;
+  for (const target of targets) {
+    try {
+      return await postAnalyzeTo(target, file, forceAI, 300000);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("Analyze failed. FastAPI did not return a valid response.");
 }
 
 export async function saveReview(payload: unknown) {

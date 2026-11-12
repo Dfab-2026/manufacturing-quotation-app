@@ -2157,8 +2157,7 @@ export default function Page() {
           : await api.analyzeDrawing(selected, true);
         const result = enrichPartSummary(analyzedResult);
 
-        const itemSummary =
-          result.summary || await api.calculateQuote(result.rows);
+        const itemSummary = result.summary || emptySummary;
 
         const workspace: BatchWorkspace = {
           id: `${result.file_hash}-${originalIndex}`,
@@ -2662,6 +2661,11 @@ export default function Page() {
     setBatchFailures([]);
     setActiveBatchId("");
     setBusy(true);
+    setAnalyzeProgress("Analyzing");
+    setMsg("Analyzing drawing with FastAPI…");
+    // Move to the review section immediately; the loading state below is shown
+    // until the first valid FastAPI result arrives.
+    setStep(2);
 
     const completed: BatchWorkspace[] = [];
     const failed: BatchFailure[] = [];
@@ -2681,13 +2685,23 @@ export default function Page() {
           const selected = selectedFiles[index];
 
           try {
-            completed.push(
-              await analyzeOneWithRetry(
-                selected,
-                index,
-                selectedFiles.length
-              )
+            const workspace = await analyzeOneWithRetry(
+              selected,
+              index,
+              selectedFiles.length
             );
+            completed.push(workspace);
+
+            if (completed.length === 1) {
+              setActiveBatchId(workspace.id);
+              setActiveSourceKey(fileKey(workspace.file));
+              setFile(workspace.file);
+              setAnalysis(workspace.analysis);
+              setDrawing(workspace.drawing);
+              setRows(workspace.rows);
+              setSummary(workspace.summary);
+              setQuoteMode(selectedFiles.length > 1 ? "merge" : "separate");
+            }
           } catch (error) {
             failed.push({
               file: selected,
@@ -2717,9 +2731,10 @@ export default function Page() {
       setBatchFailures(failed);
 
       if (!ordered.length) {
+        setStep(1);
         setMsg(
           failed.length
-            ? `0 of ${selectedFiles.length} source files analyzed. Use Retry Failed.`
+            ? `Analyze failed: ${failed[0]?.error || "FastAPI did not return a valid result."}`
             : "No source files were analyzed."
         );
         return;
@@ -4405,6 +4420,24 @@ export default function Page() {
                           ? "Analyze Source"
                           : "Add Source to Analyze"}
                   </button>
+                </div>
+              </section>
+            )}
+
+            {step === 2 && busy && !drawing && (
+              <section className="panel">
+                <div className="heading">
+                  <p className="eyebrow">STEP 2</p>
+                  <h2>Analyzing Drawing…</h2>
+                  <p>FastAPI is extracting drawing details. This page will fill automatically when the first result is ready.</p>
+                </div>
+                <div className="drawing-analyze-loader" role="status" aria-live="polite">
+                  <div className="loader-gear" aria-hidden="true"><span/><span/><span/></div>
+                  <div>
+                    <b>Analyzing…</b>
+                    <span>{analyzeProgress || "Reading engineering data"}</span>
+                  </div>
+                  <div className="loader-track"><i/></div>
                 </div>
               </section>
             )}
