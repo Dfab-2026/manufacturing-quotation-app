@@ -30,7 +30,6 @@ from typing import Literal
 from concurrent.futures import ThreadPoolExecutor
 from time import perf_counter
 import base64
-import asyncio
 import json
 import os
 import math
@@ -306,7 +305,7 @@ def ensure_data():
 init_database(LEGACY_DATA_DIR)
 ensure_data()
 
-EXTRACTION_PIPELINE_VERSION = "fastapi-local-v13-20261112"
+EXTRACTION_PIPELINE_VERSION = "fastapi-local-mandatory-v15-20261112"
 MAX_UPLOAD_BYTES = max(1, int(os.getenv("MAX_UPLOAD_MB", "100"))) * 1024 * 1024
 
 
@@ -1582,7 +1581,7 @@ def _extract_local_ocr_text(content: bytes, filename: str, *, text_hint: str = "
                 # recovery on an otherwise healthy vector PDF uses title_only=True
                 # so the previously fast analysis path stays responsive.
                 if not title_only and len((text_hint or "").strip()) < 100:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(180 / 72, 180 / 72), alpha=False)
+                    pix = page.get_pixmap(matrix=fitz.Matrix(220 / 72, 220 / 72), alpha=False)
                     full_img = Image.open(BytesIO(pix.tobytes("png")))
                     full_text, full_score = _ocr_pil_image(full_img)
                     if full_text:
@@ -2023,6 +2022,64 @@ def _derive_local_geometry_weight(ai_raw: dict, drawing: Drawing, text: str) -> 
 
     return 0.0, "", 0
 
+def _quick_mandatory_measurements(text: str, drawing: Drawing | None = None) -> dict[str, float]:
+    """Quickly determine which mandatory L/W/T values are already visible.
+
+    This is intentionally conservative and is used only to decide whether OCR
+    recovery is required. It never writes guessed values into the drawing.
+    """
+    hay = str(text or "")
+    values: dict[str, float] = {}
+    patterns = {
+        "length_mm": [
+            r"\b(?:OVERALL\s+LENGTH|TOTAL\s+LENGTH|LENGTH|LEN|OAL)\b\s*(?:\(\s*MM\s*\))?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+            r"\bL\s*[:=]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+            r"\b(\d+(?:[.,]\d+)?)\s*(?:MM)?\s*(?:LONG|LENGTH)\b",
+        ],
+        "width_mm": [
+            r"\b(?:OVERALL\s+WIDTH|TOTAL\s+WIDTH|WIDTH|WID)\b\s*(?:\(\s*MM\s*\))?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+            r"\bW\s*[:=]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+            r"\b(\d+(?:[.,]\d+)?)\s*(?:MM)?\s*(?:WIDE|WIDTH)\b",
+        ],
+        "thickness_mm": [
+            r"\b(?:THICKNESS|THK|THICK)\b\s*(?:\(\s*MM\s*\))?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+            r"\bT\s*[:=]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+            r"\b(\d+(?:[.,]\d+)?)\s*(?:MM)?\s*(?:THK|THICK)\b",
+            r"\bPL(?:ATE)?\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+        ],
+    }
+    for key, options in patterns.items():
+        match = first_match(options, hay)
+        value = parse_float_match(match)
+        if value > 0:
+            values[key] = value
+
+    stock = first_match([
+        r"\b(?:SIZE|STOCK|BLANK|PLATE|SHEET)?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+    ], hay)
+    if stock and stock.lastindex and stock.lastindex >= 3:
+        context = hay[stock.start(): min(len(hay), stock.end() + 28)].upper()
+        if not any(token in context for token in ("CHAMFER", "CHMF")):
+            try:
+                l = float(stock.group(1).replace(",", "."))
+                w = float(stock.group(2).replace(",", "."))
+                t = float(stock.group(3).replace(",", "."))
+            except Exception:
+                l = w = t = 0.0
+            if l > 0 and w > 0 and 0 < t <= 500:
+                values.setdefault("length_mm", l)
+                values.setdefault("width_mm", w)
+                values.setdefault("thickness_mm", t)
+
+    if drawing is not None and float(getattr(drawing, "thickness_mm", 0) or 0) > 0:
+        values.setdefault("thickness_mm", float(drawing.thickness_mm))
+    return values
+
+
+def _mandatory_measurements_complete(values: dict[str, float]) -> bool:
+    return all(float(values.get(key) or 0) > 0 for key in ("length_mm", "width_mm", "thickness_mm"))
+
+
 def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[dict, Drawing, list[Row], list[str], str]:
     """Free/local engineering extraction used by FastAPI.
 
@@ -2048,6 +2105,8 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
     # with little/no embedded text. Missing engineering fields alone must NOT
     # trigger OCR because that makes ordinary drawings feel slow and changes the
     # previously working navigation/analyze behavior.
+    initial_measurements = _quick_mandatory_measurements(vector_text, first_drawing)
+    mandatory_missing = not _mandatory_measurements_complete(initial_measurements)
     needs_ocr = (
         suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
         or (suffix == ".pdf" and len(vector_text.strip()) < 100)
@@ -2059,10 +2118,14 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
         ocr_started = perf_counter()
         ocr_text, ocr_warnings = _extract_local_ocr_text(content, filename, text_hint=vector_text)
         stage_timings["ocr_ms"] = round((perf_counter() - ocr_started) * 1000, 1)
-    elif suffix == ".pdf" and (first_drawing.material == "Not detected" or first_drawing.thickness_mm <= 0):
-        # Keep the approved fast path: do not OCR the whole page for healthy
-        # vector PDFs.  A compact lower-right/title-block OCR pass is used only
-        # when critical material/thickness fields are absent.
+    elif suffix == ".pdf" and (
+        first_drawing.material == "Not detected"
+        or first_drawing.thickness_mm <= 0
+        or mandatory_missing
+    ):
+        # Target the title block first for material/stock-size data. This keeps
+        # clean CAD PDFs fast while still exhausting local extraction before a
+        # mandatory field is declared missing.
         title_ocr_started = perf_counter()
         ocr_text, ocr_warnings = _extract_local_ocr_text(
             content, filename, text_hint=vector_text, title_only=True
@@ -2078,11 +2141,13 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
     # rather than usable text. If the two fast text parsers + title-block OCR
     # still miss thickness, perform one local full-page OCR recovery pass.
     # This is intentionally conditional so ordinary drawings stay fast.
+    recovered_measurements = _quick_mandatory_measurements(
+        _merge_text_sources(vector_text, ocr_text), drawing
+    )
     if (
         suffix == ".pdf"
-        and drawing.thickness_mm <= 0
         and not needs_ocr
-        and len(vector_text.strip()) < 400
+        and not _mandatory_measurements_complete(recovered_measurements)
     ):
         full_ocr_started = perf_counter()
         full_ocr_text, full_ocr_warnings = _extract_local_ocr_text(
@@ -2432,6 +2497,8 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
         material_grade = m.group(0).upper(); material_family = "Mild Steel"
     elif (m := re.search(r"\bIS\s*2062[^\n\r]{0,20}?\b(E250|E350)\b", upper)):
         material_grade = f"IS 2062 {m.group(1).upper()}"; material_family = "Mild Steel"
+    elif (m := re.search(r"\b(?:ASTM\s*A240|A240)[^\n\r]{0,24}?\b(304L?|316L?|321|430)\b", upper)):
+        material_grade = f"AISI {m.group(1).upper()}"; material_family = "Stainless Steel"
     elif (m := re.search(r"\b(5052(?:-H32)?|6061(?:-T6)?|6082(?:-T6)?)\b", upper)):
         material_grade = m.group(1).upper(); material_family = "Aluminium"
     explicit_weight = _extract_printed_weight_kg(hay)
@@ -2507,6 +2574,20 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str) -> tuple[d
         ai_raw.setdefault("notes", []).append(
             f"Weight calculated locally from drawing geometry: {derived_weight:g} kg ({weight_basis})."
         )
+
+    mandatory_status = {
+        "length_mm": float(ai_raw.get("length_mm") or 0) > 0,
+        "width_mm": float(ai_raw.get("width_mm") or 0) > 0,
+        "thickness_mm": float(ai_raw.get("thickness_mm") or drawing.thickness_mm or 0) > 0,
+        "material": bool(material_family),
+        "material_grade": bool(material_grade),
+        "weight_kg": float(ai_raw.get("weight_kg") or drawing.weight_kg or 0) > 0,
+    }
+    ai_raw["mandatory_fields"] = mandatory_status
+    ai_raw["mandatory_complete"] = all(
+        mandatory_status[key]
+        for key in ("length_mm", "width_mm", "thickness_mm", "material", "weight_kg")
+    )
 
     if suffix == ".pdf" and len(raw_text.strip()) < 20:
         warnings = [
@@ -4457,33 +4538,16 @@ async def save_workspace_file(
     file_hash = sha256(content).hexdigest()
     file_id = f"WF-{session_id[:16]}-{file_hash[:20]}"
 
-    # Hosted PostgreSQL may need a short cold-start/reconnect window. Retry the
-    # persistence operation before reporting a failure to the frontend. The
-    # file bytes are already in memory, so retries do not re-read the upload.
-    last_error: Exception | None = None
-    for attempt in range(3):
-        try:
-            return await run_in_threadpool(
-                save_workspace_file_db,
-                session_id,
-                file_id,
-                file.filename or "upload.bin",
-                file.content_type or "application/octet-stream",
-                role,
-                len(content),
-                file_hash,
-                content,
-                now(),
-            )
-        except Exception as exc:
-            last_error = exc
-            if attempt < 2:
-                await asyncio.sleep(0.35 * (2 ** attempt))
-
-    print(f"[WORKSPACE FILE PERSISTENCE ERROR] {type(last_error).__name__ if last_error else 'Unknown'}: {last_error}")
-    raise HTTPException(
-        status_code=503,
-        detail="Database save is temporarily unavailable. The drawing can still be analyzed; retry the save shortly.",
+    return save_workspace_file_db(
+        session_id=session_id,
+        file_id=file_id,
+        filename=file.filename or "upload.bin",
+        mime_type=file.content_type or "application/octet-stream",
+        role=role,
+        size_bytes=len(content),
+        file_hash=file_hash,
+        content=content,
+        stamp=now(),
     )
 
 
@@ -4903,8 +4967,10 @@ def extraction_capabilities():
         "formats": ["PDF", "PNG", "JPG", "JPEG", "WEBP", "BMP", "TIF", "TIFF", "DXF", "STEP/STP/IGES/STL/OBJ/GLB via CAD geometry endpoint"],
         "engines": ["PyPDF", "PyMuPDF", "RapidOCR/ONNX", "ezdxf", "deterministic engineering parser", "geometry weight", "Rate Master"],
         "cloud_ai_required": False,
+        "mandatory_targets": ["length_mm", "width_mm", "thickness_mm", "material", "material_grade", "weight_kg"],
+        "weight_policy": "Use printed weight when present; otherwise calculate per-piece weight only from detected geometry plus a recognized material density.",
         "fields": [
-            "drawing_no", "revision", "material_family", "material_grade", "thickness", "weight", "quantity",
+            "drawing_no", "revision", "material_family", "material_grade", "length_mm", "width_mm", "thickness_mm", "weight_kg", "quantity",
             "dimensions", "tolerances", "holes", "slots", "counterbores", "countersinks", "threads",
             "chamfers", "bends", "studs", "welds", "surface_finish", "processes", "notes", "cost_rows"
         ],
