@@ -16,12 +16,24 @@ import type {
   PremiumEstimate
 } from "./types";
 
-const configuredApi = (process.env.NEXT_PUBLIC_API_BASE_URL || "").replace(/\/$/, "");
+function normalizeApiBase(value: string): string {
+  const trimmed = String(value || "").trim().replace(/\/$/, "");
+  // Users often paste a backend URL ending in /api. All client functions below
+  // already include /api/... in their paths, so normalize that suffix away.
+  return trimmed.replace(/\/api$/i, "");
+}
+
+const configuredApi = normalizeApiBase(process.env.NEXT_PUBLIC_API_BASE_URL || "");
+const configuredDirectFastApi = normalizeApiBase(process.env.NEXT_PUBLIC_FASTAPI_URL || "");
+const RENDER_FASTAPI_FALLBACK = "https://ai-quotation-api.onrender.com";
+
 const API = /^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):8000$/i.test(configuredApi)
   ? "/backend-api"
   : (configuredApi || "/backend-api");
 
-const DIRECT_FASTAPI = (process.env.NEXT_PUBLIC_FASTAPI_URL || "").replace(/\/$/, "");
+const DIRECT_FASTAPI = configuredDirectFastApi
+  || (/^https?:\/\//i.test(configuredApi) ? configuredApi : "")
+  || RENDER_FASTAPI_FALLBACK;
 
 async function parseErrorResponse(response: Response): Promise<Error> {
   let message = `Request failed (${response.status})`;
@@ -145,19 +157,37 @@ export async function analyzeCad(payload: {
 }
 
 export async function analyzeDrawing(file: File, forceAI = false) {
-  // For hosted deployments, send large multipart drawing uploads directly to
-  // FastAPI when NEXT_PUBLIC_FASTAPI_URL is configured. If that route is
-  // temporarily unavailable, fall back to the existing Next.js proxy.
-  const targets = DIRECT_FASTAPI
-    ? [DIRECT_FASTAPI, API].filter((value, index, values) => value && values.indexOf(value) === index)
-    : [API];
+  // Production critical path: call Render directly first. Do not route the
+  // multipart drawing through Next.js/Vercel unless the direct API is genuinely
+  // unreachable. This keeps one click -> one FastAPI POST.
+  const targets = [DIRECT_FASTAPI, API].filter(
+    (value, index, values) => Boolean(value) && values.indexOf(value) === index
+  );
 
   let lastError: unknown = null;
   for (const target of targets) {
     try {
-      return await postAnalyzeTo(target, file, forceAI, 300000);
+      // Best-effort warmup for Render cold starts. Never block Analyze on health.
+      if (/^https?:\/\//i.test(target)) {
+        const warmController = new AbortController();
+        const warmTimer = globalThis.setTimeout(() => warmController.abort(), 8000);
+        try {
+          await fetch(`${target}/api/health`, {
+            method: "GET",
+            cache: "no-store",
+            signal: warmController.signal
+          });
+        } catch {
+          // The analyze request below is authoritative.
+        } finally {
+          globalThis.clearTimeout(warmTimer);
+        }
+      }
+
+      return await postAnalyzeTo(target, file, forceAI, 240000);
     } catch (error) {
       lastError = error;
+      // Only fall through to the proxy after a direct request truly failed.
     }
   }
 

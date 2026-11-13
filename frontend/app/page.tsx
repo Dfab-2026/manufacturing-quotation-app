@@ -2644,8 +2644,12 @@ export default function Page() {
   const analyze = async () => {
     const selectedFiles = allSourceFiles;
 
-    if (!selectedFiles.length) return;
+    if (!selectedFiles.length || busy) {
+      if (!selectedFiles.length) setMsg("Select a drawing first.");
+      return;
+    }
 
+    // Reset only the current analysis result. Uploaded source files remain intact.
     setAnalysis(null);
     setDrawing(null);
     setRows([]);
@@ -2663,36 +2667,74 @@ export default function Page() {
     setBusy(true);
     setAnalyzeProgress("Analyzing");
     setMsg("Analyzing drawing with FastAPI…");
-    // Move to the review section immediately; the loading state below is shown
-    // until the first valid FastAPI result arrives.
+
+    // Navigation must never depend on network/database/OCR completion.
+    // Open Drawing Review immediately and render its loading state there.
     setStep(2);
 
+    // Single-drawing production path: intentionally bypass all batch orchestration.
+    // This is the critical user flow and maps one button click to one FastAPI POST.
+    if (selectedFiles.length === 1) {
+      const selected = selectedFiles[0];
+      try {
+        const rawResult = isModelSource(selected)
+          ? await api.analyzeCad(await inspectCadFile(selected))
+          : await api.analyzeDrawing(selected, true);
+        const result = enrichPartSummary(rawResult);
+        const workspace: BatchWorkspace = {
+          id: `${result.file_hash}-0`,
+          file: selected,
+          analysis: result,
+          drawing: result.drawing,
+          rows: result.rows || [],
+          summary: result.summary || emptySummary
+        };
+
+        replaceBatchItems([workspace]);
+        setActiveBatchId(workspace.id);
+        setActiveSourceKey(fileKey(selected));
+        setFile(selected);
+        setAnalysis(result);
+        setDrawing(result.drawing);
+        setRows(result.rows || []);
+        setSummary(result.summary || emptySummary);
+        setQuoteMode("separate");
+        setMsg("Drawing analyzed successfully.");
+
+        // Expensive secondary artifacts must not delay Step 2.
+        acceptParallelArtifacts(workspace);
+        void refresh();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Analyze failed.";
+        setBatchFailures([{ file: selected, error: message }]);
+        setMsg(`Analyze failed: ${message}`);
+        // Stay on Step 2: the retry/back controls are rendered there.
+        setStep(2);
+      } finally {
+        setAnalyzeProgress("");
+        setBusy(false);
+      }
+      return;
+    }
+
+    // Multi-file path: analyze independently with bounded concurrency. The first
+    // successful source is displayed immediately; one failure never cancels others.
     const completed: BatchWorkspace[] = [];
     const failed: BatchFailure[] = [];
+    let firstDisplayed = false;
 
     try {
       let nextIndex = 0;
-
       const worker = async () => {
         while (true) {
-          const index = nextIndex;
-          nextIndex += 1;
-
-          if (index >= selectedFiles.length) {
-            return;
-          }
-
+          const index = nextIndex++;
+          if (index >= selectedFiles.length) return;
           const selected = selectedFiles[index];
-
           try {
-            const workspace = await analyzeOneWithRetry(
-              selected,
-              index,
-              selectedFiles.length
-            );
+            const workspace = await analyzeOneWithRetry(selected, index, selectedFiles.length);
             completed.push(workspace);
-
-            if (completed.length === 1) {
+            if (!firstDisplayed) {
+              firstDisplayed = true;
               setActiveBatchId(workspace.id);
               setActiveSourceKey(fileKey(workspace.file));
               setFile(workspace.file);
@@ -2700,48 +2742,30 @@ export default function Page() {
               setDrawing(workspace.drawing);
               setRows(workspace.rows);
               setSummary(workspace.summary);
-              setQuoteMode(selectedFiles.length > 1 ? "merge" : "separate");
+              setQuoteMode("merge");
             }
           } catch (error) {
             failed.push({
               file: selected,
-              error:
-                error instanceof Error
-                  ? error.message
-                  : "Analyze failed"
+              error: error instanceof Error ? error.message : "Analyze failed"
             });
           }
         }
       };
 
-      const workerCount = Math.min(
-        BATCH_ANALYZE_CONCURRENCY,
-        selectedFiles.length
-      );
-
-      await Promise.all(
-        Array.from(
-          { length: workerCount },
-          () => worker()
-        )
-      );
+      const workerCount = Math.min(BATCH_ANALYZE_CONCURRENCY, selectedFiles.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
 
       const ordered = sortBatchBySelectedFiles(completed);
       replaceBatchItems(ordered);
       setBatchFailures(failed);
 
       if (!ordered.length) {
-        setStep(1);
-        setMsg(
-          failed.length
-            ? `Analyze failed: ${failed[0]?.error || "FastAPI did not return a valid result."}`
-            : "No source files were analyzed."
-        );
+        setMsg(`Analyze failed: ${failed[0]?.error || "FastAPI did not return a valid result."}`);
         return;
       }
 
       const first = ordered[0];
-
       setActiveBatchId(first.id);
       setActiveSourceKey(fileKey(first.file));
       setFile(first.file);
@@ -2749,25 +2773,12 @@ export default function Page() {
       setDrawing(first.drawing);
       setRows(first.rows);
       setSummary(first.summary);
-      setQuoteMode(
-        selectedFiles.length > 1
-          ? "merge"
-          : "separate"
+      setQuoteMode("merge");
+      setMsg(
+        failed.length
+          ? `${ordered.length} of ${selectedFiles.length} drawings analyzed. ${failed.length} failed — use Retry Failed.`
+          : `All ${selectedFiles.length} drawings analyzed.`
       );
-      setStep(2);
-
-      if (!failed.length) {
-        setMsg(
-          selectedFiles.length === 1
-            ? "1 source file analyzed."
-            : `All ${selectedFiles.length} source files analyzed independently. Select any source to review its own details.`
-        );
-      } else {
-        setMsg(
-          `${ordered.length} of ${selectedFiles.length} source files analyzed. ${failed.length} failed after 2 attempts — use Retry Failed.`
-        );
-      }
-
       void refresh();
     } finally {
       setAnalyzeProgress("");
@@ -4438,6 +4449,20 @@ export default function Page() {
                     <span>{analyzeProgress || "Reading engineering data"}</span>
                   </div>
                   <div className="loader-track"><i/></div>
+                </div>
+              </section>
+            )}
+
+            {step === 2 && !busy && !drawing && (
+              <section className="panel">
+                <div className="heading">
+                  <p className="eyebrow">STEP 2</p>
+                  <h2>Drawing analysis needs retry</h2>
+                  <p>{msg || "FastAPI did not return a valid drawing result."}</p>
+                </div>
+                <div className="actions">
+                  <button className="btn primary" onClick={analyze}>Retry Analyze</button>
+                  <button className="btn secondary" onClick={() => setStep(1)}>Back to Upload</button>
                 </div>
               </section>
             )}

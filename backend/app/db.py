@@ -23,12 +23,13 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 load_dotenv()
 
 RAW_DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DATABASE_CONFIGURED = bool(RAW_DATABASE_URL)
+DATABASE_ENGINE_FALLBACK = False
 
 # Keep extraction/analyze available even before a production database is
 # configured. Persistence calls will fail safely and the API layer falls back
@@ -236,14 +237,38 @@ class SystemStateRecord(Base):
 
 
 if DATABASE_CONFIGURED:
-    engine = create_engine(
-        DATABASE_URL,
-        pool_pre_ping=True,
-        pool_size=int(os.getenv("DB_POOL_SIZE", "3")),
-        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "2")),
-        pool_timeout=10,
-        pool_recycle=300,
-    )
+    try:
+        # Vercel/Supabase transaction-pooler deployments should not maintain a
+        # second long-lived SQLAlchemy pool inside an ephemeral function instance.
+        # NullPool gives each request a short connection and avoids stale/cold pool
+        # failures. Traditional/local deployments retain the configurable pool.
+        if os.getenv("VERCEL") or os.getenv("SERVERLESS") == "1":
+            engine = create_engine(
+                DATABASE_URL,
+                pool_pre_ping=True,
+                poolclass=NullPool,
+                connect_args={"connect_timeout": 5},
+            )
+        else:
+            engine = create_engine(
+                DATABASE_URL,
+                pool_pre_ping=True,
+                pool_size=int(os.getenv("DB_POOL_SIZE", "3")),
+                max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "2")),
+                pool_timeout=10,
+                pool_recycle=300,
+            )
+    except Exception as exc:
+        DATABASE_ENGINE_FALLBACK = True
+        # Missing/invalid DB driver or malformed production configuration must not
+        # make the extraction API unimportable. Fall back to a shared in-memory
+        # store; health will still report the configured remote DB as unavailable.
+        print(f"[DB ENGINE WARNING] {type(exc).__name__}: {exc}")
+        engine = create_engine(
+            "sqlite+pysqlite:///:memory:",
+            connect_args={"check_same_thread": False},
+            poolclass=StaticPool,
+        )
 else:
     # A single shared in-memory SQLite connection keeps optional local
     # persistence available across FastAPI worker threads when DATABASE_URL is
@@ -1103,7 +1128,7 @@ def database_stats() -> dict:
 
 
 def db_ping() -> bool:
-    if not DATABASE_CONFIGURED:
+    if not DATABASE_CONFIGURED or DATABASE_ENGINE_FALLBACK:
         return False
     try:
         with engine.connect() as connection:

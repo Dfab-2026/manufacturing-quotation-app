@@ -1,5 +1,10 @@
+api/
+data/
 tests/
 .pytest_cache/
 **/__pycache__/
 **/*.pyc
 *.log
+check_database.py
+verify_runtime.py
+requirements-local-ocr.txt

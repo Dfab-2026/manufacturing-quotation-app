@@ -74,7 +74,13 @@ def load(name: str, default):
     if name in _HOT_CACHE_NAMES and name in _HOT_CACHE:
         return _HOT_CACHE[name]
 
-    value = load_store(name, default)
+    try:
+        value = load_store(name, default)
+    except Exception as exc:
+        # Database persistence is optional for the extraction critical path.
+        # A cold/unavailable remote DB must never stop FastAPI from analyzing.
+        print(f"[DB READ WARNING] {name}: {type(exc).__name__}: {exc}")
+        value = default
 
     if name in _HOT_CACHE_NAMES:
         _HOT_CACHE[name] = value
@@ -83,7 +89,12 @@ def load(name: str, default):
 
 
 def save(name: str, data) -> None:
-    save_store(name, data)
+    try:
+        save_store(name, data)
+    except Exception as exc:
+        # Keep the current request operational; callers that require confirmed
+        # persistence have dedicated endpoints which can report DB availability.
+        print(f"[DB WRITE WARNING] {name}: {type(exc).__name__}: {exc}")
 
     if name in _HOT_CACHE_NAMES:
         _HOT_CACHE[name] = data
@@ -305,8 +316,32 @@ def ensure_data():
             save(name, default)
 
 
-init_database(LEGACY_DATA_DIR)
-ensure_data()
+# Database startup must never make the FastAPI function unimportable. Vercel
+# functions are ephemeral and should not run schema creation/migrations during a
+# cold import. Seed the read-through cache immediately there; persistence is
+# attempted only by endpoints/background writes. Traditional/local deployments
+# keep the existing initialization behavior.
+if os.getenv("VERCEL"):
+    _HOT_CACHE["settings"] = defaults_settings()
+    try:
+        _HOT_CACHE["rates"] = _repair_default_rates([])[0]
+    except Exception:
+        _HOT_CACHE["rates"] = []
+    _HOT_CACHE.setdefault("quotations", [])
+    _HOT_CACHE.setdefault("actuals", [])
+else:
+    try:
+        init_database(LEGACY_DATA_DIR)
+        ensure_data()
+    except Exception as exc:
+        print(f"[DB STARTUP WARNING] {type(exc).__name__}: {exc}")
+        _HOT_CACHE["settings"] = defaults_settings()
+        try:
+            _HOT_CACHE["rates"] = _repair_default_rates([])[0]
+        except Exception:
+            _HOT_CACHE["rates"] = []
+        _HOT_CACHE.setdefault("quotations", [])
+        _HOT_CACHE.setdefault("actuals", [])
 
 EXTRACTION_PIPELINE_VERSION = "fastapi-local-mandatory-v15-20261112"
 MAX_UPLOAD_BYTES = max(1, int(os.getenv("MAX_UPLOAD_MB", "100"))) * 1024 * 1024
@@ -5205,7 +5240,11 @@ def analyze_cad(value: CadAnalysisReq):
 
 def _persist_extraction_safely(record: dict) -> None:
     """Persist extraction history after the response without blocking analysis."""
+    # Do not spend a serverless background task on a database that is currently
+    # unavailable. Extraction itself has already succeeded and is the priority.
     try:
+        if not db_ping():
+            return
         append_extraction_record(record)
     except Exception as exc:
         print(f"[EXTRACTION PERSISTENCE WARNING] {type(exc).__name__}: {exc}")
@@ -5402,9 +5441,16 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
             rows=rows,
         )
 
-    settings = load("settings", defaults_settings())
+    # Never make database/settings availability part of the Analyze critical
+    # path. Return the extraction first; persistence is best-effort background
+    # work so Render cold starts or Supabase latency cannot hold Step 2 open.
+    auto_dataset_capture = True
+    try:
+        auto_dataset_capture = bool(load("settings", defaults_settings()).get("auto_dataset_capture", True))
+    except Exception as exc:
+        print(f"[ANALYZE SETTINGS WARNING] {type(exc).__name__}: {exc}")
 
-    if settings.get("auto_dataset_capture", True):
+    if auto_dataset_capture:
         background_tasks.add_task(
             _persist_extraction_safely,
             {
@@ -5423,18 +5469,11 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
 
     summary = calc(rows)
 
-    artifact_payload = EngineeringArtifactReq(
-        file_hash=file_hash,
-        filename=filename,
-        drawing=drawing,
-        rows=rows,
-        ai_raw=ai_raw or {},
-    )
-
-    # These are deterministic/local and very fast. Returning them with the
-    # analysis avoids two additional Vercel function calls per drawing.
-    dfm_report = _generate_dfm(artifact_payload)
-    bom_report = _generate_bom(artifact_payload)
+    # DFM/BOM are intentionally not generated before returning Analyze. The
+    # frontend already requests them asynchronously after the first drawing
+    # result is visible. This keeps the Analyze response latency minimal.
+    dfm_report = None
+    bom_report = None
 
     return {
         "extraction_id": extraction_id,
