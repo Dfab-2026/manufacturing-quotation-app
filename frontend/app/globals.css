@@ -4973,3 +4973,21 @@ body,
 .history-status.draft { background: #fff7e6; border-color: #f5c46b; color: #8a5a00; }
 .history-status.completed { background: #ecfdf3; border-color: #9dd9b4; color: #12663a; }
 .history-status.revised { background: #eef4ff; border-color: #a9c4f5; color: #254f91; }
+
+
+/* v0.16.0 — persistent End Process action + fast history UI */
+.header-quotation-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: nowrap;
+}
+.header-end-process-btn {
+  min-height: 36px;
+  padding: 8px 12px;
+  white-space: nowrap;
+}
+@media (max-width: 720px) {
+  .header-quotation-actions { gap: 6px; }
+  .header-end-process-btn { padding: 7px 9px; }
+}

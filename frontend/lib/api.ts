@@ -380,7 +380,32 @@ export async function sendTrainingSample(payload: {
     body: form
   });
 }
-export async function getQuotes() { return j<QuoteRecord[]>("/api/quotations"); }
+export async function getQuotes() {
+  const targets = [DIRECT_FASTAPI, API].filter(
+    (value, index, values) => Boolean(value) && values.indexOf(value) === index
+  );
+
+  let lastError: unknown = null;
+  for (const target of targets) {
+    const controller = new AbortController();
+    const timer = globalThis.setTimeout(() => controller.abort(), 10000);
+    try {
+      const response = await fetch(`${target}/api/quotations`, {
+        method: "GET",
+        cache: "no-store",
+        signal: controller.signal
+      });
+      if (!response.ok) throw await parseErrorResponse(response);
+      return await response.json() as QuoteRecord[];
+    } catch (error) {
+      lastError = error;
+    } finally {
+      globalThis.clearTimeout(timer);
+    }
+  }
+
+  throw lastError instanceof Error ? lastError : new Error("Unable to load quotation history.");
+}
 export async function saveQuote(payload: unknown) {
   return j<QuoteRecord>("/api/quotations", {
     method: "POST",

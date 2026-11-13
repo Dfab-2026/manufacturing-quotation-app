@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import ModelViewer from "@/components/ModelViewer";
 import {
@@ -52,6 +52,8 @@ type BatchFailure = {
 const BATCH_ANALYZE_CONCURRENCY = 2; // Keep AI calls conservative; per-drawing work is optimized below.
 const DFM_HISTORY_KEY = "dfab-dfm-history-v080";
 const BOM_HISTORY_KEY = "dfab-bom-history-v080";
+const QUOTE_HISTORY_CACHE_KEY = "dfab-quotation-history-cache-v036";
+const QUOTE_HISTORY_DELETED_KEY = "dfab-quotation-history-deleted-v038";
 type ArtifactJobState = "processing" | "ready" | "review" | "attention" | "failed";
 
 
@@ -1273,6 +1275,9 @@ export default function Page() {
   const [catalog, setCatalog] = useState<RateCatalog | null>(null);
   const [stats, setStats] = useState<DatasetStats | null>(null);
   const [quotes, setQuotes] = useState<QuoteRecord[]>([]);
+  const [deleteQuoteTarget, setDeleteQuoteTarget] = useState<QuoteRecord | null>(null);
+  const [deleteArtifactTarget, setDeleteArtifactTarget] = useState<{ kind: "workspace" | "dfm" | "bom"; id: string; label: string } | null>(null);
+  const [pendingRateMasterSave, setPendingRateMasterSave] = useState<{ row: CostRow; rate: number } | null>(null);
   const [revisionSourceQuoteId, setRevisionSourceQuoteId] = useState("");
 
   const [rateTab, setRateTab] = useState<RateTab>("MATERIAL");
@@ -1417,25 +1422,76 @@ export default function Page() {
 
   const criticalName = (score: number) => criticalLabel(score, mediumCritical, highCritical);
 
+  const readDeletedQuoteIds = useCallback(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem(QUOTE_HISTORY_DELETED_KEY) || "[]") as string[];
+      return new Set(Array.isArray(stored) ? stored : []);
+    } catch {
+      return new Set<string>();
+    }
+  }, []);
+
+  const persistQuoteCache = useCallback((items: QuoteRecord[]) => {
+    try { localStorage.setItem(QUOTE_HISTORY_CACHE_KEY, JSON.stringify(items)); } catch {}
+  }, []);
+
+  const refreshQuotes = useCallback(async () => {
+    try {
+      const latest = await api.getQuotes();
+      const deletedIds = readDeletedQuoteIds();
+      setQuotes((current) => {
+        const merged = new Map<string, QuoteRecord>();
+        current.forEach((item) => { if (!deletedIds.has(item.id)) merged.set(item.id, item); });
+        latest.forEach((item) => { if (!deletedIds.has(item.id)) merged.set(item.id, item); });
+        const next = Array.from(merged.values()).sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+          return bTime - aTime;
+        });
+        persistQuoteCache(next);
+        return next;
+      });
+      return latest;
+    } catch (error) {
+      console.warn("Quotation History refresh failed", error);
+      return null;
+    }
+  }, [persistQuoteCache, readDeletedQuoteIds]);
+
   const refresh = useCallback(async () => {
-    // Load each resource independently. A slow/failed dataset/history endpoint
-    // must never prevent Rate Master or settings from rendering.
+    // Load each resource independently. Quotation History has its own fast path
+    // so opening History never waits for settings/rates/dataset endpoints.
     const results = await Promise.allSettled([
       api.getSettings(),
       api.getRates(),
       api.getRateCatalog(),
-      api.getDatasetStats(),
-      api.getQuotes()
+      api.getDatasetStats()
     ]);
 
     if (results[0].status === "fulfilled") setSettings(results[0].value);
     if (results[1].status === "fulfilled") setRates(results[1].value);
     if (results[2].status === "fulfilled") setCatalog(results[2].value);
     if (results[3].status === "fulfilled") setStats(results[3].value);
-    if (results[4].status === "fulfilled") setQuotes(results[4].value);
-  }, []);
+    void refreshQuotes();
+  }, [refreshQuotes]);
 
-  useEffect(() => { void refresh(); }, [refresh]);
+  useLayoutEffect(() => {
+    try {
+      const cached = JSON.parse(localStorage.getItem(QUOTE_HISTORY_CACHE_KEY) || "[]") as QuoteRecord[];
+      const deletedIds = readDeletedQuoteIds();
+      if (Array.isArray(cached) && cached.length) {
+        setQuotes(cached.filter((item) => !deletedIds.has(item.id)));
+      }
+    } catch {}
+  }, [readDeletedQuoteIds]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    persistQuoteCache(quotes);
+  }, [persistQuoteCache, quotes]);
 
 
   // Use DFAB's website icon as both the sidebar brand source and browser tab icon.
@@ -3051,40 +3107,7 @@ export default function Page() {
       edited.criticalScore = edited.rateId ? edited.criticalScore : 100;
 
       if (isNewMissingRate) {
-        const saveToMaster = window.confirm(
-          `Rate ${money(nextRate)} entered for “${edited.item || "this cost row"}”.\n\nSave this as a new Rate Master value for future quotations?`
-        );
-
-        if (!saveToMaster) {
-          setMsg("Rate applied to this quotation only. Rate Master was not changed.");
-          return;
-        }
-
-        try {
-          const synced = await api.syncCostRowRate(
-            edited,
-            analysis?.ai_raw?.material
-          );
-
-          setRates((current) => {
-            const index = current.findIndex((rate) => rate.id === synced.rate.id);
-            if (index < 0) return [...current, synced.rate];
-            const next = [...current];
-            next[index] = synced.rate;
-            return next;
-          });
-
-          await recalc(
-            rows.map((row) => row.id === synced.row.id ? synced.row : row)
-          );
-          setMsg("Rate applied and saved to Rate Master for future quotations.");
-        } catch (error) {
-          setMsg(
-            error instanceof Error
-              ? `Rate applied to this quotation, but Rate Master save failed: ${error.message}`
-              : "Rate applied to this quotation, but Rate Master save failed."
-          );
-        }
+        setPendingRateMasterSave({ row: edited, rate: nextRate });
         return;
       }
     }
@@ -3435,19 +3458,70 @@ export default function Page() {
     );
   };
 
-  const deleteSavedQuote = async (quote: QuoteRecord) => {
-    const label = quote.name || quote.description || quote.id;
+  const deleteSavedQuote = (quote: QuoteRecord) => {
+    setDeleteQuoteTarget(quote);
+  };
 
-    if (!window.confirm(`Delete "${label}" from Quotation History?`)) {
-      return;
-    }
+  const confirmDeleteSavedQuote = async () => {
+    const quote = deleteQuoteTarget;
+    if (!quote) return;
+
+    setDeleteQuoteTarget(null);
+    const deletedIds = readDeletedQuoteIds();
+    deletedIds.add(quote.id);
+    try { localStorage.setItem(QUOTE_HISTORY_DELETED_KEY, JSON.stringify(Array.from(deletedIds))); } catch {}
+
+    setQuotes((current) => {
+      const next = current.filter((item) => item.id !== quote.id);
+      persistQuoteCache(next);
+      return next;
+    });
+    setMsg(`Quotation ${quote.id} deleted from history.`);
 
     try {
       await api.deleteQuote(quote.id);
-      setQuotes((current) => current.filter((item) => item.id !== quote.id));
-      setMsg(`Quotation ${quote.id} deleted from history.`);
     } catch (error) {
-      setMsg(error instanceof Error ? error.message : "Delete failed.");
+      const rollbackDeletedIds = readDeletedQuoteIds();
+      rollbackDeletedIds.delete(quote.id);
+      try { localStorage.setItem(QUOTE_HISTORY_DELETED_KEY, JSON.stringify(Array.from(rollbackDeletedIds))); } catch {}
+      setQuotes((current) => {
+        const next = current.some((item) => item.id === quote.id) ? current : [quote, ...current];
+        persistQuoteCache(next);
+        return next;
+      });
+      setMsg(error instanceof Error ? `Delete failed: ${error.message}` : "Delete failed. Quotation restored.");
+    }
+  };
+
+  const confirmRateMasterSave = async () => {
+    const pending = pendingRateMasterSave;
+    if (!pending) return;
+    setPendingRateMasterSave(null);
+
+    try {
+      const synced = await api.syncCostRowRate(
+        pending.row,
+        analysis?.ai_raw?.material
+      );
+
+      setRates((current) => {
+        const index = current.findIndex((rate) => rate.id === synced.rate.id);
+        if (index < 0) return [...current, synced.rate];
+        const next = [...current];
+        next[index] = synced.rate;
+        return next;
+      });
+
+      await recalc(
+        rows.map((row) => row.id === synced.row.id ? synced.row : row)
+      );
+      setMsg("Rate applied and saved to Rate Master for future quotations.");
+    } catch (error) {
+      setMsg(
+        error instanceof Error
+          ? `Rate applied to this quotation, but Rate Master save failed: ${error.message}`
+          : "Rate applied to this quotation, but Rate Master save failed."
+      );
     }
   };
 
@@ -3848,9 +3922,8 @@ export default function Page() {
   };
 
   const removeWorkspaceDataset = async (datasetId: string) => {
-    if (!window.confirm("Delete this saved workspace dataset?")) return;
-    await deleteWorkspaceDataset(datasetId);
-    await refreshWorkspaceDatasets();
+    const item = workspaceDatasets.find((dataset) => dataset.datasetId === datasetId);
+    setDeleteArtifactTarget({ kind: "workspace", id: datasetId, label: item?.datasetName || "saved workspace dataset" });
   };
 
   const saveWorkspaceToDatabase = (snapshot: PersistedWorkflowDraft) => {
@@ -3986,15 +4059,39 @@ export default function Page() {
   };
 
   const deleteDfm = (report: DfmReport) => {
-    if (!window.confirm(`Delete "${report.name}"?`)) return;
-    setDfmReports((current) => current.filter((item) => item.id !== report.id));
-    if (selectedDfmId === report.id) setSelectedDfmId("");
+    setDeleteArtifactTarget({ kind: "dfm", id: report.id, label: report.name || "DFM report" });
   };
 
   const deleteBom = (report: BomReport) => {
-    if (!window.confirm(`Delete "${report.name}"?`)) return;
-    setBomReports((current) => current.filter((item) => item.id !== report.id));
-    if (selectedBomId === report.id) setSelectedBomId("");
+    setDeleteArtifactTarget({ kind: "bom", id: report.id, label: report.name || "BOM report" });
+  };
+
+  const confirmDeleteArtifact = async () => {
+    const target = deleteArtifactTarget;
+    if (!target) return;
+    setDeleteArtifactTarget(null);
+
+    if (target.kind === "workspace") {
+      try {
+        await deleteWorkspaceDataset(target.id);
+        await refreshWorkspaceDatasets();
+        setMsg(`${target.label} deleted.`);
+      } catch (error) {
+        setMsg(error instanceof Error ? error.message : "Delete failed.");
+      }
+      return;
+    }
+
+    if (target.kind === "dfm") {
+      setDfmReports((current) => current.filter((item) => item.id !== target.id));
+      if (selectedDfmId === target.id) setSelectedDfmId("");
+      setMsg(`${target.label} deleted.`);
+      return;
+    }
+
+    setBomReports((current) => current.filter((item) => item.id !== target.id));
+    if (selectedBomId === target.id) setSelectedBomId("");
+    setMsg(`${target.label} deleted.`);
   };
 
   useEffect(() => {
@@ -4064,7 +4161,15 @@ export default function Page() {
           <button
             type="button"
             className={view === "quotes" ? "active" : ""}
-            onClick={() => { setView("quotes"); void refresh(); }}
+            onClick={() => {
+              try {
+                const cached = JSON.parse(localStorage.getItem(QUOTE_HISTORY_CACHE_KEY) || "[]") as QuoteRecord[];
+                const deletedIds = readDeletedQuoteIds();
+                if (Array.isArray(cached) && cached.length) setQuotes(cached.filter((item) => !deletedIds.has(item.id)));
+              } catch {}
+              setView("quotes");
+              void refreshQuotes();
+            }}
           >
             Quotation History
           </button>
@@ -4107,7 +4212,17 @@ export default function Page() {
             <p className="eyebrow">ENGINEERING AUTOMATION</p>
             <h1>{settings?.company_name || "AI Manufacturing Quotation"}</h1>
           </div>
-          <button className="btn primary" onClick={newQuote}>+ New Quotation</button>
+          <div className="header-quotation-actions">
+            <button
+              type="button"
+              className="end-process-btn header-end-process-btn"
+              disabled={busy}
+              onClick={() => void deleteOngoingQuotation()}
+            >
+              End Process
+            </button>
+            <button className="btn primary" onClick={newQuote}>+ New Quotation</button>
+          </div>
         </header>
 
         <div className="message" aria-live="polite">{msg}</div>
@@ -6317,6 +6432,62 @@ export default function Page() {
           />
         )}
       </section>
+
+      {pendingRateMasterSave && (
+        <div className="training-modal-backdrop" role="presentation" onMouseDown={() => { setPendingRateMasterSave(null); setMsg("Rate applied to this quotation only. Rate Master was not changed."); }}>
+          <div className="training-modal" role="dialog" aria-modal="true" aria-labelledby="save-rate-master-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="training-modal-icon">₹</div>
+            <div>
+              <p className="eyebrow">RATE MASTER</p>
+              <h3 id="save-rate-master-title">Save this rate for future quotations?</h3>
+              <p>
+                Rate <b>{money(pendingRateMasterSave.rate)}</b> was entered for <b>{pendingRateMasterSave.row.item || "this cost row"}</b>.
+              </p>
+            </div>
+            <div className="training-modal-actions">
+              <button className="btn secondary" onClick={() => { setPendingRateMasterSave(null); setMsg("Rate applied to this quotation only. Rate Master was not changed."); }}>No, this quotation only</button>
+              <button className="btn primary" onClick={() => void confirmRateMasterSave()}>Yes, save to Rate Master</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteArtifactTarget && (
+        <div className="training-modal-backdrop" role="presentation" onMouseDown={() => setDeleteArtifactTarget(null)}>
+          <div className="training-modal" role="dialog" aria-modal="true" aria-labelledby="delete-artifact-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="training-modal-icon">!</div>
+            <div>
+              <p className="eyebrow">DELETE</p>
+              <h3 id="delete-artifact-title">Delete item?</h3>
+              <p>Delete <b>{deleteArtifactTarget.label}</b>? This action cannot be undone.</p>
+            </div>
+            <div className="training-modal-actions">
+              <button className="btn secondary" onClick={() => setDeleteArtifactTarget(null)}>Cancel</button>
+              <button className="btn danger" onClick={() => void confirmDeleteArtifact()}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {deleteQuoteTarget && (
+        <div className="training-modal-backdrop" role="presentation" onMouseDown={() => setDeleteQuoteTarget(null)}>
+          <div className="training-modal" role="dialog" aria-modal="true" aria-labelledby="delete-quotation-title" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="training-modal-icon">!</div>
+            <div>
+              <p className="eyebrow">QUOTATION HISTORY</p>
+              <h3 id="delete-quotation-title">Delete quotation?</h3>
+              <p>
+                Delete <b>{deleteQuoteTarget.name || deleteQuoteTarget.description || deleteQuoteTarget.id}</b> from Quotation History?
+                This action cannot be undone.
+              </p>
+            </div>
+            <div className="training-modal-actions">
+              <button className="btn secondary" onClick={() => setDeleteQuoteTarget(null)}>Cancel</button>
+              <button className="btn danger" onClick={() => void confirmDeleteSavedQuote()}>Delete</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {trainingPromptItems.length > 0 && (
         <div className="training-modal-backdrop" role="presentation">
