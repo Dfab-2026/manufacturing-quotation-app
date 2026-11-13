@@ -17,7 +17,7 @@ MAX_TEXT = 100_000
 
 
 def _ocr_image(image: Image.Image) -> tuple[str, str | None]:
-    if os.getenv("LOCAL_OCR_ENABLED", "true").lower() not in {"true", "1", "yes"}:
+    if os.getenv("LOCAL_OCR_ENABLED", "false").lower() not in {"true", "1", "yes"}:
         return "", "Local OCR is disabled. Enable LOCAL_OCR_ENABLED for scans."
     try:
         import pytesseract

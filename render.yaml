@@ -3,7 +3,7 @@ services:
     name: manufacturing-quotation-api
     runtime: python
     rootDir: backend
-    buildCommand: python -m pip install --upgrade pip && pip install -r requirements.txt
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements-render.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     autoDeploy: true
@@ -15,7 +15,7 @@ services:
       - key: FRONTEND_ORIGIN
         sync: false
       - key: LOCAL_OCR_ENABLED
-        value: true
+        value: false
       - key: MAX_UPLOAD_MB
         value: 100
       - key: DB_POOL_SIZE

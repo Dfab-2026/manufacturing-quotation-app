@@ -1514,7 +1514,13 @@ _LOCAL_OCR_ENGINE = None
 _LOCAL_OCR_ERROR = ""
 
 
+def _local_ocr_enabled() -> bool:
+    return os.getenv("LOCAL_OCR_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _local_ocr_runtime_available() -> bool:
+    if not _local_ocr_enabled():
+        return False
     return importlib.util.find_spec("rapidocr") is not None and importlib.util.find_spec("onnxruntime") is not None
 
 
@@ -1525,6 +1531,9 @@ def _get_local_ocr_engine():
     quota, or external AI service is required.
     """
     global _LOCAL_OCR_ENGINE, _LOCAL_OCR_ERROR
+    if not _local_ocr_enabled():
+        _LOCAL_OCR_ERROR = "Local OCR disabled by LOCAL_OCR_ENABLED=false"
+        return None
     if _LOCAL_OCR_ENGINE is not None:
         return _LOCAL_OCR_ENGINE
     try:

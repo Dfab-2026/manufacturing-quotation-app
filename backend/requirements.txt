@@ -1,17 +1,1 @@
-fastapi
-uvicorn[standard]
-python-multipart
-pydantic
-python-dotenv
-sqlalchemy>=2.0
-psycopg[binary]
-alembic
-pypdf
-pymupdf
-pillow
-ezdxf>=1.4,<2
-numpy>=1.26,<3
-rapidocr>=3.10,<4
-onnxruntime>=1.18,<2
-openpyxl
-reportlab
+-r requirements-local-ocr.txt
