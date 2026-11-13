@@ -477,6 +477,8 @@ class ReviewReq(BaseModel):
     drawing: Drawing
     rows: list[Row]
     ai_raw: dict = Field(default_factory=dict)
+    summary: Summary | None = None
+    commercial_overrides: dict = Field(default_factory=dict)
 
 
 class RevisionReq(BaseModel):
@@ -5519,6 +5521,8 @@ def save_current_review(value: ReviewReq):
         "ai_raw": enrich_engineering_intelligence(
             value.ai_raw, rows=value.rows
         ) if value.ai_raw else {},
+        "summary": value.summary.model_dump() if value.summary else None,
+        "commercial_overrides": value.commercial_overrides or {},
         "working_copy": True,
     }
 

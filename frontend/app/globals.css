@@ -4666,3 +4666,305 @@ body,
 .summary-percent-edit { display:flex; align-items:center; gap:8px; }
 .quotation-cost-editor { margin: 18px 0; }
 .history-actions { flex-wrap: wrap; gap: 6px; }
+
+/* =========================================================
+   v0.14.1 — Cost workflow UX + fixed upload workspace
+   Requested targeted UI pass. Existing workflows stay intact.
+   ========================================================= */
+
+/* Upload: fixed desktop workspace; only the uploaded source queue scrolls. */
+@media (min-width: 1101px) {
+  .upload-workspace-panel {
+    height: calc(100vh - 205px);
+    min-height: 520px;
+    max-height: 760px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    margin-bottom: 0;
+  }
+
+  .upload-workspace-heading {
+    flex: 0 0 auto;
+    margin-bottom: 14px;
+  }
+
+  .upload-workspace-grid {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1.05fr) minmax(340px, .95fr);
+    gap: 14px;
+  }
+
+  .upload-workspace-drop {
+    min-height: 0;
+    height: 100%;
+  }
+
+  .upload-queue-panel {
+    min-height: 0;
+    height: 100%;
+    border: 1px solid #d8e3ee;
+    border-radius: 16px;
+    background: #f8fbff;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .upload-source-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    padding-right: 4px;
+    scrollbar-width: thin;
+  }
+
+  .upload-workspace-panel > .drawing-analyze-loader {
+    flex: 0 0 auto;
+    margin-top: 12px;
+    margin-bottom: 0;
+  }
+
+  .upload-workspace-panel > .actions {
+    flex: 0 0 auto;
+    margin-top: 12px;
+  }
+}
+
+.upload-queue-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 2px 2px 10px;
+  border-bottom: 1px solid #e3eaf2;
+}
+.upload-queue-head > div { min-width: 0; display: grid; gap: 2px; }
+.upload-queue-head span { color: #708195; font-size: 9px; font-weight: 900; letter-spacing: .08em; }
+.upload-queue-head b { color: #17365d; font-size: 14px; white-space: nowrap; }
+.upload-queue-head small { color: #8998a8; font-size: 10px; white-space: nowrap; }
+.upload-queue-empty {
+  flex: 1 1 auto;
+  min-height: 150px;
+  display: grid;
+  place-content: center;
+  gap: 5px;
+  text-align: center;
+  color: #8291a2;
+}
+.upload-queue-empty b { color: #456079; font-size: 14px; }
+.upload-queue-empty span { font-size: 11px; }
+
+/* Ongoing quotation: preserve the original compact diamond beside New Quotation. */
+.side nav .new-quotation-nav-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 30px;
+  gap: 8px;
+  align-items: center;
+}
+.side nav .new-quotation-nav-main { width: 100%; }
+.side nav .resume-quotation-diamond {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  justify-self: center;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  transform: rotate(45deg);
+  border: 1px solid #ffffff32;
+  background: #ffffff10;
+  color: #d9e3ef;
+  box-shadow: 0 0 0 0 rgba(115, 183, 241, .32);
+  animation: continueDiamondPulse 1.9s ease-out infinite;
+}
+.side nav .resume-quotation-diamond:hover { background: #ffffff25; color: #fff; }
+.side nav .resume-quotation-diamond span {
+  display: block;
+  transform: rotate(-45deg);
+  font-size: 9px;
+  line-height: 1;
+}
+@keyframes continueDiamondPulse {
+  0% { box-shadow: 0 0 0 0 rgba(115, 183, 241, .32); }
+  70% { box-shadow: 0 0 0 7px rgba(115, 183, 241, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(115, 183, 241, 0); }
+}
+
+/* Cost Sheet: dense, segregated single-line desktop cards. */
+@media (min-width: 1180px) {
+  .cost-input-overview {
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+  }
+  .summary.clean-summary {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+}
+
+.cost-input-overview > div:nth-child(1),
+.cost-input-overview > div:nth-child(2) { background: #f7faff; border-color: #cfdeed; }
+.cost-input-overview > div:nth-child(3),
+.cost-input-overview > div:nth-child(4),
+.cost-input-overview > div:nth-child(5) { background: #fffaf0; border-color: #eadbb8; }
+.cost-input-overview > div:nth-child(6),
+.cost-input-overview > div:nth-child(7) { background: #f4fbf7; border-color: #cae3d3; }
+
+.cost-input-overview b,
+.clean-charge-cards b,
+.summary.clean-summary b,
+.summary.clean-summary span,
+.summary.clean-summary small,
+.cost-grid-title b,
+.cost-grid-title small {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cost-input-overview > div,
+.clean-charge-cards > div,
+.summary.clean-summary > div {
+  min-width: 0;
+}
+
+.clean-charge-cards > div:nth-child(1) { background: #f6faff; border-color: #cdddeb; }
+.clean-charge-cards > div:nth-child(2) { background: #faf7ff; border-color: #ddd1ed; }
+.clean-charge-cards > div:nth-child(3) { background: #f5fbf7; border-color: #cfe4d6; }
+.clean-charge-cards > div:nth-child(4) { background: #eef6ff; border-color: #bcd4ea; }
+
+.summary.clean-summary > div:nth-child(1) { background: #f7faff; border-color: #d3e0ec; }
+.summary.clean-summary > div:nth-child(2) { background: #fffaf0; border-color: #ead8b4; }
+.summary.clean-summary > div:nth-child(3) { background: #faf7ff; border-color: #ddd1ed; }
+.summary.clean-summary > div:nth-child(4) { background: #eef6ff; border-color: #bfd6eb; }
+.summary.clean-summary > div:nth-child(5) { background: #fff7f2; border-color: #efd2c1; }
+.summary.clean-summary > div:nth-child(6) { background: #eef9f2; border-color: #bfe0c9; }
+
+.summary.clean-summary .summary-amount-input,
+.summary.clean-summary .summary-final-input {
+  width: 100%;
+  min-width: 0;
+}
+.summary.clean-summary .summary-percent-edit {
+  min-width: 0;
+  gap: 5px;
+}
+.summary.clean-summary .summary-percent-edit input {
+  width: 62px;
+  min-width: 54px;
+}
+
+/* Cost attention: actionable navigation to the exact Rate Master context. */
+.cost-attention-panel {
+  margin: 12px 0;
+  border: 1px solid #ead6a7;
+  border-radius: 12px;
+  background: #fffaf0;
+  padding: 10px 12px;
+  display: grid;
+  gap: 8px;
+}
+.cost-attention-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.cost-attention-title > div { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.cost-attention-title span { font-size: 9px; font-weight: 900; letter-spacing: .08em; color: #93620a; }
+.cost-attention-title b { color: #5f4513; font-size: 13px; white-space: nowrap; }
+.cost-attention-title small { color: #88734d; font-size: 10px; white-space: nowrap; }
+.cost-attention-list { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
+.cost-attention-list > div {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 7px 6px 9px;
+  border: 1px solid #eadfca;
+  border-radius: 8px;
+  background: #fff;
+}
+.cost-attention-list span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; color: #5f6470; }
+.cost-attention-list button {
+  min-width: 36px;
+  height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: #17365d;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+}
+
+/* Prevent card headings from breaking into awkward multi-line stacks. */
+.cost-grid-title,
+.cost-grid-actions,
+.heading.row > div,
+.rate-stats > div {
+  min-width: 0;
+}
+.cost-grid-actions { flex-wrap: nowrap; }
+.cost-grid-actions > * { white-space: nowrap; }
+
+
+/* Step 1 must stay fixed in the viewport: no document/page scroll.
+   Only the uploaded-source queue may scroll internally when it overflows. */
+@media (min-width: 1101px) {
+  .content.upload-page-fixed {
+    height: 100vh;
+    max-height: 100vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .content.upload-page-fixed > header,
+  .content.upload-page-fixed > .message {
+    flex: 0 0 auto;
+  }
+  .content.upload-page-fixed > .steps {
+    flex: 0 0 auto;
+  }
+  .content.upload-page-fixed .upload-workspace-panel {
+    flex: 1 1 auto;
+    height: auto;
+    min-height: 0;
+    max-height: none;
+    margin-bottom: 0;
+  }
+  .content.upload-page-fixed .upload-workspace-grid {
+    min-height: 0;
+  }
+  .content.upload-page-fixed .upload-workspace-drop,
+  .content.upload-page-fixed .upload-queue-panel {
+    min-height: 0;
+  }
+  .content.upload-page-fixed .upload-source-scroll {
+    min-height: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+  }
+}
+@media (max-width: 1100px) {
+  .upload-workspace-grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  .upload-queue-panel { min-height: 220px; }
+  .upload-source-scroll { max-height: 280px; overflow-y: auto; }
+  .cost-attention-list { grid-template-columns: 1fr 1fr; }
+}
+
+@media (max-width: 720px) {
+  .upload-workspace-panel { height: auto; max-height: none; overflow: visible; }
+  .cost-attention-title { align-items: flex-start; flex-direction: column; }
+  .cost-attention-title small { white-space: normal; }
+  .cost-attention-list { grid-template-columns: 1fr; }
+  .summary.clean-summary span,
+  .summary.clean-summary small,
+  .summary.clean-summary b { white-space: normal; }
+  .cost-grid-actions { flex-wrap: wrap; }
+}

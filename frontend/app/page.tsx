@@ -1305,6 +1305,11 @@ export default function Page() {
     );
   }, [rows]);
 
+  const missingCostRateRows = useMemo(
+    () => rows.filter((row) => Number(row.costingQty || 0) > 0 && Number(row.rate || 0) <= 0),
+    [rows]
+  );
+
   const reviewedEngineeringData = useMemo<AIExtraction | null>(() => {
     if (!analysis?.ai_raw && !drawing) return null;
 
@@ -1379,21 +1384,36 @@ export default function Page() {
         file_hash: analysis.file_hash,
         drawing,
         rows,
-        ai_raw: analysis.ai_raw || {}
+        ai_raw: analysis.ai_raw || {},
+        summary,
+        commercial_overrides: {
+          ...commercialAmountOverrides,
+          selling_price: finalPriceOverride
+        }
       }).then((result) => {
         setCostSheetSaveState(result.status === "saved" ? "saved" : "deferred");
       }).catch((error) => {
         console.warn("Cost Sheet autosave failed", error);
         setCostSheetSaveState("deferred");
       });
-    }, 850);
+    }, 180);
 
     return () => {
       if (costSheetSaveTimerRef.current) {
         globalThis.clearTimeout(costSheetSaveTimerRef.current);
       }
     };
-  }, [step, analysis?.extraction_id, analysis?.file_hash, analysis?.ai_raw, drawing, rows]);
+  }, [
+    step,
+    analysis?.extraction_id,
+    analysis?.file_hash,
+    analysis?.ai_raw,
+    drawing,
+    rows,
+    summary,
+    commercialAmountOverrides,
+    finalPriceOverride
+  ]);
 
   const criticalName = (score: number) => criticalLabel(score, mediumCritical, highCritical);
 
@@ -2972,59 +2992,77 @@ export default function Page() {
       }
     }
 
-    if (field === "category") {
-      await recalc(rows.map((row) => row.id === edited.id ? edited : row));
-      return;
-    }
+    const nextRows = rows.map((row) => row.id === edited.id ? edited : row);
 
-    const shouldSyncRate = [
-      "unit",
-      "rate",
-      "cost"
-    ].includes(field);
+    // Always recalculate the quotation immediately after any editable cost-cell
+    // change. This keeps line cost, direct cost and selling price in sync even
+    // before the user decides whether a newly entered rate belongs in Rate Master.
+    await recalc(nextRows);
 
-    if (shouldSyncRate) {
-      edited.rateSource = "Manual Override";
-      edited.criticalScore = 100;
+    if (field === "rate") {
+      const previousRate = Number(event.oldValue || 0);
+      const nextRate = Math.max(0, Number(edited.rate || 0));
+      const isNewMissingRate = previousRate <= 0 && nextRate > 0 && !edited.rateId;
 
-      try {
-        const synced = await api.syncCostRowRate(
-          edited,
-          analysis?.ai_raw?.material
+      edited.rateSource = edited.rateId ? edited.rateSource : "Manual Override";
+      edited.criticalScore = edited.rateId ? edited.criticalScore : 100;
+
+      if (isNewMissingRate) {
+        const saveToMaster = window.confirm(
+          `Rate ${money(nextRate)} entered for “${edited.item || "this cost row"}”.\n\nSave this as a new Rate Master value for future quotations?`
         );
 
-        setRates((current) => {
-          const index = current.findIndex(
-            (rate) => rate.id === synced.rate.id
+        if (!saveToMaster) {
+          setMsg("Rate applied to this quotation only. Rate Master was not changed.");
+          return;
+        }
+
+        try {
+          const synced = await api.syncCostRowRate(
+            edited,
+            analysis?.ai_raw?.material
           );
 
-          if (index < 0) return [...current, synced.rate];
+          setRates((current) => {
+            const index = current.findIndex((rate) => rate.id === synced.rate.id);
+            if (index < 0) return [...current, synced.rate];
+            const next = [...current];
+            next[index] = synced.rate;
+            return next;
+          });
 
-          const next = [...current];
-          next[index] = synced.rate;
-          return next;
-        });
-
-        await recalc(
-          rows.map((row) =>
-            row.id === synced.row.id ? synced.row : row
-          )
-        );
-
-        setMsg("Rate Master updated automatically from the cost sheet.");
+          await recalc(
+            rows.map((row) => row.id === synced.row.id ? synced.row : row)
+          );
+          setMsg("Rate applied and saved to Rate Master for future quotations.");
+        } catch (error) {
+          setMsg(
+            error instanceof Error
+              ? `Rate applied to this quotation, but Rate Master save failed: ${error.message}`
+              : "Rate applied to this quotation, but Rate Master save failed."
+          );
+        }
         return;
-      } catch (error) {
-        setMsg(
-          error instanceof Error
-            ? `Cost updated, but Rate Master sync failed: ${error.message}`
-            : "Cost updated, but Rate Master sync failed."
-        );
       }
     }
 
-    await recalc(
-      rows.map((row) => row.id === edited.id ? edited : row)
-    );
+    if (field === "category") {
+      setMsg("Cost row updated.");
+      return;
+    }
+
+    setMsg("Cost updated and quotation totals recalculated.");
+  };
+
+  const goToRateMasterForRow = (row: CostRow) => {
+    const category = String(row.category || "OTHER").toUpperCase() as RateTab;
+    setRateTab((["MATERIAL", "PROCESS", "LABOUR", "COMMERCIAL", "OTHER"] as RateTab[]).includes(category) ? category : "ALL");
+    setRateSearch(String(row.item || "").trim());
+    setView("rates");
+    setMsg(`Rate Master opened for ${row.item || "missing rate"}. Add or select the rate, then return to the Cost Sheet.`);
+    window.setTimeout(() => {
+      document.querySelector<HTMLInputElement>(".rate-toolbar .search")?.focus();
+    }, 120);
   };
 
   const refreshCostRates = async () => {
@@ -3967,8 +4005,8 @@ export default function Page() {
               type="button"
               className="resume-quotation-diamond"
               onClick={() => void resumeWorkingQuotation()}
-              title="Resume working quotation"
-              aria-label="Resume working quotation"
+              title="Continue ongoing quotation"
+              aria-label="Continue ongoing quotation"
             >
               <span>◆</span>
             </button>
@@ -4004,7 +4042,7 @@ export default function Page() {
         </div>
       </aside>
 
-      <section className="content">
+      <section className={`content ${view === "workflow" && step === 1 ? "upload-page-fixed" : ""}`}>
         {!sideOpen && (
           <button className="sidebar-open-btn" type="button" onClick={() => setSideOpen(true)} title="Open menu" aria-label="Open menu">☰</button>
         )}
@@ -4192,9 +4230,10 @@ export default function Page() {
             )}
 
             {step === 1 && (
-              <section className="panel">
-                <div className="heading"><p className="eyebrow">STEP 1</p><h2>Upload Engineering Drawing</h2><p>Every extraction can be captured automatically as a dataset sample.</p></div>
-                <label className="upload">
+              <section className="panel upload-workspace-panel">
+                <div className="heading upload-workspace-heading"><p className="eyebrow">STEP 1</p><h2>Upload Engineering Drawing</h2><p>Add drawings on the left and review the selected source queue on the right.</p></div>
+                <div className="upload-workspace-grid">
+                <label className="upload upload-workspace-drop">
                   <input
                     type="file"
                     multiple
@@ -4354,8 +4393,13 @@ export default function Page() {
                   </small>
                 </label>
 
-                {allSourceFiles.length > 0 && (
-                  <div className="uploaded-source-list">
+                <div className="upload-queue-panel">
+                  <div className="upload-queue-head">
+                    <div><span>UPLOADED SOURCES</span><b>{allSourceFiles.length} file{allSourceFiles.length === 1 ? "" : "s"}</b></div>
+                    <small>Scroll only this list</small>
+                  </div>
+                  {allSourceFiles.length > 0 ? (
+                  <div className="uploaded-source-list upload-source-scroll">
                     {allSourceFiles.map((selected, index) => {
                       const key = `${selected.name}-${selected.size}-${selected.lastModified}`;
                       const status = uploadedFileStatus[key] || "uploaded";
@@ -4402,7 +4446,11 @@ export default function Page() {
                       );
                     })}
                   </div>
-                )}
+                  ) : (
+                    <div className="upload-queue-empty"><b>No source selected</b><span>Uploaded drawings will appear here.</span></div>
+                  )}
+                </div>
+                </div>
 
                 {busy && (
                   <div className="drawing-analyze-loader" role="status" aria-live="polite">
@@ -4616,7 +4664,12 @@ export default function Page() {
                           file_hash: analysis.file_hash,
                           drawing,
                           rows,
-                          ai_raw: analysis.ai_raw || {}
+                          ai_raw: analysis.ai_raw || {},
+                          summary,
+                          commercial_overrides: {
+                            ...commercialAmountOverrides,
+                            selling_price: finalPriceOverride
+                          }
                         }).then((result) => {
                           setCostSheetSaveState(result.status === "saved" ? "saved" : "deferred");
                           if (result.status !== "saved") {
@@ -4663,6 +4716,23 @@ export default function Page() {
                   <div><span>Labour</span><b>{money(chargeTotals.labour)}</b></div>
                   <div className="charge-total"><span>Direct Cost</span><b>{money(summary.direct_cost)}</b></div>
                 </div>
+
+                {missingCostRateRows.length > 0 && (
+                  <div className="cost-attention-panel" role="status">
+                    <div className="cost-attention-title">
+                      <div><span>ATTENTION</span><b>{missingCostRateRows.length} missing rate{missingCostRateRows.length === 1 ? "" : "s"}</b></div>
+                      <small>Enter the rate in the Cost Sheet or open Rate Master.</small>
+                    </div>
+                    <div className="cost-attention-list">
+                      {missingCostRateRows.slice(0, 6).map((row) => (
+                        <div key={row.id}>
+                          <span title={row.item}>{row.item || "Unnamed cost row"}</span>
+                          <button type="button" onClick={() => goToRateMasterForRow(row)}>Go</button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div className="cost-grid-shell">
                   <div className="cost-grid-title">
@@ -4752,8 +4822,10 @@ export default function Page() {
                           <span>Material Allowance</span>
                           <div className="material-input-unit"><input type="number" min="0" step="0.1" value={materialCalculator.allowanceKg} onChange={(e) => {
                             const next = Number(e.target.value);
-                            setMaterialCalculator((current) => ({ ...current, allowanceKg: Number.isFinite(next) ? Math.max(0, next) : 0 }));
+                            const normalized = Number.isFinite(next) ? Math.max(0, next) : 0;
+                            setMaterialCalculator((current) => ({ ...current, allowanceKg: normalized }));
                             setMaterialCalculatorMissing([]);
+                            void updateWeightAllowance(String(normalized));
                           }}/><em>kg</em></div>
                         </label>
                       </div>
