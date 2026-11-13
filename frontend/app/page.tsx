@@ -1856,17 +1856,37 @@ export default function Page() {
     });
   };
 
-  const newQuote = async () => {
-    // Preserve unfinished work in Quotation History instead of deleting it.
-    if (drawing && (analysis || rows.length)) {
-      try {
-        await api.saveQuote({ customer, drawing, rows, summary, status: "Draft / Incomplete" });
-        await refresh();
-      } catch {
-        // Browser/local workspace still remains available even if history save is temporarily unavailable.
-      }
-    }
-    await deleteOngoingQuotation("New quotation ready. Previous unfinished quotation saved as Draft / Incomplete.");
+  const newQuote = () => {
+    // Snapshot the unfinished quotation before clearing the visible workflow.
+    // The UI must open a fresh quotation immediately; history persistence runs
+    // independently so a slow network can never make New Quotation look dead.
+    const draftSnapshot = drawing && (analysis || rows.length)
+      ? { customer, drawing, rows, summary, status: "Draft / Incomplete" as const }
+      : null;
+
+    // Return to a clean upload screen synchronously. Cleanup/persistence happens
+    // after navigation and cannot block this action.
+    void deleteOngoingQuotation(
+      draftSnapshot
+        ? "New quotation ready. Previous unfinished quotation is being saved as Draft / Incomplete."
+        : "New quotation ready. Upload a drawing to begin."
+    );
+
+    if (!draftSnapshot) return;
+
+    void api.saveQuote(draftSnapshot).then((saved) => {
+      setQuotes((current) => [
+        ...current.filter((quote) => quote.id !== saved.id),
+        saved
+      ]);
+      setMsg("New quotation ready. Previous unfinished quotation saved as Draft / Incomplete.");
+    }).catch((error) => {
+      setMsg(
+        error instanceof Error
+          ? `New quotation opened. Draft history save is pending: ${error.message}`
+          : "New quotation opened. Draft history save is pending."
+      );
+    });
   };
 
   const resumeWorkingQuotation = async () => {
@@ -1913,6 +1933,29 @@ export default function Page() {
       }
     } catch {
       // If browser storage is unavailable, remain on the current app state.
+    }
+
+    // If the browser workspace has already been cleared by New Quotation,
+    // continue from the newest Draft / Incomplete quotation in History.
+    try {
+      const history = quotes.length ? quotes : await api.getQuotes();
+      if (!quotes.length) setQuotes(history);
+      const latestDraft = history
+        .filter((quote) => String(quote.status || "").toLowerCase().includes("draft"))
+        .sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+          return bTime - aTime;
+        })[0];
+
+      if (latestDraft?.drawing && latestDraft.rows && latestDraft.summary) {
+        editSavedQuote(latestDraft);
+        setMsg(`Ongoing draft ${latestDraft.id} opened from Quotation History.`);
+        return;
+      }
+    } catch {
+      // History lookup is a final fallback only; keep the normal empty workflow
+      // available even if the history endpoint is temporarily unavailable.
     }
 
     setView("workflow");
@@ -3373,16 +3416,23 @@ export default function Page() {
       setMsg("This older history record does not contain editable quotation details.");
       return;
     }
+    const isDraft = String(quote.status || "").toLowerCase().includes("draft");
     setDrawing(quote.drawing);
     setRows(quote.rows);
     setSummary(quote.summary);
     setCustomer(quote.customer || "Sample Customer");
     setFinalPriceOverride(null);
     setCommercialAmountOverrides({ material_wastage: null, overhead: null, markup: null });
-    setRevisionSourceQuoteId(quote.id);
+    // Continuing a draft is the same quotation workflow, while editing a
+    // completed quotation starts a revision and must preserve the original.
+    setRevisionSourceQuoteId(isDraft ? "" : quote.id);
     setView("workflow");
     setStep(3);
-    setMsg(`Opened ${quote.id} for revision. Saving/downloading will create a new revised quotation; the original remains in history.`);
+    setMsg(
+      isDraft
+        ? `Draft ${quote.id} continued from Quotation History.`
+        : `Opened ${quote.id} for revision. Saving/downloading will create a new revised quotation; the original remains in history.`
+    );
   };
 
   const deleteSavedQuote = async (quote: QuoteRecord) => {
@@ -4011,7 +4061,13 @@ export default function Page() {
               <span>◆</span>
             </button>
           </div>
-          <button type="button" className={view === "quotes" ? "active" : ""} onClick={() => setView("quotes")}>Quotation History</button>
+          <button
+            type="button"
+            className={view === "quotes" ? "active" : ""}
+            onClick={() => { setView("quotes"); void refresh(); }}
+          >
+            Quotation History
+          </button>
           <button type="button" className={view === "rates" ? "active" : ""} onClick={openRates}>Rate Master</button>
           <button type="button" className={view === "dfm" ? "active" : ""} onClick={() => openEngineeringArtifact("dfm")}>
             <span>DFM Report</span>
@@ -7189,7 +7245,11 @@ function Recent({
           <span>Actions</span>
         </div>
 
-        {quotes.length ? quotes.slice().reverse().map((quote) => (
+        {quotes.length ? quotes.slice().sort((a, b) => {
+          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
+          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
+          return bTime - aTime;
+        }).map((quote) => (
           <div className="qh-row" key={quote.id}>
             <span>
               <b>{quote.name || quote.description || quote.id}</b>
@@ -7201,7 +7261,7 @@ function Recent({
               <small>Rev {quote.revision || "—"}</small>
             </span>
             <span>{quote.customer}</span>
-            <span><i className="history-status">{quote.status}</i></span>
+            <span><i className={`history-status ${String(quote.status || "").toLowerCase().includes("draft") ? "draft" : String(quote.status || "").toLowerCase().includes("revised") ? "revised" : "completed"}`}>{quote.status || "Completed"}</i></span>
             <span><b>{money(quote.selling_price)}</b></span>
             <span className="history-actions">
               <button type="button" className="mini save" onClick={() => onEdit(quote)}>

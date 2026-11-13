@@ -4968,3 +4968,8 @@ body,
   .summary.clean-summary b { white-space: normal; }
   .cost-grid-actions { flex-wrap: wrap; }
 }
+
+/* Quotation history status states: keep draft/completed/revised visually distinct. */
+.history-status.draft { background: #fff7e6; border-color: #f5c46b; color: #8a5a00; }
+.history-status.completed { background: #ecfdf3; border-color: #9dd9b4; color: #12663a; }
+.history-status.revised { background: #eef4ff; border-color: #a9c4f5; color: #254f91; }
