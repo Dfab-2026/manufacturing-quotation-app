@@ -1,21 +1,14 @@
 {
-  "name": "manufacturing-quotation-platform",
+  "name": "dfab-manufacturing-quotation-app",
   "private": true,
-  "version": "0.7.0",
+  "version": "0.42.0",
   "packageManager": "npm@10.9.2",
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
-    "dev": "npm run build -w @mq/core && npm run dev -w @mq/web",
-    "build": "npm run build -w @mq/core && npm run build -w @mq/web",
-    "lint": "npm run lint -w @mq/web",
-    "typecheck": "npm run typecheck -w @mq/core && npm run typecheck -w @mq/web",
-    "test": "npm run test -w @mq/core && python -m unittest discover -s services/extractor/tests -t services/extractor -v",
-    "check": "npm run lint && npm run typecheck && npm run test && npm run build",
-    "dev:web": "npm run build -w @mq/core && npm run dev -w @mq/web",
-    "dev:extractor": "python -m uvicorn services.extractor.app.main:app --host 0.0.0.0 --port 8001 --reload",
-    "dev:worker": "python services/extractor/worker.py"
+    "dev": "npm --prefix frontend run dev",
+    "build": "npm --prefix frontend run build",
+    "start": "npm --prefix frontend run start",
+    "frontend:dev": "npm --prefix frontend run dev",
+    "frontend:build": "npm --prefix frontend run build",
+    "backend:dev": "cd backend && uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
   }
 }

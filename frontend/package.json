@@ -10,6 +10,7 @@
   "dependencies": {
     "ag-grid-community": "^32.3.3",
     "ag-grid-react": "^32.3.3",
+    "dfab-manufacturing-quotation-app": "file:..",
     "next": "^14.2.35",
     "occt-import-js": "^0.0.23",
     "react": "^18.3.1",

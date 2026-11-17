@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -302,6 +303,13 @@ def _rate_to_dict(row: RateRecord) -> dict:
     }
 
 
+def _drawing_primary_key(stable_source_id: str, id_type: str) -> str:
+    """Return a stable key compatible with the deployed drawings.id type."""
+    if "UUID" in str(id_type or "").upper():
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, stable_source_id))
+    return stable_source_id
+
+
 def _upsert_drawing(
     session,
     drawing: dict | None,
@@ -326,7 +334,19 @@ def _upsert_drawing(
 
     drawing_no = str(drawing.get("drawing_no") or "")
     revision = str(drawing.get("revision") or "")
-    drawing_id = file_hash or (f"{drawing_no}::{revision}" if (drawing_no or revision) else "unknown")
+    stable_source_id = file_hash or (f"{drawing_no}::{revision}" if (drawing_no or revision) else "unknown")
+
+    # Inspect the live schema before choosing the primary-key representation.
+    # Older Supabase deployments used UUID for drawings.id while newer/local
+    # schemas use VARCHAR. A SHA-256 hash is valid for VARCHAR but PostgreSQL
+    # rejects it for UUID. Use a deterministic UUID5 only when the connected
+    # column is actually UUID so the same drawing still upserts to the same row.
+    connection = session.connection()
+    column_info = inspect(connection).get_columns("drawings")
+    existing_columns = {column["name"] for column in column_info}
+    id_column = next((column for column in column_info if column["name"] == "id"), None)
+    id_type = str((id_column or {}).get("type") or "").upper()
+    drawing_id = _drawing_primary_key(stable_source_id, id_type)
 
     values: dict[str, Any] = {
         "id": drawing_id,
@@ -342,13 +362,8 @@ def _upsert_drawing(
         "payload": drawing,
     }
 
-    # Inspect through the same transaction connection so this works reliably with
-    # pooled/remote PostgreSQL connections. Never reference a column that is not
-    # physically present in the current database.
-    connection = session.connection()
-    existing_columns = {
-        column["name"] for column in inspect(connection).get_columns("drawings")
-    }
+    # Never reference a column that is not physically present in the current
+    # database. ``column_info`` above came from this same transaction connection.
     usable = {key: value for key, value in values.items() if key in existing_columns}
 
     if "id" not in usable:

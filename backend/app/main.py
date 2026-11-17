@@ -4909,20 +4909,24 @@ def analyze_fallback(value: FallbackAnalysisReq):
         "drawing_type": "mixed",
         "assembly_parts": [],
         "material": {
-            "family": "",
+            "family": "Predicted / Review Required",
             "grade": "",
             "specification": "",
         },
-        "thickness_mm": None,
-        "weight_kg": None,
+        "thickness_mm": 0.0,
+        "weight_kg": 0.0,
         "product_quantity": 1,
-        "dimensions": [],
+        "dimensions": [
+            {"label": "Overall Length (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10},
+            {"label": "Overall Width (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10},
+            {"label": "Thickness (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10},
+        ],
         "holes": [],
         "threads": [],
-        "chamfers": chamfers,
-        "bends": bends,
+        "chamfers": [],
+        "bends": [],
         "studs": [],
-        "welds": welds,
+        "welds": [],
         "surface_finish": [],
         "manufacturing_processes": [
             {
@@ -4937,10 +4941,12 @@ def analyze_fallback(value: FallbackAnalysisReq):
             },
         ],
         "notes": [
+            "PREDICTED / REVIEW REQUIRED: automatic extraction could not fully resolve this source. All returned fields remain editable before quotation release.",
             f"Independent source fallback: {filename}",
             f"Source format: {fmt}",
             reason,
         ],
+        "prediction_status": "predicted_review_required",
         "confidence": {
             "drawing_no": 60,
             "material": 0,
@@ -4993,8 +4999,8 @@ def analyze_fallback(value: FallbackAnalysisReq):
         "drawing": drawing,
         "rows": rows,
         "summary": summary,
-        "dfm": _generate_dfm(artifact_payload),
-        "bom": _generate_bom(artifact_payload),
+        "dfm": None,
+        "bom": None,
         "ai_raw": ai_raw,
         "engineering_intelligence": ai_raw.get("engineering_intelligence", {}),
         "cost_trace": build_cost_trace(rows),
@@ -5131,10 +5137,10 @@ def analyze_cad(value: CadAnalysisReq):
         "dimensions": dimensions,
         "holes": [],
         "threads": [],
-        "chamfers": chamfers,
-        "bends": bends,
+        "chamfers": [],
+        "bends": [],
         "studs": [],
-        "welds": welds,
+        "welds": [],
         "surface_finish": [],
         "manufacturing_processes": [
             {
@@ -5239,8 +5245,8 @@ def analyze_cad(value: CadAnalysisReq):
         "drawing": drawing,
         "rows": rows,
         "summary": summary,
-        "dfm": _generate_dfm(artifact_payload),
-        "bom": _generate_bom(artifact_payload),
+        "dfm": None,
+        "bom": None,
         "ai_raw": ai_raw,
         "engineering_intelligence": ai_raw.get("engineering_intelligence", {}),
         "cost_trace": build_cost_trace(rows),
@@ -5265,7 +5271,7 @@ def _persist_extraction_safely(record: dict) -> None:
 def extraction_capabilities():
     return {
         "pipeline_version": EXTRACTION_PIPELINE_VERSION,
-        "formats": ["PDF", "PNG", "JPG", "JPEG", "WEBP", "BMP", "TIF", "TIFF", "DXF", "STEP/STP/IGES/STL/OBJ/GLB via CAD geometry endpoint"],
+        "formats": ["PDF", "PNG", "JPG", "JPEG", "WEBP", "BMP", "TIF", "TIFF", "DXF", "DWG", "STEP", "STP", "IGES", "IGS", "STL", "OBJ", "GLB", "GLTF", "X_T", "X_B"],
         "engines": ["PyPDF", "PyMuPDF", "ezdxf", "deterministic engineering parser", "Gemini fallback when configured", "RapidOCR/ONNX when locally installed", "geometry weight", "Rate Master"],
         "cloud_ai_required": False,
         "production_fallback": "Gemini when GEMINI_API_KEY is configured; local RapidOCR remains optional for desktop/local use",
@@ -5428,7 +5434,29 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
         except Exception as exc:
             drawing,rows,source,warnings,text_preview=extract_drawing_fields(content,filename); warnings.insert(0,f"DXF parser fallback: {exc}")
     else:
-        drawing, rows, source, warnings, text_preview = extract_drawing_fields(content, filename)
+        try:
+            drawing, rows, source, warnings, text_preview = extract_drawing_fields(content, filename)
+        except Exception as exc:
+            drawing = Drawing(
+                drawing_no=Path(filename).stem[:60],
+                revision="",
+                description=clean_filename_description(filename),
+                material="Predicted / Review Required",
+                thickness_mm=0.0,
+                weight_kg=0.0,
+                quantity=1,
+                notes=[
+                    "PREDICTED / REVIEW REQUIRED: this file could not be fully parsed automatically.",
+                    f"Parser fallback reason: {type(exc).__name__}: {exc}",
+                ],
+            )
+            rows = []
+            source = "predicted_file_fallback"
+            warnings = [
+                f"Automatic parser could not fully analyze {extension or 'this file'}; editable predicted fields were returned instead.",
+                f"Parser reason: {type(exc).__name__}: {exc}",
+            ]
+            text_preview = ""
 
     if ai_raw is None:
         ai_raw = enrich_engineering_intelligence(
@@ -5445,12 +5473,48 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
                 "product_quantity": drawing.quantity,
                 "notes": drawing.notes,
                 "manufacturing_processes": [],
+                "prediction_status": "predicted_review_required" if (drawing.material in {"Not detected", "Predicted / Review Required"} or drawing.thickness_mm <= 0 or drawing.weight_kg <= 0) else "extracted",
                 "missing_or_uncertain": warnings,
             },
             filename=filename,
             source_format=extension.lstrip(".").upper(),
             rows=rows,
         )
+
+    # Final safety normalization: every supported upload must return an editable
+    # engineering review even when OCR/AI/parser coverage is incomplete. Keep
+    # any values that were actually extracted, but explicitly mark unresolved
+    # fields as predicted/review-required instead of failing the workflow.
+    if _mandatory_or_feature_incomplete(ai_raw or {}, drawing, text_preview):
+        ai_raw = dict(ai_raw or {})
+        ai_raw["prediction_status"] = "predicted_review_required"
+        material_data = dict(ai_raw.get("material") or {})
+        material_tokens = [str(material_data.get(k) or "").strip() for k in ("family", "grade", "specification")]
+        material_resolved = any(token and token.casefold() not in {"not detected", "unknown", "n/a", "na"} for token in material_tokens)
+        if not material_resolved:
+            material_data = {"family": "Predicted / Review Required", "grade": "", "specification": ""}
+            ai_raw["material"] = material_data
+
+        existing_dims = list(ai_raw.get("dimensions") or []) if isinstance(ai_raw.get("dimensions"), list) else []
+        dim_labels = " ".join(str(item.get("label") or "").casefold() for item in existing_dims if isinstance(item, dict))
+        predicted_dims = []
+        if "length" not in dim_labels and "overall x" not in dim_labels:
+            predicted_dims.append({"label": "Overall Length (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10})
+        if "width" not in dim_labels and "overall y" not in dim_labels:
+            predicted_dims.append({"label": "Overall Width (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10})
+        if float(ai_raw.get("thickness_mm") or drawing.thickness_mm or 0) <= 0 and "thickness" not in dim_labels and "overall z" not in dim_labels:
+            predicted_dims.append({"label": "Thickness (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10})
+        if predicted_dims:
+            ai_raw["dimensions"] = [*existing_dims, *predicted_dims]
+
+        unresolved_note = "PREDICTED / REVIEW REQUIRED: unresolved engineering fields were returned as editable placeholders; confirm them before quotation release."
+        ai_raw["notes"] = list(dict.fromkeys([*(ai_raw.get("notes") or []), unresolved_note]))
+        ai_raw["missing_or_uncertain"] = list(dict.fromkeys([*(ai_raw.get("missing_or_uncertain") or []), unresolved_note]))
+        warnings = list(dict.fromkeys([*warnings, unresolved_note]))
+        drawing = ai_result_to_drawing(ai_raw)
+        rows = ai_result_to_rows(ai_raw, drawing) or rows
+        if "predicted" not in source:
+            source = f"{source}+predicted_review"
 
     # Never make database/settings availability part of the Analyze critical
     # path. Return the extraction first; persistence is best-effort background
