@@ -117,20 +117,55 @@ async function j<T>(url: string, init?: RequestInit, timeoutMs = 45000): Promise
   return response.json();
 }
 
+async function postJsonResilient<T>(
+  path: string,
+  payload: unknown,
+  timeoutMs: number
+): Promise<T> {
+  const targets = [DIRECT_FASTAPI, API].filter(
+    (value, index, values) => Boolean(value) && values.indexOf(value) === index
+  );
+
+  let lastError: unknown = null;
+
+  for (const target of targets) {
+    const controller = new AbortController();
+    const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(`${target}${path}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+
+      if (!response.ok) throw await parseErrorResponse(response);
+      return response.json() as Promise<T>;
+    } catch (error) {
+      lastError = error instanceof Error && error.name === "AbortError"
+        ? new Error(`Request timed out while waiting for FastAPI (${path}).`)
+        : error;
+    } finally {
+      globalThis.clearTimeout(timer);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`FastAPI did not return a valid response for ${path}.`);
+}
+
 export async function analyzeFallback(
   file: File,
   reason: string
 ) {
   const extension = file.name.split(".").pop()?.toUpperCase() || "FILE";
 
-  return j<AnalysisResponse>("/api/analyze-fallback", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      filename: file.name,
-      source_format: extension,
-      reason
-    })
+  return postJsonResilient<AnalysisResponse>("/api/analyze-fallback", {
+    filename: file.name,
+    source_format: extension,
+    reason
   }, 12000);
 }
 
@@ -148,12 +183,59 @@ export async function analyzeCad(payload: {
   volume_mm3: number;
   component_names: string[];
   shape_hint?: string;
+  step_metadata?: {
+    schema?: string;
+    product_names?: string[];
+    material_text?: string;
+    entity_counts?: Record<string, number>;
+    cylindrical_diameters_mm?: number[];
+    thread_labels?: string[];
+  };
 }) {
-  return j<AnalysisResponse>("/api/analyze-cad", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  }, 18000);
+  // CAD analysis must use the same direct-to-FastAPI production path as PDF
+  // analysis. Routing only through the Next.js/Vercel rewrite makes STEP/STP
+  // and other model formats fail whenever FASTAPI_INTERNAL_URL is unavailable
+  // in the frontend deployment.
+  return postJsonResilient<AnalysisResponse>("/api/analyze-cad", payload, 30000);
+}
+
+export async function analyzeCadFile(file: File, browserSummary: unknown) {
+  const localFastApi = typeof window !== "undefined"
+    && ["localhost", "127.0.0.1"].includes(window.location.hostname)
+      ? "http://127.0.0.1:8000"
+      : "";
+  const targets = [localFastApi, DIRECT_FASTAPI, API].filter(
+    (value, index, values) => Boolean(value) && values.indexOf(value) === index
+  );
+  let lastError: unknown = null;
+
+  for (const target of targets) {
+    const controller = new AbortController();
+    const timer = globalThis.setTimeout(() => controller.abort(), 120000);
+    const form = new FormData();
+    form.append("file", file);
+    form.append("browser_summary", JSON.stringify(browserSummary || {}));
+
+    try {
+      const response = await fetch(`${target}/api/analyze-cad-file`, {
+        method: "POST",
+        body: form,
+        signal: controller.signal
+      });
+      if (!response.ok) throw await parseErrorResponse(response);
+      return response.json() as Promise<AnalysisResponse>;
+    } catch (error) {
+      lastError = error instanceof Error && error.name === "AbortError"
+        ? new Error("STEP B-Rep analysis timed out while waiting for FastAPI.")
+        : error;
+    } finally {
+      globalThis.clearTimeout(timer);
+    }
+  }
+
+  throw lastError instanceof Error
+    ? lastError
+    : new Error("FastAPI STEP B-Rep analyzer did not return a valid response.");
 }
 
 export async function analyzeDrawing(file: File, forceAI = false) {

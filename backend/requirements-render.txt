@@ -12,3 +12,5 @@ pillow
 ezdxf>=1.4,<2
 openpyxl
 reportlab
+
+cadquery-ocp-novtk==8.0.1.1.0

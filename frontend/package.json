@@ -3,14 +3,14 @@
   "version": "0.14.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 3000",
     "build": "next build",
-    "start": "next start"
+    "start": "next start -p 3000",
+    "postinstall": "node scripts/copy-cad-runtime.mjs"
   },
   "dependencies": {
     "ag-grid-community": "^32.3.3",
     "ag-grid-react": "^32.3.3",
-    "dfab-manufacturing-quotation-app": "file:..",
     "next": "^14.2.35",
     "occt-import-js": "^0.0.23",
     "react": "^18.3.1",

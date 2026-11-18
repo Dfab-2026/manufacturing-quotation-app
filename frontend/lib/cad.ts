@@ -18,6 +18,33 @@ export type CadGeometrySummary = {
   volume_mm3: number;
   component_names: string[];
   shape_hint?: "plate_like" | "rotational_like" | "prismatic_like" | "unknown";
+  step_metadata?: {
+    schema?: string;
+    product_names?: string[];
+    material_text?: string;
+    entity_counts?: Record<string, number>;
+    cylindrical_diameters_mm?: number[];
+    cylindrical_diameter_counts?: Record<string, number>;
+    circle_diameters_mm?: number[];
+    circle_diameter_counts?: Record<string, number>;
+    torus_radii_mm?: Array<{ major_radius_mm: number; minor_radius_mm: number }>;
+    conical_surfaces?: Array<{ radius_mm: number; semi_angle_deg: number }>;
+    geometry_dimensions?: Array<{
+      label: string;
+      value_mm: number;
+      quantity?: number;
+      kind?: string;
+      confidence?: number;
+      review_required?: boolean;
+      basis?: string;
+    }>;
+    thread_labels?: string[];
+    datum_labels?: string[];
+    tolerance_labels?: string[];
+    surface_finish_labels?: string[];
+    geometric_tolerance_types?: string[];
+    pmi_entity_counts?: Record<string, number>;
+  };
 };
 
 type OcctResult = {
@@ -55,10 +82,8 @@ declare global {
   }
 }
 
-const OCCT_JS =
-  "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.js";
-const OCCT_WASM =
-  "https://cdn.jsdelivr.net/npm/occt-import-js@0.0.23/dist/occt-import-js.wasm";
+const OCCT_JS = "/vendor/occt/occt-import-js.js";
+const OCCT_WASM = "/vendor/occt/occt-import-js.wasm";
 const OCCT_JS_FALLBACK =
   "https://unpkg.com/occt-import-js@0.0.23/dist/occt-import-js.js";
 const OCCT_WASM_FALLBACK =
@@ -76,6 +101,11 @@ const workerPending = new Map<
     reject: (error: Error) => void;
   }
 >();
+
+let occtDirectPromise: Promise<{
+  ReadStepFile: (data: Uint8Array, params?: Record<string, unknown> | null) => OcctResult;
+  ReadIgesFile: (data: Uint8Array, params?: Record<string, unknown> | null) => OcctResult;
+}> | null = null;
 
 function loadScript(id: string, src: string) {
   const existingPromise = scriptPromises.get(id);
@@ -124,6 +154,11 @@ async function getOcctWorker(): Promise<Worker> {
   if (occtWorkerPromise) return occtWorkerPromise;
 
   occtWorkerPromise = Promise.resolve().then(() => {
+    // Blob workers do not reliably resolve root-relative importScripts() URLs.
+    // Convert the locally bundled CAD runtime to same-origin absolute URLs first.
+    const localJsUrl = new URL(OCCT_JS, window.location.origin).href;
+    const localWasmUrl = new URL(OCCT_WASM, window.location.origin).href;
+
     const workerSource = `
       let occtInstance = null;
 
@@ -131,10 +166,10 @@ async function getOcctWorker(): Promise<Worker> {
         if (occtInstance) return occtInstance;
 
         try {
-          importScripts("${OCCT_JS}");
+          importScripts("${localJsUrl}");
           occtInstance = await self.occtimportjs({
             locateFile(filename) {
-              if (filename.endsWith(".wasm")) return "${OCCT_WASM}";
+              if (filename.endsWith(".wasm")) return "${localWasmUrl}";
               return filename;
             }
           });
@@ -219,9 +254,66 @@ async function getOcctWorker(): Promise<Worker> {
   return occtWorkerPromise;
 }
 
+async function getDirectOcct() {
+  if (occtDirectPromise) return occtDirectPromise;
+
+  occtDirectPromise = (async () => {
+    const localJsUrl = new URL(OCCT_JS, window.location.origin).href;
+    const localWasmUrl = new URL(OCCT_WASM, window.location.origin).href;
+
+    try {
+      await loadScript("dfab-occt-js", localJsUrl);
+    } catch {
+      await loadScript("dfab-occt-js-fallback", OCCT_JS_FALLBACK);
+    }
+
+    if (!window.occtimportjs) {
+      throw new Error("OpenCascade STEP runtime did not initialize.");
+    }
+
+    try {
+      return await window.occtimportjs({
+        locateFile(filename) {
+          return String(filename).endsWith(".wasm") ? localWasmUrl : filename;
+        }
+      });
+    } catch {
+      return window.occtimportjs({
+        locateFile(filename) {
+          return String(filename).endsWith(".wasm") ? OCCT_WASM_FALLBACK : filename;
+        }
+      });
+    }
+  })();
+
+  return occtDirectPromise;
+}
+
+async function readCadMeshDirect(file: File): Promise<OcctResult> {
+  const extension = file.name.split(".").pop()?.toLowerCase() || "";
+  const occt = await getDirectOcct();
+  const data = new Uint8Array(await file.arrayBuffer());
+  const params = {
+    linearUnit: "millimeter",
+    linearDeflectionType: "bounding_box_ratio",
+    linearDeflection: 0.01,
+    angularDeflection: 0.5
+  };
+
+  const result = extension === "iges" || extension === "igs"
+    ? occt.ReadIgesFile(data, params)
+    : occt.ReadStepFile(data, params);
+
+  if (!result?.success || !Array.isArray(result.meshes) || result.meshes.length === 0) {
+    throw new Error("OpenCascade could not triangulate this STEP/IGES model.");
+  }
+
+  return result;
+}
+
 export async function preloadCadRuntime() {
   try {
-    await getOcctWorker();
+    await Promise.allSettled([getOcctWorker(), getDirectOcct()]);
   } catch {
     // Best effort only.
   }
@@ -282,17 +374,27 @@ export async function readCadMesh(file: File): Promise<OcctResult> {
       );
     }
 
-    const worker = await getOcctWorker();
-    const buffer = await file.arrayBuffer();
-    const id = ++workerRequestId;
+    try {
+      const worker = await getOcctWorker();
+      const buffer = await file.arrayBuffer();
+      const id = ++workerRequestId;
 
-    return withTimeout(
-      new Promise<OcctResult>((resolve, reject) => {
-        workerPending.set(id, { resolve, reject });
-        worker.postMessage({ id, extension, buffer }, [buffer]);
-      }),
-      9000
-    );
+      return await withTimeout(
+        new Promise<OcctResult>((resolve, reject) => {
+          workerPending.set(id, { resolve, reject });
+          worker.postMessage({ id, extension, buffer }, [buffer]);
+        }),
+        20000
+      );
+    } catch (workerError) {
+      try {
+        return await withTimeout(readCadMeshDirect(file), 30000);
+      } catch (directError) {
+        const workerMessage = workerError instanceof Error ? workerError.message : String(workerError);
+        const directMessage = directError instanceof Error ? directError.message : String(directError);
+        throw new Error(`STEP viewer failed: ${directMessage}. Worker fallback: ${workerMessage}`);
+      }
+    }
   })();
 
   cadResultCache.set(file, promise);
@@ -509,6 +611,247 @@ async function inspectObjFile(
   return geometrySummaryFromTriangles(file, hash, "OBJ", triangles);
 }
 
+
+function decodeStepText(buffer: ArrayBuffer) {
+  try {
+    return new TextDecoder("utf-8", { fatal: false }).decode(new Uint8Array(buffer));
+  } catch {
+    return "";
+  }
+}
+
+function uniqueStrings(values: string[], limit = 100) {
+  return Array.from(new Set(values.map((v) => v.trim()).filter(Boolean))).slice(0, limit);
+}
+
+function extractStepMetadata(text: string): CadGeometrySummary["step_metadata"] {
+  if (!text) return undefined;
+
+  const schema = text.match(/FILE_SCHEMA\s*\(\s*\(\s*'([^']+)'/i)?.[1] || "";
+  const productNames = uniqueStrings(
+    Array.from(text.matchAll(/\bPRODUCT\s*\(\s*'([^']*)'\s*,\s*'([^']*)'/gi))
+      .flatMap((m) => [m[1] || "", m[2] || ""])
+      .filter((value) => value && value.toUpperCase() !== "NONE")
+  );
+
+  const explicitMaterials = uniqueStrings([
+    ...Array.from(text.matchAll(/\bMATERIAL_DESIGNATION\s*\(\s*'([^']+)'/gi)).map((m) => m[1]),
+    ...Array.from(text.matchAll(/\bMATERIAL_PROPERTY\s*\(\s*'([^']+)'/gi)).map((m) => m[1]),
+  ]);
+
+  const upper = text.toUpperCase();
+  const materialPatterns: Array<[RegExp, string]> = [
+    [/\b(?:AISI|SUS|SS)[\s_-]*(304L|316L|304|316|321|430|201|202)\b/i, "Stainless Steel $1"],
+    [/\b(304L|316L|304|316|321|430|201|202)\s*SS\b/i, "Stainless Steel $1"],
+    [/\b(?:EN\s*)?1\.(4301|4307|4401|4404)\b/i, "Stainless Steel EN 1.$1"],
+    [/\b(?:IS\s*2062\s*)?(E250|E350)\b/i, "Mild Steel $1"],
+    [/\b(?:AL|ALUMINIUM|ALUMINUM)[\s_-]*(5052(?:-H32)?|6061(?:-T6)?|6082(?:-T6)?)\b/i, "Aluminium $1"],
+  ];
+  let inferredMaterial = "";
+  for (const [pattern, label] of materialPatterns) {
+    const match = upper.match(pattern);
+    if (match) {
+      inferredMaterial = label.replace("$1", match[1]);
+      break;
+    }
+  }
+
+  const countEntity = (name: string) =>
+    (text.match(new RegExp(`\\b${name}\\s*\\(`, "gi")) || []).length;
+
+  const entityCounts: Record<string, number> = {
+    advanced_faces: countEntity("ADVANCED_FACE"),
+    cylindrical_surfaces: countEntity("CYLINDRICAL_SURFACE"),
+    conical_surfaces: countEntity("CONICAL_SURFACE"),
+    toroidal_surfaces: countEntity("TOROIDAL_SURFACE"),
+    planes: countEntity("PLANE"),
+    circles: countEntity("CIRCLE"),
+    b_spline_surfaces: countEntity("B_SPLINE_SURFACE_WITH_KNOTS"),
+  };
+
+  const cylindricalDiameters = Array.from(
+    text.matchAll(/\bCYLINDRICAL_SURFACE\s*\([^,]*,[^,]*,\s*([-+0-9.Ee]+)\s*\)/gi)
+  )
+    .map((m) => Number(m[1]) * 2)
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .map((v) => Number(v.toFixed(4)));
+
+  const cylindricalDiameterCounts: Record<string, number> = {};
+  for (const diameter of cylindricalDiameters) {
+    const key = diameter.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    cylindricalDiameterCounts[key] = (cylindricalDiameterCounts[key] || 0) + 1;
+  }
+
+  // Analytic STEP entities carry exact radii independent of the triangulated
+  // preview mesh. Preserve those source-backed dimensions so the engineering
+  // review can show more than only the X/Y/Z envelope.
+  const circleDiameters = Array.from(
+    text.matchAll(/\bCIRCLE\s*\([^,]*,[^,]*,\s*([-+0-9.Ee]+)\s*\)/gi)
+  )
+    .map((m) => Number(m[1]) * 2)
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .map((v) => Number(v.toFixed(4)));
+
+  const circleDiameterCounts: Record<string, number> = {};
+  for (const diameter of circleDiameters) {
+    const key = diameter.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    circleDiameterCounts[key] = (circleDiameterCounts[key] || 0) + 1;
+  }
+
+  const torusRadii = Array.from(
+    text.matchAll(/\bTOROIDAL_SURFACE\s*\([^,]*,[^,]*,\s*([-+0-9.Ee]+)\s*,\s*([-+0-9.Ee]+)\s*\)/gi)
+  )
+    .map((m) => ({ major_radius_mm: Number(m[1]), minor_radius_mm: Number(m[2]) }))
+    .filter((row) => Number.isFinite(row.major_radius_mm) && row.major_radius_mm > 0 && Number.isFinite(row.minor_radius_mm) && row.minor_radius_mm > 0)
+    .map((row) => ({
+      major_radius_mm: Number(row.major_radius_mm.toFixed(4)),
+      minor_radius_mm: Number(row.minor_radius_mm.toFixed(4))
+    }));
+
+  const conicalSurfaces = Array.from(
+    text.matchAll(/\bCONICAL_SURFACE\s*\([^,]*,[^,]*,\s*([-+0-9.Ee]+)\s*,\s*([-+0-9.Ee]+)\s*\)/gi)
+  )
+    .map((m) => ({
+      radius_mm: Number(m[1]),
+      semi_angle_deg: Number(m[2]) * 180 / Math.PI
+    }))
+    .filter((row) => Number.isFinite(row.radius_mm) && row.radius_mm >= 0 && Number.isFinite(row.semi_angle_deg))
+    .map((row) => ({
+      radius_mm: Number(row.radius_mm.toFixed(4)),
+      semi_angle_deg: Number(row.semi_angle_deg.toFixed(4))
+    }));
+
+  type StepGeometryDimension = NonNullable<NonNullable<CadGeometrySummary["step_metadata"]>["geometry_dimensions"]>[number];
+  const geometryDimensions: StepGeometryDimension[] = [];
+  const pushUniqueGeometryDimension = (row: StepGeometryDimension) => {
+    const existing = geometryDimensions.some((item) =>
+      item.kind === row.kind && Math.abs(Number(item.value_mm) - Number(row.value_mm)) < 0.0001
+    );
+    if (!existing) geometryDimensions.push(row);
+  };
+
+  for (const diameter of Array.from(new Set(cylindricalDiameters)).slice(0, 40)) {
+    const key = diameter.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    pushUniqueGeometryDimension({
+      label: `Cylindrical Surface Ø${Number(diameter.toFixed(4))}`,
+      value_mm: diameter,
+      // STEP entity count is not physical hole quantity: one feature may be
+      // split into several cylindrical faces by the CAD exporter.
+      quantity: 1,
+      kind: "cylindrical_diameter",
+      confidence: 96,
+      review_required: true,
+      basis: "Exact radius stored in STEP CYLINDRICAL_SURFACE entity; classify as OD/bore/hole during review"
+    });
+  }
+
+  for (const diameter of Array.from(new Set(circleDiameters)).slice(0, 40)) {
+    const key = diameter.toFixed(4).replace(/0+$/, "").replace(/\.$/, "");
+    pushUniqueGeometryDimension({
+      label: `Circular Edge Ø${Number(diameter.toFixed(4))}`,
+      value_mm: diameter,
+      // Circular edge count is topology, not feature quantity.
+      quantity: 1,
+      kind: "circle_diameter",
+      confidence: 95,
+      review_required: true,
+      basis: "Exact radius stored in STEP CIRCLE entity; may be an edge, bore, boss or construction circle"
+    });
+  }
+
+  for (const torus of torusRadii.slice(0, 20)) {
+    pushUniqueGeometryDimension({
+      label: "Torus / Bend Major Radius",
+      value_mm: torus.major_radius_mm,
+      quantity: 1,
+      kind: "torus_major_radius",
+      confidence: 96,
+      review_required: true,
+      basis: "Exact major radius stored in STEP TOROIDAL_SURFACE entity"
+    });
+    pushUniqueGeometryDimension({
+      label: "Torus / Bend Minor Radius",
+      value_mm: torus.minor_radius_mm,
+      quantity: 1,
+      kind: "torus_minor_radius",
+      confidence: 96,
+      review_required: true,
+      basis: "Exact minor radius stored in STEP TOROIDAL_SURFACE entity"
+    });
+  }
+
+  const threadLabels = uniqueStrings(
+    Array.from(text.matchAll(/\b(M\d+(?:\.\d+)?(?:\s*[xX]\s*\d+(?:\.\d+)?)?)\b/g)).map((m) => m[1]),
+    50
+  );
+
+  // AP242/PMI data varies by CAD exporter. Keep only information explicitly
+  // present in the STEP text and mark it as review data rather than inventing it.
+  const quotedStrings = Array.from(text.matchAll(/'([^']{1,160})'/g)).map((m) => m[1]);
+  const datumLabels = uniqueStrings(
+    quotedStrings.filter((value) => /^(?:DATUM\s*)?[A-Z]{1,3}$/i.test(value.trim())),
+    30
+  );
+  const toleranceLabels = uniqueStrings(
+    quotedStrings.filter((value) => /(?:±|\+\/\-|\bTOL(?:ERANCE)?\b|\bH[0-9]{1,2}\b|\bg[0-9]{1,2}\b)/i.test(value)),
+    50
+  );
+  const surfaceFinishLabels = uniqueStrings(
+    quotedStrings.filter((value) => /\b(?:RA|RZ|SURFACE\s*(?:FINISH|ROUGHNESS))\s*[:=]?\s*[0-9]+(?:\.[0-9]+)?/i.test(value)),
+    30
+  );
+
+  const toleranceEntityNames = [
+    "GEOMETRIC_TOLERANCE",
+    "FLATNESS_TOLERANCE",
+    "STRAIGHTNESS_TOLERANCE",
+    "ROUNDNESS_TOLERANCE",
+    "CYLINDRICITY_TOLERANCE",
+    "PARALLELISM_TOLERANCE",
+    "PERPENDICULARITY_TOLERANCE",
+    "ANGULARITY_TOLERANCE",
+    "POSITION_TOLERANCE",
+    "CONCENTRICITY_TOLERANCE",
+    "SYMMETRY_TOLERANCE",
+    "CIRCULAR_RUNOUT_TOLERANCE",
+    "TOTAL_RUNOUT_TOLERANCE",
+    "PLUS_MINUS_TOLERANCE",
+    "DATUM_FEATURE",
+    "DATUM_REFERENCE"
+  ];
+  const pmiEntityCounts: Record<string, number> = {};
+  const geometricToleranceTypes: string[] = [];
+  for (const entityName of toleranceEntityNames) {
+    const count = countEntity(entityName);
+    if (count > 0) {
+      pmiEntityCounts[entityName.toLowerCase()] = count;
+      if (entityName.endsWith("_TOLERANCE")) {
+        geometricToleranceTypes.push(entityName.replace(/_/g, " "));
+      }
+    }
+  }
+
+  return {
+    schema,
+    product_names: productNames,
+    material_text: explicitMaterials[0] || inferredMaterial || "",
+    entity_counts: entityCounts,
+    cylindrical_diameters_mm: Array.from(new Set(cylindricalDiameters)).slice(0, 100),
+    cylindrical_diameter_counts: cylindricalDiameterCounts,
+    circle_diameters_mm: Array.from(new Set(circleDiameters)).slice(0, 100),
+    circle_diameter_counts: circleDiameterCounts,
+    torus_radii_mm: torusRadii.slice(0, 50),
+    conical_surfaces: conicalSurfaces.slice(0, 50),
+    geometry_dimensions: geometryDimensions.slice(0, 100),
+    thread_labels: threadLabels,
+    datum_labels: datumLabels,
+    tolerance_labels: toleranceLabels,
+    surface_finish_labels: surfaceFinishLabels,
+    geometric_tolerance_types: uniqueStrings(geometricToleranceTypes, 30),
+    pmi_entity_counts: pmiEntityCounts,
+  };
+}
+
 export async function inspectCadFile(
   file: File
 ): Promise<CadGeometrySummary> {
@@ -519,6 +862,9 @@ export async function inspectCadFile(
     async (): Promise<CadGeometrySummary> => {
     const extension = file.name.split(".").pop()?.toLowerCase() || "";
     const hash = await sha256Hex(file);
+    const stepMetadata = ["step", "stp"].includes(extension)
+      ? extractStepMetadata(decodeStepText(await file.arrayBuffer()))
+      : undefined;
 
     if (extension === "stl") {
       return inspectStlFile(file, hash);
@@ -542,18 +888,20 @@ export async function inspectCadFile(
       surface_area_mm2: 0,
       volume_mm3: 0,
       component_names: [],
-      shape_hint: "unknown"
+      shape_hint: "unknown",
+      step_metadata: stepMetadata
     };
   }
 
   let result: OcctResult;
   try {
-    result = await withTimeout(readCadMesh(file), 6500);
+    result = await withTimeout(readCadMesh(file), 32000);
   } catch {
     return {
       filename: file.name, file_hash: hash, format: extension.toUpperCase(), parser_status: "metadata_only" as const,
       root_name: file.name.replace(/\.[^.]+$/, ""), part_count: 1, mesh_count: 0, triangle_count: 0,
-      dimensions_mm: { x: 0, y: 0, z: 0 }, surface_area_mm2: 0, volume_mm3: 0, component_names: [], shape_hint: "unknown"
+      dimensions_mm: { x: 0, y: 0, z: 0 }, surface_area_mm2: 0, volume_mm3: 0, component_names: [], shape_hint: "unknown",
+      step_metadata: stepMetadata
     };
   }
   const meshes = result.meshes || [];
@@ -652,7 +1000,8 @@ export async function inspectCadFile(
     surface_area_mm2: surfaceArea,
     volume_mm3: volume,
     component_names: hierarchy.names,
-    shape_hint: shapeHintFromDimensions(dimensions)
+    shape_hint: shapeHintFromDimensions(dimensions),
+    step_metadata: stepMetadata
     };
   })();
 

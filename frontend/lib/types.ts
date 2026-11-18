@@ -155,6 +155,14 @@ export type AIExtraction = {
     volume_mm3?: number;
     component_names?: string[];
     shape_hint?: string;
+    step_metadata?: {
+      schema?: string;
+      product_names?: string[];
+      material_text?: string;
+      entity_counts?: Record<string, number>;
+      cylindrical_diameters_mm?: number[];
+      thread_labels?: string[];
+    };
   };
 };
 

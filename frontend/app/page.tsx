@@ -54,6 +54,7 @@ const DFM_HISTORY_KEY = "dfab-dfm-history-v080";
 const BOM_HISTORY_KEY = "dfab-bom-history-v080";
 const QUOTE_HISTORY_CACHE_KEY = "dfab-quotation-history-cache-v036";
 const QUOTE_HISTORY_DELETED_KEY = "dfab-quotation-history-deleted-v038";
+const COMMERCIAL_DEFAULTS_MIGRATION_KEY = "dfab-commercial-defaults-v045";
 type ArtifactJobState = "processing" | "ready" | "review" | "attention" | "failed";
 
 
@@ -64,9 +65,9 @@ const emptySummary: QuoteSummary = {
   manufacturing_cost: 0,
   markup: 0,
   selling_price: 0,
-  material_wastage_pct: 0,
-  overhead_pct: 0,
-  markup_pct: 0,
+  material_wastage_pct: 10,
+  overhead_pct: 20,
+  markup_pct: 30,
   material_wastage_critical: 0,
   overhead_critical: 0,
   markup_critical: 0
@@ -257,6 +258,10 @@ const ACTIVE_DRAFT_DB = "dfab-manufacturing-quotation";
 const ACTIVE_DRAFT_STORE = "workflow";
 const WORKSPACE_DATASET_STORE = "workspace-datasets";
 const ACTIVE_DRAFT_KEY = "active-quotation-v085";
+const SUSPENDED_ONGOING_KEY = "suspended-ongoing-quotation-v057";
+const SUSPENDED_ONGOING_BACKUP_KEY = "dfab-suspended-ongoing-backup-v057";
+const LAST_DRAFT_QUOTE_KEY = "dfab-last-draft-quote-id-v060";
+const HISTORY_DRAFT_SNAPSHOT_PREFIX = "history-draft-snapshot:";
 
 function createWorkspaceDatasetId() {
   return `dataset-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -790,16 +795,45 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
   const normalizedWidth = Number(envelope?.widthMm || cadAxes[0] || 0);
   const normalizedHeight = Number(envelope?.heightMm || cadAxes[1] || 0);
 
-  if (!hasDimensionLabel(/(^|\b)(width|overall\s*width|w)(\b|$)/i)) {
-    addDerivedDimension("Overall Width", normalizedWidth, envelope?.basis || "CAD/drawing envelope");
-  }
-  if (!hasDimensionLabel(/(^|\b)(height|overall\s*height|h)(\b|$)/i)) {
-    addDerivedDimension("Overall Height", normalizedHeight, envelope?.basis || "CAD/drawing envelope");
+  const hasCadAxisDimensions = ["overall x", "overall y", "overall z"].every((axisLabel) =>
+    normalizedDimensions.some((row) =>
+      String(row.label || row.type || row.description || "").trim().toLowerCase() === axisLabel
+      && normalizedDimensionMm(row) > 0
+    )
+  );
+
+  // CAD/STEP already has an authoritative X/Y/Z envelope. Do not add the same
+  // measurements again as Width/Height/Length — that creates duplicate quotation
+  // inputs such as Overall Y=1318.5 and Overall Width=1318.5.
+  if (!hasCadAxisDimensions) {
+    if (!hasDimensionLabel(/(^|\b)(width|overall\s*width|w)(\b|$)/i)) {
+      addDerivedDimension("Overall Width", normalizedWidth, envelope?.basis || "CAD/drawing envelope");
+    }
+    if (!hasDimensionLabel(/(^|\b)(height|overall\s*height|h)(\b|$)/i)) {
+      addDerivedDimension("Overall Height", normalizedHeight, envelope?.basis || "CAD/drawing envelope");
+    }
   }
   if (!hasDimensionLabel(/thickness|thick|thk|plate\s*t|sheet\s*t|wall|gauge/i) && Number(raw.thickness_mm || 0) > 0) {
     addDerivedDimension("Thickness", Number(raw.thickness_mm), thicknessPrediction?.basis || "Normalized product thickness");
   }
-  raw.dimensions = normalizedDimensions;
+
+  const cadAxisValues = hasCadAxisDimensions
+    ? normalizedDimensions
+        .filter((row) => /^overall [xyz]$/i.test(String(row.label || row.type || row.description || "").trim()))
+        .map((row) => normalizedDimensionMm(row))
+        .filter((value) => value > 0)
+    : [];
+  const isSameCadAxisValue = (value: number) => cadAxisValues.some((axisValue) =>
+    Math.abs(axisValue - value) <= Math.max(0.01, Math.abs(axisValue) * 0.0001)
+  );
+
+  raw.dimensions = normalizedDimensions.filter((row) => {
+    if (!hasCadAxisDimensions) return true;
+    const label = String(row.label || row.type || row.description || "").trim();
+    if (!/^(overall\s+)?(width|height|length)$/i.test(label)) return true;
+    const value = normalizedDimensionMm(row);
+    return !(value > 0 && isSameCadAxisValue(value));
+  });
 
   const weightMeta = raw as AIExtraction & {
     drawing_stated_weight_kg?: number;
@@ -1049,6 +1083,32 @@ async function loadWorkflowDraft(): Promise<PersistedWorkflowDraft | null> {
   return value;
 }
 
+
+async function saveHistoryDraftSnapshot(quoteId: string, value: PersistedWorkflowDraft) {
+  if (!quoteId) return;
+  const db = await openDraftDatabase();
+  await new Promise<void>((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_DRAFT_STORE, "readwrite");
+    tx.objectStore(ACTIVE_DRAFT_STORE).put(makeOngoingCacheSafe(value), `${HISTORY_DRAFT_SNAPSHOT_PREFIX}${quoteId}`);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error || new Error("Draft snapshot transaction aborted."));
+  });
+  db.close();
+}
+
+async function loadHistoryDraftSnapshot(quoteId: string): Promise<PersistedWorkflowDraft | null> {
+  if (!quoteId) return null;
+  const db = await openDraftDatabase();
+  const value = await new Promise<PersistedWorkflowDraft | null>((resolve, reject) => {
+    const tx = db.transaction(ACTIVE_DRAFT_STORE, "readonly");
+    const request = tx.objectStore(ACTIVE_DRAFT_STORE).get(`${HISTORY_DRAFT_SNAPSHOT_PREFIX}${quoteId}`);
+    request.onsuccess = () => resolve((request.result as PersistedWorkflowDraft) || null);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return value;
+}
 async function clearWorkflowDraft() {
   const db = await openDraftDatabase();
 
@@ -1060,6 +1120,141 @@ async function clearWorkflowDraft() {
   });
 
   db.close();
+}
+
+function makeOngoingCacheSafe<T>(value: T): T {
+  const seen = new WeakMap<object, unknown>();
+
+  const clone = (input: unknown): unknown => {
+    if (
+      input === null
+      || typeof input === "string"
+      || typeof input === "number"
+      || typeof input === "boolean"
+      || typeof input === "undefined"
+    ) return input;
+
+    if (typeof input === "bigint") return Number(input);
+    if (typeof input === "function" || typeof input === "symbol") return undefined;
+
+    if (typeof File !== "undefined" && input instanceof File) return input;
+    if (typeof Blob !== "undefined" && input instanceof Blob) return input;
+    if (input instanceof Date) return new Date(input.getTime());
+
+    if (typeof input === "object") {
+      const objectInput = input as object;
+      if (seen.has(objectInput)) return seen.get(objectInput);
+
+      if (Array.isArray(input)) {
+        const output: unknown[] = [];
+        seen.set(objectInput, output);
+        for (const item of input) output.push(clone(item));
+        return output;
+      }
+
+      const output: Record<string, unknown> = {};
+      seen.set(objectInput, output);
+      for (const [key, item] of Object.entries(input as Record<string, unknown>)) {
+        const cloned = clone(item);
+        if (typeof cloned !== "undefined") output[key] = cloned;
+      }
+      return output;
+    }
+
+    return undefined;
+  };
+
+  return clone(value) as T;
+}
+
+function saveSuspendedOngoingBackup(value: PersistedWorkflowDraft): boolean {
+  try {
+    const json = JSON.stringify(value, (_key, item) => {
+      if (typeof File !== "undefined" && item instanceof File) return null;
+      if (typeof Blob !== "undefined" && item instanceof Blob) return null;
+      if (typeof item === "bigint") return Number(item);
+      if (typeof item === "function" || typeof item === "symbol") return undefined;
+      return item;
+    });
+    localStorage.setItem(SUSPENDED_ONGOING_BACKUP_KEY, json);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loadSuspendedOngoingBackup(): PersistedWorkflowDraft | null {
+  try {
+    const raw = localStorage.getItem(SUSPENDED_ONGOING_BACKUP_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as PersistedWorkflowDraft;
+  } catch {
+    return null;
+  }
+}
+
+async function saveSuspendedOngoing(value: PersistedWorkflowDraft): Promise<boolean> {
+  const safeValue = makeOngoingCacheSafe(value);
+  const backupSaved = saveSuspendedOngoingBackup(safeValue);
+  let indexedDbSaved = false;
+  let db: IDBDatabase | null = null;
+
+  try {
+    db = await openDraftDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db!.transaction(ACTIVE_DRAFT_STORE, "readwrite");
+      tx.objectStore(ACTIVE_DRAFT_STORE).put(safeValue, SUSPENDED_ONGOING_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+      tx.onabort = () => reject(tx.error || new Error("Ongoing cache transaction aborted."));
+    });
+    indexedDbSaved = true;
+  } catch {
+    indexedDbSaved = false;
+  } finally {
+    db?.close();
+  }
+
+  return indexedDbSaved || backupSaved;
+}
+
+async function loadSuspendedOngoing(): Promise<PersistedWorkflowDraft | null> {
+  let db: IDBDatabase | null = null;
+  try {
+    db = await openDraftDatabase();
+    const value = await new Promise<PersistedWorkflowDraft | null>((resolve, reject) => {
+      const tx = db!.transaction(ACTIVE_DRAFT_STORE, "readonly");
+      const request = tx.objectStore(ACTIVE_DRAFT_STORE).get(SUSPENDED_ONGOING_KEY);
+      request.onsuccess = () => resolve((request.result as PersistedWorkflowDraft) || null);
+      request.onerror = () => reject(request.error);
+    });
+    if (value) return value;
+  } catch {
+    // Fall back to the JSON cache below.
+  } finally {
+    db?.close();
+  }
+
+  return loadSuspendedOngoingBackup();
+}
+
+async function clearSuspendedOngoing() {
+  try { localStorage.removeItem(SUSPENDED_ONGOING_BACKUP_KEY); } catch {}
+
+  let db: IDBDatabase | null = null;
+  try {
+    db = await openDraftDatabase();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db!.transaction(ACTIVE_DRAFT_STORE, "readwrite");
+      tx.objectStore(ACTIVE_DRAFT_STORE).delete(SUSPENDED_ONGOING_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  } catch {
+    // Cache is already cleared from the local fallback; do not block resume flow.
+  } finally {
+    db?.close();
+  }
 }
 
 
@@ -1193,6 +1388,7 @@ export default function Page() {
   const batchItemsRef = useRef<BatchWorkspace[]>([]);
   // Invalidates asynchronous DFM/BOM callbacks from a quotation that has been ended.
   const artifactLifecycleRef = useRef(0);
+  const processEndedRef = useRef(false);
   const [batchFailures, setBatchFailures] = useState<BatchFailure[]>([]);
   const [activeBatchId, setActiveBatchId] = useState("");
   const [quoteMode, setQuoteMode] = useState<BatchQuoteMode>("merge");
@@ -1220,6 +1416,11 @@ export default function Page() {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [sourceFiles, setSourceFiles] = useState<File[]>([]);
   const [activeSourceKey, setActiveSourceKey] = useState("");
+  // Quotation-lifetime source references. These survive normal step/view navigation
+  // and are cleared only by explicit quotation reset/end or source deletion.
+  const quotationPrimaryFileRef = useRef<File | null>(null);
+  const quotationModelFileRef = useRef<File | null>(null);
+  const quotationSourceFilesRef = useRef<File[]>([]);
   const [showDfmHistory, setShowDfmHistory] = useState(false);
   const [showBomHistory, setShowBomHistory] = useState(false);
   const [workspaceDatasetId, setWorkspaceDatasetId] = useState(() => createWorkspaceDatasetId());
@@ -1229,6 +1430,7 @@ export default function Page() {
   const [draftHydrated, setDraftHydrated] = useState(false);
   const historyReadyRef = useRef(false);
   const restoringHistoryRef = useRef(false);
+  const restoringOngoingRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState("Ready.");
   const [costSheetSaveState, setCostSheetSaveState] = useState<"idle" | "saving" | "saved" | "deferred">("idle");
@@ -1241,6 +1443,20 @@ export default function Page() {
   const [actualCostDraft, setActualCostDraft] = useState({ actualCost: 0, actualHours: 0, notes: "" });
   const [estimatorQuestion, setEstimatorQuestion] = useState("");
   const [estimatorAnswer, setEstimatorAnswer] = useState("");
+
+  // Never discard a valid source merely because a page transition temporarily
+  // renders with an empty transient state. Explicit reset/remove paths clear refs.
+  useEffect(() => {
+    if (file) quotationPrimaryFileRef.current = file;
+  }, [file]);
+
+  useEffect(() => {
+    if (modelFile) quotationModelFileRef.current = modelFile;
+  }, [modelFile]);
+
+  useEffect(() => {
+    if (sourceFiles.length) quotationSourceFilesRef.current = sourceFiles;
+  }, [sourceFiles]);
 
   // Re-normalize engineering values whenever a drawing workspace becomes active.
   // This also upgrades older saved workspaces that were analyzed before automatic
@@ -1468,7 +1684,25 @@ export default function Page() {
       api.getDatasetStats()
     ]);
 
-    if (results[0].status === "fulfilled") setSettings(results[0].value);
+    if (results[0].status === "fulfilled") {
+      const loadedSettings = results[0].value;
+      let nextSettings = loadedSettings;
+      try {
+        if (!localStorage.getItem(COMMERCIAL_DEFAULTS_MIGRATION_KEY)) {
+          nextSettings = {
+            ...loadedSettings,
+            material_wastage_pct: Number(loadedSettings.material_wastage_pct || 10),
+            overhead_pct: 20,
+            markup_pct: 30
+          };
+          localStorage.setItem(COMMERCIAL_DEFAULTS_MIGRATION_KEY, "1");
+          void api.saveSettings(nextSettings).catch(() => {
+            try { localStorage.removeItem(COMMERCIAL_DEFAULTS_MIGRATION_KEY); } catch {}
+          });
+        }
+      } catch {}
+      setSettings(nextSettings);
+    }
     if (results[1].status === "fulfilled") setRates(results[1].value);
     if (results[2].status === "fulfilled") setCatalog(results[2].value);
     if (results[3].status === "fulfilled") setStats(results[3].value);
@@ -1562,18 +1796,27 @@ export default function Page() {
       setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
     }
 
-    const restoredBatchItems = saved.batchItems || [];
+    // localStorage backup intentionally strips File/Blob objects.  Never let
+    // those null placeholders crash Ongoing restore; IndexedDB still restores
+    // the full File-backed workspace when available.
+    const restoredBatchItems = (saved.batchItems || []).filter(
+      (item): item is BatchWorkspace => Boolean(item && isBrowserFile((item as BatchWorkspace).file))
+    );
     const restoredDrawingFiles = (saved.files?.length
       ? saved.files
-      : restoredBatchItems.map((item) => item.file).filter(Boolean)) as File[];
+      : restoredBatchItems.map((item) => item.file)
+    ).filter(isBrowserFile);
     const restoredActiveWorkspace = restoredBatchItems.find((item) => item.id === saved.activeBatchId) || restoredBatchItems[0];
-    const restoredPrimaryFile = saved.file || restoredActiveWorkspace?.file || restoredDrawingFiles[0] || null;
+    const savedPrimaryFile = isBrowserFile(saved.file) ? saved.file : null;
+    const restoredPrimaryFile = savedPrimaryFile || restoredActiveWorkspace?.file || restoredDrawingFiles[0] || null;
 
     setFile(restoredPrimaryFile);
     setFiles(restoredDrawingFiles.length ? restoredDrawingFiles : (restoredPrimaryFile ? [restoredPrimaryFile] : []));
     setBatchItems(restoredBatchItems);
     batchItemsRef.current = restoredBatchItems;
-    setBatchFailures(saved.batchFailures || []);
+    setBatchFailures((saved.batchFailures || []).filter(
+      (item): item is BatchFailure => Boolean(item && isBrowserFile((item as BatchFailure).file))
+    ));
     setActiveBatchId(saved.activeBatchId || "");
     setQuoteMode(saved.quoteMode || "merge");
     setAnalysis(saved.analysis || null);
@@ -1589,18 +1832,22 @@ export default function Page() {
       }
     );
     setCustomer(saved.customer || "Sample Customer");
-    setModelFile(saved.modelFile || null);
+    setModelFile(isBrowserFile(saved.modelFile) ? saved.modelFile : null);
 
+    const cachedSourceFiles = (saved.sourceFiles || []).filter(isBrowserFile);
     const restoredSources =
-      saved.sourceFiles?.length
-        ? saved.sourceFiles
+      cachedSourceFiles.length
+        ? cachedSourceFiles
         : [
             ...restoredDrawingFiles,
             ...(restoredPrimaryFile && !restoredDrawingFiles.some((item) => fileKey(item) === fileKey(restoredPrimaryFile)) ? [restoredPrimaryFile] : []),
-            ...(saved.modelFile ? [saved.modelFile] : [])
-          ];
+            ...(isBrowserFile(saved.modelFile) ? [saved.modelFile] : [])
+          ].filter(isBrowserFile);
 
     setSourceFiles(restoredSources);
+    quotationPrimaryFileRef.current = restoredPrimaryFile;
+    quotationModelFileRef.current = isBrowserFile(saved.modelFile) ? saved.modelFile : null;
+    quotationSourceFilesRef.current = restoredSources;
     setActiveSourceKey(
       saved.activeSourceKey
       || (restoredSources[0] ? fileKey(restoredSources[0]) : "")
@@ -1652,51 +1899,15 @@ export default function Page() {
 
   // Auto-save the complete in-progress workflow, including the uploaded File objects.
   useEffect(() => {
-    if (!draftHydrated || busy) return;
+    if (!draftHydrated || busy || restoringOngoingRef.current) return;
 
     const timer = window.setTimeout(() => {
-      const activeBatch = batchItemsRef.current.length
-        ? batchItemsRef.current.map((item) =>
-            item.id === activeBatchId && analysis && drawing
-              ? {
-                  ...item,
-                  file: file || item.file,
-                  analysis,
-                  drawing,
-                  rows,
-                  summary
-                }
-              : item
-          )
-        : batchItems;
-
-      const snapshot: PersistedWorkflowDraft = {
-        view,
-        step,
-        file,
-        files,
-        batchItems: activeBatch,
-        activeBatchId,
-        quoteMode,
-        analysis,
-        drawing,
-        rows,
-        summary,
-        finalPriceOverride,
-        commercialAmountOverrides,
-        customer,
-        modelFile,
-        sourceFiles,
-        activeSourceKey,
-        datasetId: workspaceDatasetId,
-        datasetName: workspaceDatasetName,
-        batchFailures,
-        dfmReports,
-        bomReports,
-        selectedDfmId,
-        selectedBomId,
-        savedAt: new Date().toISOString()
-      };
+      // Always persist the quotation-lifetime File/source refs, not a transient
+      // render where React state may momentarily be empty during navigation.
+      const snapshot = captureCurrentWorkflowSnapshot();
+      snapshot.view = view;
+      snapshot.step = Math.min(4, Math.max(1, Number(step || 1)));
+      snapshot.savedAt = new Date().toISOString();
 
       void Promise.all([
         saveWorkflowDraft(snapshot),
@@ -1805,16 +2016,6 @@ export default function Page() {
     return () => window.removeEventListener("popstate", onPopState);
   }, [draftHydrated]);
 
-  useEffect(() => {
-    if (!file) {
-      setFileUrl("");
-      return;
-    }
-    const url = URL.createObjectURL(file);
-    setFileUrl(url);
-    return () => URL.revokeObjectURL(url);
-  }, [file]);
-
   const resetOngoingQuotationState = (
     message = "Upload a drawing to begin."
   ) => {
@@ -1833,6 +2034,9 @@ export default function Page() {
     setModelFile(null);
     setSourceFiles([]);
     setActiveSourceKey("");
+    quotationPrimaryFileRef.current = null;
+    quotationModelFileRef.current = null;
+    quotationSourceFilesRef.current = [];
     setUploadedFileStatus({});
     setShowDfmHistory(false);
     setShowBomHistory(false);
@@ -1853,14 +2057,92 @@ export default function Page() {
     setMsg(message);
   };
 
+  const captureCurrentWorkflowSnapshot = (): PersistedWorkflowDraft => {
+    const effectiveFile = file || quotationPrimaryFileRef.current;
+    const effectiveSources = sourceFiles.length ? sourceFiles : quotationSourceFilesRef.current;
+    const effectiveModel = modelFile || quotationModelFileRef.current;
+    const effectiveFiles = files.length
+      ? files
+      : effectiveSources.filter((selected) => !isVisualCadFormat(selected));
+    const activeBatch = batchItemsRef.current.length
+      ? batchItemsRef.current.map((item) =>
+          item.id === activeBatchId && analysis && drawing
+            ? { ...item, file: effectiveFile || item.file, analysis, drawing, rows, summary }
+            : item
+        )
+      : batchItems;
+
+    return {
+      view: "workflow",
+      step: Math.min(4, Math.max(1, Number(step || 1))),
+      file: effectiveFile,
+      files: effectiveFiles,
+      batchItems: activeBatch,
+      activeBatchId,
+      quoteMode,
+      analysis,
+      drawing,
+      rows,
+      summary,
+      finalPriceOverride,
+      commercialAmountOverrides,
+      customer,
+      modelFile: effectiveModel,
+      sourceFiles: effectiveSources,
+      activeSourceKey,
+      datasetId: workspaceDatasetId,
+      datasetName: workspaceDatasetName,
+      batchFailures,
+      dfmReports,
+      bomReports,
+      selectedDfmId,
+      selectedBomId,
+      savedAt: new Date().toISOString()
+    };
+  };
+
+  const snapshotHasPreviewSource = (snapshot: PersistedWorkflowDraft | null | undefined) =>
+    Boolean(
+      snapshot
+      && (
+        isBrowserFile(snapshot.file)
+        || isBrowserFile(snapshot.modelFile)
+        || (snapshot.sourceFiles || []).some(isBrowserFile)
+        || (snapshot.files || []).some(isBrowserFile)
+        || (snapshot.batchItems || []).some((item) => Boolean(item && isBrowserFile(item.file)))
+      )
+    );
+
+  const restorePreviewSourcesFromDataset = async (
+    snapshot: PersistedWorkflowDraft
+  ): Promise<PersistedWorkflowDraft> => {
+    if (snapshotHasPreviewSource(snapshot) || !snapshot.datasetId) return snapshot;
+    const datasetSnapshot = await loadWorkspaceDataset(snapshot.datasetId).catch(() => null);
+    if (!snapshotHasPreviewSource(datasetSnapshot)) return snapshot;
+
+    return {
+      ...snapshot,
+      file: isBrowserFile(datasetSnapshot?.file) ? datasetSnapshot!.file : snapshot.file,
+      files: (datasetSnapshot?.files || []).filter(isBrowserFile),
+      modelFile: isBrowserFile(datasetSnapshot?.modelFile) ? datasetSnapshot!.modelFile : snapshot.modelFile,
+      sourceFiles: (datasetSnapshot?.sourceFiles || []).filter(isBrowserFile),
+      activeSourceKey: snapshot.activeSourceKey || datasetSnapshot?.activeSourceKey || "",
+      batchItems: snapshot.batchItems?.length ? snapshot.batchItems : (datasetSnapshot?.batchItems || [])
+    };
+  };
+
   const deleteOngoingQuotation = async (
-    message = "Process ended. Upload a file to start a new quotation."
+    message = "Process ended. Current work moved to Draft / Incomplete.",
+    saveAsDraft = true
   ) => {
     const oldDatasetId = workspaceDatasetId;
+    const draftItems = saveAsDraft ? currentBatchPayload() : [];
+    const draftCustomer = customer;
 
-    // Stop any in-flight DFM/BOM request from writing old results back after
-    // this quotation is ended. Requests cannot be physically cancelled here,
-    // so stale callbacks are ignored using this lifecycle generation.
+    // Once a process is ended, the diamond must not resurrect that quotation
+    // from History or a workspace that is still being deleted asynchronously.
+    processEndedRef.current = true;
+
     artifactLifecycleRef.current += 1;
 
     const activeHashes = new Set<string>();
@@ -1869,14 +2151,11 @@ export default function Page() {
       if (hash) activeHashes.add(hash);
     }
     if (analysis?.file_hash) activeHashes.add(analysis.file_hash);
-
-    // Capture hashes embedded in the currently persisted artifacts too. This
-    // covers resumed/partially restored sessions where batchItems may be empty.
     if (selectedDfm?.file_hash) activeHashes.add(selectedDfm.file_hash);
     if (selectedBom?.file_hash) activeHashes.add(selectedBom.file_hash);
 
-    // Clear visible quotation state immediately; storage/server cleanup can run
-    // after the UI has returned to a clean upload screen.
+    // Clear the active workspace immediately. Draft persistence continues in
+    // the background and appears in Quotation History when confirmed.
     resetOngoingQuotationState(message);
 
     setSelectedDfmId("");
@@ -1884,10 +2163,46 @@ export default function Page() {
     setDfmJobs({});
     setBomJobs({});
 
-    // Delete only the engineering artifacts that belong to this ended process.
-    // Rate Master, completed quotation history and unrelated DFM/BOM history are
-    // intentionally preserved. Persist the filtered lists immediately as well
-    // so a refresh cannot resurrect the ended process artifacts.
+    if (draftItems.length > 0) {
+      void (async () => {
+        try {
+          if (draftItems.length === 1) {
+            const item = draftItems[0];
+            const saved = await api.saveQuote({
+              customer: draftCustomer,
+              drawing: item.drawing,
+              rows: item.rows,
+              summary: item.summary,
+              status: "Draft / Incomplete"
+            });
+            setQuotes((current) => [
+              ...current.filter((quote) => quote.id !== saved.id),
+              saved
+            ]);
+          } else {
+            const saved = await api.saveBatchQuote(
+              draftCustomer,
+              quoteMode,
+              draftItems,
+              "Draft / Incomplete"
+            );
+            setQuotes((current) => {
+              const incomingIds = new Set(saved.records.map((quote) => quote.id));
+              return [
+                ...current.filter((quote) => !incomingIds.has(quote.id)),
+                ...saved.records
+              ];
+            });
+          }
+          setMsg("Process ended. Current quotation saved in History as Draft / Incomplete.");
+        } catch (error) {
+          setMsg(error instanceof Error
+            ? `Process ended. Draft save needs retry: ${error.message}`
+            : "Process ended. Draft save needs retry.");
+        }
+      })();
+    }
+
     setDfmReports((current) => {
       const next = activeHashes.size
         ? current.filter((item) => !activeHashes.has(item.file_hash))
@@ -1912,111 +2227,217 @@ export default function Page() {
     });
   };
 
-  const newQuote = () => {
-    // Snapshot the unfinished quotation before clearing the visible workflow.
-    // The UI must open a fresh quotation immediately; history persistence runs
-    // independently so a slow network can never make New Quotation look dead.
-    const draftSnapshot = drawing && (analysis || rows.length)
-      ? { customer, drawing, rows, summary, status: "Draft / Incomplete" as const }
-      : null;
+  const forceFreshUploadPage = (message: string) => {
+    // New Quotation must always land on the upload screen. Keep autosave from
+    // re-applying the previous navigation while the reset is committing.
+    restoringOngoingRef.current = true;
+    resetOngoingQuotationState(message);
+    setView("workflow");
+    setStep(1);
 
-    // Return to a clean upload screen synchronously. Cleanup/persistence happens
-    // after navigation and cannot block this action.
-    void deleteOngoingQuotation(
-      draftSnapshot
-        ? "New quotation ready. Previous unfinished quotation is being saved as Draft / Incomplete."
-        : "New quotation ready. Upload a drawing to begin."
-    );
-
-    if (!draftSnapshot) return;
-
-    void api.saveQuote(draftSnapshot).then((saved) => {
-      setQuotes((current) => [
-        ...current.filter((quote) => quote.id !== saved.id),
-        saved
-      ]);
-      setMsg("New quotation ready. Previous unfinished quotation saved as Draft / Incomplete.");
-    }).catch((error) => {
-      setMsg(
-        error instanceof Error
-          ? `New quotation opened. Draft history save is pending: ${error.message}`
-          : "New quotation opened. Draft history save is pending."
-      );
-    });
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        setView("workflow");
+        setStep(1);
+        window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+        window.requestAnimationFrame(() => {
+          restoringOngoingRef.current = false;
+        });
+      });
+    } else {
+      restoringOngoingRef.current = false;
+    }
   };
 
-  const resumeWorkingQuotation = async () => {
-    const hasCurrentWork = Boolean(
-      analysis
-      || drawing
+  const newQuote = async () => {
+    const hasWork = Boolean(
+      drawing
+      || analysis
       || file
       || files.length
       || sourceFiles.length
+      || rows.length
       || batchItemsRef.current.length
     );
 
-    if (hasCurrentWork) {
-      setView("workflow");
-      setStep(Math.min(4, Math.max(1, Number(step || 1))));
-      setMsg("Ongoing quotation opened.");
+    if (!hasWork) {
+      processEndedRef.current = false;
+      forceFreshUploadPage("New quotation ready. Upload a drawing to begin.");
       return;
     }
 
-    try {
-      const hasSavedWork = (saved: PersistedWorkflowDraft | null) => Boolean(
-        saved && (
-          saved.analysis
-          || saved.drawing
-          || saved.file
-          || saved.files?.length
-          || saved.sourceFiles?.length
-          || saved.batchItems?.length
-        )
+    const draftSnapshot = captureCurrentWorkflowSnapshot();
+    const draftItems = currentBatchPayload();
+    // A Draft must retain its original source File(s) for its entire lifecycle.
+    // Keep the dataset copy even after starting another quotation so Continue Draft
+    // can rebuild the STEP/PDF/image preview without asking for a re-upload.
+    void saveWorkspaceDataset(draftSnapshot).catch((error) => {
+      console.warn("Draft workspace preview backup skipped", error);
+    });
+
+    // A quotation resumed from Ongoing/History is already a Draft. New Quotation
+    // must never be blocked just because the restored snapshot has no live batch
+    // payload/File objects. Refresh that existing Draft snapshot best-effort, then
+    // always open a clean Step 1 upload workspace.
+    if (!draftItems.length) {
+      let resumedDraftId = "";
+      try { resumedDraftId = localStorage.getItem(LAST_DRAFT_QUOTE_KEY) || ""; } catch {}
+
+      if (resumedDraftId) {
+        void saveHistoryDraftSnapshot(resumedDraftId, draftSnapshot).catch((error) => {
+          console.warn("Resumed Draft snapshot refresh skipped", error);
+        });
+      }
+
+      processEndedRef.current = false;
+      forceFreshUploadPage(
+        "New quotation ready. Previous Draft remains available from Ongoing / Quotation History."
       );
 
-      // Prefer the active draft, but recover the latest valid workspace dataset
-      // when that draft is stale/empty. This keeps the Ongoing button tied to
-      // real unfinished drawings instead of opening an empty workflow.
-      let saved = await loadWorkflowDraft();
-      if (!hasSavedWork(saved)) saved = await loadLatestWorkspaceDataset();
-
-      if (hasSavedWork(saved) && saved) {
-        applyPersistedWorkflow(saved, false);
-        setView("workflow");
-        setStep(Math.min(4, Math.max(1, Number(saved.step || 1))));
-        setMsg(`Ongoing quotation opened with ${Math.max(saved.batchItems?.length || 0, saved.files?.length || 0, saved.file ? 1 : 0)} drawing${Math.max(saved.batchItems?.length || 0, saved.files?.length || 0, saved.file ? 1 : 0) === 1 ? "" : "s"}.`);
-        return;
-      }
-    } catch {
-      // If browser storage is unavailable, remain on the current app state.
+      void clearWorkflowDraft().finally(() => { void refreshWorkspaceDatasets(); });
+      return;
     }
 
-    // If the browser workspace has already been cleared by New Quotation,
-    // continue from the newest Draft / Incomplete quotation in History.
+    const now = new Date().toISOString();
+    const localDrafts: QuoteRecord[] = draftItems.map((item, index) => ({
+      id: `LOCAL-DRAFT-${Date.now()}${draftItems.length > 1 ? `-${index + 1}` : ""}`,
+      created_at: now,
+      updated_at: now,
+      name: item.drawing.description || item.drawing.drawing_no || `Draft ${index + 1}`,
+      customer,
+      drawing_no: item.drawing.drawing_no || "",
+      revision: item.drawing.revision || "",
+      description: item.drawing.description || "",
+      selling_price: Number(item.summary.selling_price || 0),
+      status: "Draft / Incomplete",
+      drawing: item.drawing,
+      rows: item.rows,
+      summary: item.summary
+    }));
+    const localIds = localDrafts.map((quote) => quote.id);
+
+    // Save locally FIRST. This is the source that makes New Quotation immediate
+    // and guarantees the diamond/History can resume even if FastAPI is slow/offline.
+    setQuotes((current) => {
+      const next = [...localDrafts, ...current].sort((a, b) =>
+        new Date(b.updated_at || b.created_at || 0).getTime()
+        - new Date(a.updated_at || a.created_at || 0).getTime()
+      );
+      persistQuoteCache(next);
+      return next;
+    });
+
+    const snapshotResults = await Promise.allSettled(
+      localIds.map((quoteId) => saveHistoryDraftSnapshot(quoteId, draftSnapshot))
+    );
+    const snapshotSaved = snapshotResults.some((result) => result.status === "fulfilled");
+    if (!snapshotSaved) {
+      // The Draft row is already preserved in local History. Do not trap the user
+      // in the current quotation if IndexedDB preview caching is unavailable.
+      console.warn("Draft preview/state cache was unavailable; opening New Quotation with History Draft preserved.");
+    }
+
+    try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, localIds[localIds.length - 1]); } catch {}
+
+    processEndedRef.current = false;
+    forceFreshUploadPage(
+      "New quotation ready. Previous quotation saved as Draft / Incomplete. Use the diamond to continue that last Draft."
+    );
+
+    void clearWorkflowDraft().finally(() => { void refreshWorkspaceDatasets(); });
+
+    // Sync the already-safe local Draft to FastAPI in the background. On success
+    // replace the temporary local record with the server History record and copy
+    // the exact preview/source snapshot to the server draft ID.
+    void (async () => {
+      try {
+        let serverDrafts: QuoteRecord[] = [];
+        if (draftItems.length === 1) {
+          const item = draftItems[0];
+          serverDrafts = [await api.saveQuote({
+            customer,
+            drawing: item.drawing,
+            rows: item.rows,
+            summary: item.summary,
+            status: "Draft / Incomplete"
+          })];
+        } else {
+          const saved = await api.saveBatchQuote(customer, quoteMode, draftItems, "Draft / Incomplete");
+          serverDrafts = saved.records;
+        }
+
+        const serverIds = serverDrafts.map((quote) => quote.id).filter(Boolean);
+        await Promise.allSettled(serverIds.map((quoteId) => saveHistoryDraftSnapshot(quoteId, draftSnapshot)));
+
+        setQuotes((current) => {
+          const serverIdSet = new Set(serverIds);
+          const next = [
+            ...serverDrafts,
+            ...current.filter((quote) => !localIds.includes(quote.id) && !serverIdSet.has(quote.id))
+          ].sort((a, b) =>
+            new Date(b.updated_at || b.created_at || 0).getTime()
+            - new Date(a.updated_at || a.created_at || 0).getTime()
+          );
+          persistQuoteCache(next);
+          return next;
+        });
+
+        if (serverIds.length) {
+          try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, serverIds[serverIds.length - 1]); } catch {}
+        }
+      } catch (error) {
+        console.warn("Draft backend sync deferred; local Draft remains available", error);
+      }
+    })();
+  };
+
+  const resumeWorkingQuotation = async () => {
     try {
-      const history = quotes.length ? quotes : await api.getQuotes();
-      if (!quotes.length) setQuotes(history);
-      const latestDraft = history
+      const latest = await api.getQuotes().catch(() => null);
+      const mergedQuotes = new Map<string, QuoteRecord>();
+      quotes.forEach((quote) => mergedQuotes.set(quote.id, quote));
+      (latest || []).forEach((quote) => mergedQuotes.set(quote.id, quote));
+      const availableQuotes = Array.from(mergedQuotes.values());
+      const draftQuotes = availableQuotes
         .filter((quote) => String(quote.status || "").toLowerCase().includes("draft"))
-        .sort((a, b) => {
-          const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
-          const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
-          return bTime - aTime;
-        })[0];
+        .sort((a, b) =>
+          new Date(b.updated_at || b.created_at || 0).getTime()
+          - new Date(a.updated_at || a.created_at || 0).getTime()
+        );
 
-      if (latestDraft?.drawing && latestDraft.rows && latestDraft.summary) {
-        editSavedQuote(latestDraft);
-        setMsg(`Ongoing draft ${latestDraft.id} opened from Quotation History.`);
+      let preferredId = "";
+      try { preferredId = localStorage.getItem(LAST_DRAFT_QUOTE_KEY) || ""; } catch {}
+      const latestDraft = draftQuotes.find((quote) => quote.id === preferredId) || draftQuotes[0] || null;
+
+      if (!latestDraft) {
+        setView("workflow");
+        setStep(1);
+        setMsg("No Draft / Incomplete quotation is available to continue.");
         return;
       }
-    } catch {
-      // History lookup is a final fallback only; keep the normal empty workflow
-      // available even if the history endpoint is temporarily unavailable.
-    }
 
-    setView("workflow");
-    setStep(1);
-    setMsg("No ongoing quotation. Upload a file to begin.");
+      const exactSnapshot = await loadHistoryDraftSnapshot(latestDraft.id).catch(() => null);
+      if (exactSnapshot) {
+        const resumableSnapshot = await restorePreviewSourcesFromDataset(exactSnapshot);
+        restoringOngoingRef.current = true;
+        applyPersistedWorkflow(resumableSnapshot, false);
+        const resumeStep = Math.min(4, Math.max(1, Number(resumableSnapshot.step || 1)));
+        setView("workflow");
+        setStep(resumeStep);
+        setRevisionSourceQuoteId("");
+        processEndedRef.current = false;
+        await saveWorkflowDraft({ ...resumableSnapshot, view: "workflow", step: resumeStep, savedAt: new Date().toISOString() }).catch(() => undefined);
+        window.setTimeout(() => { restoringOngoingRef.current = false; }, 350);
+        setMsg(`Draft ${latestDraft.id} continued from the same saved step.`);
+        return;
+      }
+
+      // Older drafts may not have a local File-backed snapshot. Continue their
+      // saved quotation data exactly like Quotation History does.
+      await editSavedQuote(latestDraft);
+    } catch (error) {
+      setMsg(error instanceof Error ? `Could not continue the last Draft: ${error.message}` : "Could not continue the last Draft.");
+    }
   };
 
   const removeUploadedSource = (selected: File) => {
@@ -2060,7 +2481,11 @@ export default function Page() {
     }
 
     const remainingModels = remainingSources.filter((item) => isModelSource(item));
+    const remainingPrimary = remainingDrawings[0] || null;
     setModelFile(remainingModels.at(-1) || null);
+    quotationSourceFilesRef.current = remainingSources;
+    quotationPrimaryFileRef.current = remainingPrimary;
+    quotationModelFileRef.current = remainingModels.at(-1) || null;
 
     if (activeSourceKey === removedKey || activeBatchId === removedWorkspace?.id) {
       const nextWorkspace = remainingWorkspaces[0] || null;
@@ -2090,7 +2515,8 @@ export default function Page() {
 
     if (remainingSources.length === 0) {
       void deleteOngoingQuotation(
-        "Quotation ended. Upload a file to start a new quotation."
+        "Quotation ended. Upload a file to start a new quotation.",
+        false
       );
       return;
     }
@@ -2179,8 +2605,11 @@ export default function Page() {
     return [];
   };
 
-  const fileKey = (value: File) =>
-    `${value.name}::${value.size}::${value.lastModified}`;
+  const isBrowserFile = (value: unknown): value is File =>
+    typeof File !== "undefined" && value instanceof File;
+
+  const fileKey = (value: File | null | undefined) =>
+    value ? `${value.name}::${value.size}::${value.lastModified}` : "";
 
   const wait = (milliseconds: number) =>
     new Promise((resolve) => window.setTimeout(resolve, milliseconds));
@@ -2259,6 +2688,107 @@ export default function Page() {
   };
 
 
+  const createClientPredictedAnalysis = (selected: File, reason: string): AnalysisResponse => {
+    const extension = selected.name.split(".").pop()?.toUpperCase() || "FILE";
+    const stem = selected.name.replace(/\.[^.]+$/, "") || "Predicted Drawing";
+    const likelyProcess = isModelSource(selected)
+      ? "General Machining"
+      : ["DXF", "DWG"].includes(extension)
+        ? "Laser Cutting"
+        : "Inspection & Handling";
+    const drawing: DrawingDetails = {
+      drawing_no: stem.slice(0, 120),
+      revision: "",
+      description: `${stem} — Predicted / Review Required`,
+      material: "Predicted / Review Required",
+      thickness_mm: 0,
+      weight_kg: 0,
+      quantity: 1,
+      notes: [
+        "PREDICTED / REVIEW REQUIRED: automatic extraction could not fully resolve this source.",
+        "All values are editable before quotation release.",
+        reason
+      ]
+    };
+    const rows: CostRow[] = [{
+      id: `predicted-review-${Date.now()}`,
+      category: "PROCESS",
+      item: likelyProcess,
+      drawingQty: `${extension} source · engineer review required`,
+      costingQty: 1,
+      unit: "job",
+      rate: 0,
+      cost: 0,
+      confidence: "Assumed",
+      rateId: null,
+      rateSource: "Predicted / Review Required",
+      criticalScore: 90
+    }];
+    return {
+      extraction_id: `CLIENT-FALLBACK-${Date.now()}`,
+      file_hash: `client-${selected.name}-${selected.size}-${selected.lastModified}`,
+      learning_source: "independent_fallback",
+      extraction_warnings: [reason, "Predicted / Review Required"],
+      drawing,
+      rows,
+      summary: { ...emptySummary },
+      source_type: isModelSource(selected) ? "cad" : "drawing",
+      source_format: extension,
+      ai_raw: {
+        drawing_no: drawing.drawing_no,
+        revision: "",
+        description: drawing.description,
+        material: { family: "Predicted / Review Required", grade: "", specification: "" },
+        thickness_mm: 0,
+        weight_kg: 0,
+        product_quantity: 1,
+        dimensions: [],
+        holes: [],
+        threads: [],
+        chamfers: [],
+        bends: [],
+        studs: [],
+        welds: [],
+        surface_finish: [],
+        manufacturing_processes: [{ process: likelyProcess, reason: "Predicted fallback", confidence: 20 }],
+        notes: drawing.notes,
+        prediction_status: "predicted_review_required",
+        missing_or_uncertain: ["Review all engineering and costing fields before release."]
+      } as AIExtraction
+    };
+  };
+
+  const analyzeSourceResilient = async (selected: File): Promise<AnalysisResponse> => {
+    let primaryReason = "Primary analysis did not return a usable result.";
+    try {
+      if (isModelSource(selected)) {
+        const cadSummary = await inspectCadFile(selected);
+        const extension = selected.name.split(".").pop()?.toLowerCase() || "";
+        if (["step", "stp", "iges", "igs"].includes(extension)) {
+          try {
+            return await api.analyzeCadFile(selected, cadSummary);
+          } catch {
+            // Preserve the already-working browser geometry route as a fallback.
+            return await api.analyzeCad(cadSummary);
+          }
+        }
+        return await api.analyzeCad(cadSummary);
+      }
+      return await api.analyzeDrawing(selected, true);
+    } catch (error) {
+      primaryReason = error instanceof Error ? error.message : primaryReason;
+    }
+
+    try {
+      return await api.analyzeFallback(selected, primaryReason);
+    } catch (fallbackError) {
+      const fallbackReason = fallbackError instanceof Error
+        ? `${primaryReason}; fallback service: ${fallbackError.message}`
+        : primaryReason;
+      return createClientPredictedAnalysis(selected, fallbackReason);
+    }
+  };
+
   const analyzeOneWithRetry = async (
     selected: File,
     originalIndex: number,
@@ -2271,9 +2801,7 @@ export default function Page() {
       setMsg("Analyzing…");
 
       try {
-        const analyzedResult = isModelSource(selected)
-          ? await api.analyzeCad(await inspectCadFile(selected))
-          : await api.analyzeDrawing(selected, true);
+        const analyzedResult = await analyzeSourceResilient(selected);
         const result = enrichPartSummary(analyzedResult);
 
         const itemSummary = result.summary || emptySummary;
@@ -2630,13 +3158,94 @@ export default function Page() {
         : row
     );
     setAnalysis({ ...analysis, ai_raw: nextRaw, rows: nextRows });
-    setRows(nextRows);
-    try { setSummary(await api.calculateQuote(nextRows)); } catch { setMsg("Allowance updated locally; backend recalculation pending."); }
+    await recalc(nextRows);
   };
+
+  const calculateSummaryLocal = useCallback((
+    sourceRows: CostRow[],
+    values?: {
+      material_wastage_pct?: number;
+      overhead_pct?: number;
+      markup_pct?: number;
+      material_wastage_override?: number | null;
+      overhead_override?: number | null;
+      markup_override?: number | null;
+      selling_price_override?: number | null;
+    }
+  ): QuoteSummary => {
+    const directCost = sourceRows.reduce(
+      (total, row) => total + Math.max(0, Number(row.costingQty || 0)) * Math.max(0, Number(row.rate || 0)),
+      0
+    );
+    const materialBase = sourceRows.reduce(
+      (total, row) => String(row.category || "").toUpperCase() === "MATERIAL" && row.id !== "ai-material-stock"
+        ? total + Math.max(0, Number(row.costingQty || 0)) * Math.max(0, Number(row.rate || 0))
+        : total,
+      0
+    );
+
+    const materialWastagePct = Math.max(0, Number(values?.material_wastage_pct ?? settings?.material_wastage_pct ?? (summary.material_wastage_pct > 0 ? summary.material_wastage_pct : 10)));
+    const overheadPct = Math.max(0, Number(values?.overhead_pct ?? settings?.overhead_pct ?? (summary.overhead_pct > 0 ? summary.overhead_pct : 20)));
+    const markupPct = Math.max(0, Number(values?.markup_pct ?? settings?.markup_pct ?? (summary.markup_pct > 0 ? summary.markup_pct : 30)));
+
+    const materialWastage = values?.material_wastage_override != null
+      ? Math.max(0, Number(values.material_wastage_override))
+      : materialBase * materialWastagePct / 100;
+    const overhead = values?.overhead_override != null
+      ? Math.max(0, Number(values.overhead_override))
+      : (directCost + materialWastage) * overheadPct / 100;
+    const manufacturingCost = directCost + materialWastage + overhead;
+    const markup = values?.markup_override != null
+      ? Math.max(0, Number(values.markup_override))
+      : manufacturingCost * markupPct / 100;
+    const automaticSellingPrice = manufacturingCost + markup;
+    const sellingPrice = values?.selling_price_override != null
+      ? Math.max(0, Number(values.selling_price_override))
+      : automaticSellingPrice;
+
+    const round2 = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+    return {
+      direct_cost: round2(directCost),
+      material_wastage: round2(materialWastage),
+      overhead: round2(overhead),
+      manufacturing_cost: round2(manufacturingCost),
+      markup: round2(markup),
+      selling_price: round2(sellingPrice),
+      material_wastage_pct: round2(materialWastagePct),
+      overhead_pct: round2(overheadPct),
+      markup_pct: round2(markupPct),
+      material_wastage_critical: summary.material_wastage_critical || 50,
+      overhead_critical: summary.overhead_critical || 50,
+      markup_critical: summary.markup_critical || 50
+    };
+  }, [settings, summary.material_wastage_pct, summary.overhead_pct, summary.markup_pct, summary.material_wastage_critical, summary.overhead_critical, summary.markup_critical]);
+
+  const liveCostSummary = useMemo(() => calculateSummaryLocal(rows, {
+    material_wastage_pct: summary.material_wastage_pct > 0 ? summary.material_wastage_pct : undefined,
+    overhead_pct: summary.overhead_pct > 0 ? summary.overhead_pct : undefined,
+    markup_pct: summary.markup_pct > 0 ? summary.markup_pct : undefined,
+    material_wastage_override: commercialAmountOverrides.material_wastage,
+    overhead_override: commercialAmountOverrides.overhead,
+    markup_override: commercialAmountOverrides.markup,
+    selling_price_override: finalPriceOverride
+  }), [
+    rows,
+    calculateSummaryLocal,
+    summary.material_wastage_pct,
+    summary.overhead_pct,
+    summary.markup_pct,
+    commercialAmountOverrides.material_wastage,
+    commercialAmountOverrides.overhead,
+    commercialAmountOverrides.markup,
+    finalPriceOverride
+  ]);
 
   const recalc = useCallback(async (
     nextRows: CostRow[],
     overrides?: {
+      material_wastage_pct?: number;
+      overhead_pct?: number;
+      markup_pct?: number;
       material_wastage_override?: number | null;
       overhead_override?: number | null;
       markup_override?: number | null;
@@ -2645,7 +3254,9 @@ export default function Page() {
   ) => {
     const updated = nextRows.map((row) => ({
       ...row,
-      cost: (+row.costingQty || 0) * (+row.rate || 0)
+      costingQty: Math.max(0, Number(row.costingQty || 0)),
+      rate: Math.max(0, Number(row.rate || 0)),
+      cost: Math.max(0, Number(row.costingQty || 0)) * Math.max(0, Number(row.rate || 0))
     }));
     setRows(updated);
 
@@ -2656,14 +3267,30 @@ export default function Page() {
       selling_price_override: finalPriceOverride
     };
 
+    // Cost Sheet must never wait on the backend to show the current totals.
+    // Calculate from the exact visible rows first, then let FastAPI verify/sync.
+    const localSummary = calculateSummaryLocal(updated, commercialValues);
+    setSummary(localSummary);
+
     try {
-      setSummary(
-        await api.calculateQuote(updated, commercialValues)
-      );
+      const serverSummary = await api.calculateQuote(updated, commercialValues);
+      const serverDirect = Number(serverSummary?.direct_cost || 0);
+      const localDirect = Number(localSummary.direct_cost || 0);
+      const serverLooksValid = Number.isFinite(serverDirect)
+        && (localDirect <= 0 || serverDirect > 0)
+        && Number.isFinite(Number(serverSummary?.manufacturing_cost || 0))
+        && Number.isFinite(Number(serverSummary?.selling_price || 0));
+
+      // Never let a stale/empty backend response erase valid totals that are
+      // already visible from the current Cost Sheet rows.
+      if (serverLooksValid) {
+        setSummary(serverSummary);
+      }
     } catch {
-      setMsg("Could not recalculate. Check backend connection.");
+      setMsg("Totals calculated locally. Backend sync will retry automatically.");
     }
   }, [
+    calculateSummaryLocal,
     commercialAmountOverrides.material_wastage,
     commercialAmountOverrides.overhead,
     commercialAmountOverrides.markup,
@@ -2718,20 +3345,15 @@ export default function Page() {
     if (field === "markup_pct") nextOverrides.markup = null;
     setCommercialAmountOverrides(nextOverrides);
     setFinalPriceOverride(null);
-    try {
-      const next = await api.calculateQuote(rows, {
-        material_wastage_pct: field === "material_wastage_pct" ? pct : summary.material_wastage_pct,
-        overhead_pct: field === "overhead_pct" ? pct : summary.overhead_pct,
-        markup_pct: field === "markup_pct" ? pct : summary.markup_pct,
-        material_wastage_override: nextOverrides.material_wastage,
-        overhead_override: nextOverrides.overhead,
-        markup_override: nextOverrides.markup,
-        selling_price_override: null
-      });
-      setSummary(next);
-    } catch {
-      setMsg("Could not update commercial percentage. Check backend connection.");
-    }
+    await recalc(rows, {
+      material_wastage_pct: field === "material_wastage_pct" ? pct : summary.material_wastage_pct,
+      overhead_pct: field === "overhead_pct" ? pct : summary.overhead_pct,
+      markup_pct: field === "markup_pct" ? pct : summary.markup_pct,
+      material_wastage_override: nextOverrides.material_wastage,
+      overhead_override: nextOverrides.overhead,
+      markup_override: nextOverrides.markup,
+      selling_price_override: null
+    });
   };
 
 
@@ -2762,6 +3384,7 @@ export default function Page() {
 
   const analyze = async () => {
     const selectedFiles = allSourceFiles;
+    processEndedRef.current = false;
 
     if (!selectedFiles.length || busy) {
       if (!selectedFiles.length) setMsg("Select a drawing first.");
@@ -2796,9 +3419,7 @@ export default function Page() {
     if (selectedFiles.length === 1) {
       const selected = selectedFiles[0];
       try {
-        const rawResult = isModelSource(selected)
-          ? await api.analyzeCad(await inspectCadFile(selected))
-          : await api.analyzeDrawing(selected, true);
+        const rawResult = await analyzeSourceResilient(selected);
         const result = enrichPartSummary(rawResult);
         const workspace: BatchWorkspace = {
           id: `${result.file_hash}-0`,
@@ -3355,6 +3976,10 @@ export default function Page() {
         summary,
         status
       });
+      if (String(status).toLowerCase().includes("draft")) {
+        await saveHistoryDraftSnapshot(quote.id, captureCurrentWorkflowSnapshot()).catch(() => undefined);
+        try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, quote.id); } catch {}
+      }
       await refresh();
       setMsg(`Quotation ${quote.id} saved as ${status}.`);
       return;
@@ -3366,6 +3991,13 @@ export default function Page() {
       items,
       status
     );
+
+    if (String(status).toLowerCase().includes("draft")) {
+      const snapshot = captureCurrentWorkflowSnapshot();
+      const ids = result.records.map((quote) => quote.id).filter(Boolean);
+      await Promise.all(ids.map((quoteId) => saveHistoryDraftSnapshot(quoteId, snapshot).catch(() => undefined)));
+      if (ids.length) { try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, ids[ids.length - 1]); } catch {} }
+    }
 
     await refresh();
 
@@ -3434,26 +4066,48 @@ export default function Page() {
     }
   };
 
-  const editSavedQuote = (quote: QuoteRecord) => {
+  const editSavedQuote = async (quote: QuoteRecord) => {
+    const isDraft = String(quote.status || "").toLowerCase().includes("draft");
+
+    if (isDraft) {
+      const exactSnapshot = await loadHistoryDraftSnapshot(quote.id).catch(() => null);
+      if (exactSnapshot) {
+        const resumableSnapshot = await restorePreviewSourcesFromDataset(exactSnapshot);
+        restoringOngoingRef.current = true;
+        applyPersistedWorkflow(resumableSnapshot, false);
+        const resumeStep = Math.min(4, Math.max(1, Number(resumableSnapshot.step || 1)));
+        setView("workflow");
+        setStep(resumeStep);
+        setRevisionSourceQuoteId("");
+        processEndedRef.current = false;
+        try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, quote.id); } catch {}
+        await saveWorkflowDraft({ ...resumableSnapshot, view: "workflow", step: resumeStep, savedAt: new Date().toISOString() }).catch(() => undefined);
+        window.setTimeout(() => { restoringOngoingRef.current = false; }, 350);
+        setMsg(`Draft ${quote.id} continued from Quotation History with its saved drawing preview.`);
+        return;
+      }
+    }
+
     if (!quote.drawing || !quote.rows || !quote.summary) {
       setMsg("This older history record does not contain editable quotation details.");
       return;
     }
-    const isDraft = String(quote.status || "").toLowerCase().includes("draft");
+
     setDrawing(quote.drawing);
     setRows(quote.rows);
     setSummary(quote.summary);
     setCustomer(quote.customer || "Sample Customer");
     setFinalPriceOverride(null);
     setCommercialAmountOverrides({ material_wastage: null, overhead: null, markup: null });
-    // Continuing a draft is the same quotation workflow, while editing a
-    // completed quotation starts a revision and must preserve the original.
     setRevisionSourceQuoteId(isDraft ? "" : quote.id);
     setView("workflow");
     setStep(3);
+    if (isDraft) {
+      try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, quote.id); } catch {}
+    }
     setMsg(
       isDraft
-        ? `Draft ${quote.id} continued from Quotation History.`
+        ? `Draft ${quote.id} continued from Quotation History. Original preview is unavailable only for older drafts saved before local source-file snapshots were introduced.`
         : `Opened ${quote.id} for revision. Saving/downloading will create a new revised quotation; the original remains in history.`
     );
   };
@@ -3828,48 +4482,12 @@ export default function Page() {
         : "yellow";
 
   const saveCurrentWorkspaceNow = async (navigationView: View = view) => {
-    const activeBatch = batchItemsRef.current.length
-      ? batchItemsRef.current.map((item) =>
-          item.id === activeBatchId && analysis && drawing
-            ? {
-                ...item,
-                file: file || item.file,
-                analysis,
-                drawing,
-                rows,
-                summary
-              }
-            : item
-        )
-      : batchItems;
-
-    const snapshot: PersistedWorkflowDraft = {
-      view: navigationView,
-      step,
-      file,
-      files,
-      batchItems: activeBatch,
-      activeBatchId,
-      quoteMode,
-      analysis,
-      drawing,
-      rows,
-      summary,
-      finalPriceOverride,
-      commercialAmountOverrides,
-      customer,
-      modelFile,
-      sourceFiles,
-      activeSourceKey,
-      datasetId: workspaceDatasetId,
-      datasetName: workspaceDatasetName,
-      batchFailures,
-      dfmReports,
-      bomReports,
-      selectedDfmId,
-      selectedBomId,
-      savedAt: new Date().toISOString()
-    };
+    // Navigation must save the durable quotation-lifetime preview sources.
+    // Never replace a valid STEP/PDF/image File with a transient empty state.
+    const snapshot = captureCurrentWorkflowSnapshot();
+    snapshot.view = navigationView;
+    snapshot.step = Math.min(4, Math.max(1, Number(step || 1)));
+    snapshot.savedAt = new Date().toISOString();
 
     await Promise.all([
       saveWorkflowDraft(snapshot),
@@ -3983,17 +4601,42 @@ export default function Page() {
   const isModelSource = (selected: File) =>
     isVisualCadFormat(selected);
 
-  const allSourceFiles = sourceFiles.length
-    ? sourceFiles
-    : [
-        ...files,
-        ...(modelFile ? [modelFile] : [])
-      ];
+  const allSourceFiles = (() => {
+    const candidates = sourceFiles.length
+      ? sourceFiles
+      : quotationSourceFilesRef.current.length
+        ? quotationSourceFilesRef.current
+        : [
+            ...files,
+            ...(file ? [file] : quotationPrimaryFileRef.current ? [quotationPrimaryFileRef.current] : []),
+            ...(modelFile ? [modelFile] : quotationModelFileRef.current ? [quotationModelFileRef.current] : [])
+          ];
+    const unique = new Map<string, File>();
+    candidates.filter(isBrowserFile).forEach((selected) => unique.set(fileKey(selected), selected));
+    return Array.from(unique.values());
+  })();
 
   const activeSource =
     allSourceFiles.find((selected) => fileKey(selected) === activeSourceKey)
     || allSourceFiles[0]
+    || quotationPrimaryFileRef.current
+    || quotationModelFileRef.current
     || null;
+
+  // Preview URL follows the durable active source rather than only the transient
+  // primary file state, so Back/Next navigation cannot blank PDF/image previews.
+  useEffect(() => {
+    const previewFile = activeSource && !isVisualCadFormat(activeSource)
+      ? activeSource
+      : file || quotationPrimaryFileRef.current;
+    if (!previewFile || isVisualCadFormat(previewFile)) {
+      setFileUrl("");
+      return;
+    }
+    const url = URL.createObjectURL(previewFile);
+    setFileUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [activeSource, file]);
 
   const selectedDfm = dfmReports.find((item) => item.id === selectedDfmId) || dfmReports.at(-1) || null;
   const selectedBom = bomReports.find((item) => item.id === selectedBomId) || bomReports.at(-1) || null;
@@ -4147,7 +4790,7 @@ export default function Page() {
         <nav>
           <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>Dashboard</button>
           <div className="new-quotation-nav-row">
-            <button type="button" className="new-quotation-nav-main" onClick={newQuote}>New Quotation</button>
+            <button type="button" className="new-quotation-nav-main" onClick={() => void newQuote()}>New Quotation</button>
             <button
               type="button"
               className="resume-quotation-diamond"
@@ -4328,39 +4971,60 @@ export default function Page() {
                     const sourceRoute = sourceIntelligence?.primary_manufacturing_type || "";
 
                     return (
-                      <button
-                        key={sourceKey}
-                        type="button"
-                        className={`${sourceKey === activeSourceKey ? "active" : ""} ${model ? "source-model" : ""}`}
-                        onClick={() => {
-                          setActiveSourceKey(sourceKey);
+                      <div key={sourceKey} className="source-selector-item">
+                        <button
+                          type="button"
+                          className={`${sourceKey === activeSourceKey ? "active" : ""} ${model ? "source-model" : ""}`}
+                          onClick={() => {
+                            setActiveSourceKey(sourceKey);
 
-                          if (batchItem) {
-                            selectBatchDrawing(batchItem.id);
-                          }
-                        }}
-                      >
-                        <small>{index + 1}/{allSourceFiles.length}</small>
+                            if (batchItem) {
+                              selectBatchDrawing(batchItem.id);
+                            }
+                          }}
+                        >
+                          <small>{index + 1}/{allSourceFiles.length}</small>
 
-                        <b>
-                          {batchItem?.drawing.drawing_no
-                            || selected.name.replace(/\.[^.]+$/, "")}
-                        </b>
+                          <b>
+                            {batchItem?.drawing.drawing_no
+                              || selected.name.replace(/\.[^.]+$/, "")}
+                          </b>
 
-                        <span>
-                          {failure
-                            ? `${extension} · Failed`
-                            : batchItem
-                              ? batchItem.analysis.learning_source === "independent_fallback"
-                                ? `${extension} · Review Required`
-                                : sourceClass || sourceRoute
-                                  ? `${sourceClass || "Part"} · ${sourceRoute || "Analyzed"} · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
-                                  : model
-                                    ? `${extension} · CAD Analyzed · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
-                                    : `${extension} · Analyzed · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
-                              : `${extension} · Ready`}
+                          <span>
+                            {failure
+                              ? `${extension} · Failed`
+                              : batchItem
+                                ? batchItem.analysis.learning_source === "independent_fallback"
+                                  ? `${extension} · Review Required`
+                                  : sourceClass || sourceRoute
+                                    ? `${sourceClass || "Part"} · ${sourceRoute || "Analyzed"} · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
+                                    : model
+                                      ? `${extension} · CAD Analyzed · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
+                                      : `${extension} · Analyzed · T ${engineeringMetricOrDash(batchItem.drawing.thickness_mm, 1, "mm")} · W ${engineeringMetricOrDash(batchItem.drawing.weight_kg, 2, "kg")}`
+                                : `${extension} · Ready`}
+                          </span>
+                        </button>
+                        <span
+                          className="source-remove-x"
+                          role="button"
+                          tabIndex={0}
+                          title={`Remove ${selected.name}`}
+                          aria-label={`Remove ${selected.name}`}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeUploadedSource(selected);
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              removeUploadedSource(selected);
+                            }
+                          }}
+                        >
+                          ×
                         </span>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -4408,8 +5072,9 @@ export default function Page() {
                   <input
                     type="file"
                     multiple
-                    accept=".pdf,.png,.jpg,.jpeg,.dxf,.dwg,.step,.stp,.glb,.gltf,.stl,.obj,.iges,.igs,.x_t,.x_b"
+                    accept=".pdf,.png,.jpg,.jpeg,.webp,.bmp,.tif,.tiff,.dxf,.dwg,.step,.stp,.glb,.gltf,.stl,.obj,.iges,.igs,.x_t,.x_b"
                     onChange={(e) => {
+                      processEndedRef.current = false;
                       const selectedInputs = Array.from(e.target.files || []);
 
                       const modelExtensions = new Set([
@@ -4469,6 +5134,9 @@ export default function Page() {
                       setFiles(nextDrawingFiles);
                       setFile(nextFile);
                       setModelFile(nextModel);
+                      quotationSourceFilesRef.current = nextSourceFiles;
+                      quotationPrimaryFileRef.current = nextFile;
+                      quotationModelFileRef.current = nextModel;
 
                       if (!activeSourceKey && nextSourceFiles[0]) {
                         setActiveSourceKey(fileKey(nextSourceFiles[0]));
@@ -4763,14 +5431,21 @@ export default function Page() {
                 <div className="review">
                   <div className="paperbox">
                     <div className="drawing-snapshot">
-                      {fileUrl && file?.type === "application/pdf"
+                      {activeSource && isVisualCadFormat(activeSource)
+                        ? (
+                          <ModelViewer
+                            file={activeSource}
+                            issueCount={(analysis?.extraction_warnings || []).length}
+                          />
+                        )
+                        : fileUrl && (activeSource?.type === "application/pdf" || file?.type === "application/pdf")
                         ? (
                           <iframe
                             src={`${fileUrl}#toolbar=0&navpanes=0&view=FitH`}
                             title="Uploaded engineering drawing"
                           />
                         )
-                        : fileUrl && file && file.type.startsWith("image/")
+                        : fileUrl && ((activeSource?.type || file?.type || "").startsWith("image/"))
                           ? <img src={fileUrl} alt="Uploaded drawing"/>
                           : analysis?.preview_image
                             ? <img src={analysis.preview_image} alt="Drawing snapshot"/>
@@ -4789,7 +5464,7 @@ export default function Page() {
                     </div>
                     <div className="snapshot-caption">
                       <b>Drawing Snapshot</b>
-                      <span>{file?.name || drawing.description}</span>
+                      <span>{activeSource?.name || file?.name || drawing.description}</span>
                     </div>
                   </div>
 
@@ -4823,7 +5498,7 @@ export default function Page() {
                       {costSheetSaveState === "saving" ? "Saving…" : costSheetSaveState === "saved" ? "✓ Saved to database" : costSheetSaveState === "deferred" ? "⚠ Save pending" : ""}
                     </span>
                     <button className="btn secondary" disabled={busy} onClick={refreshCostRates}>↻ Refresh Saved Rates</button>
-                    <button className="btn secondary" onClick={() => api.exportExcel(drawing, rows, summary)}>Export Excel</button>
+                    <button className="btn secondary" onClick={() => api.exportExcel(drawing, rows, liveCostSummary)}>Export Excel</button>
                     <button
                       className="btn primary"
                       disabled={batchFailures.length > 0}
@@ -4836,7 +5511,7 @@ export default function Page() {
                           drawing,
                           rows,
                           ai_raw: analysis.ai_raw || {},
-                          summary,
+                          summary: liveCostSummary,
                           commercial_overrides: {
                             ...commercialAmountOverrides,
                             selling_price: finalPriceOverride
@@ -4885,7 +5560,7 @@ export default function Page() {
                   <div><span>Material</span><b>{money(chargeTotals.material)}</b></div>
                   <div><span>Processing</span><b>{money(chargeTotals.process)}</b></div>
                   <div><span>Labour</span><b>{money(chargeTotals.labour)}</b></div>
-                  <div className="charge-total"><span>Direct Cost</span><b>{money(summary.direct_cost)}</b></div>
+                  <div className="charge-total"><span>Direct Cost</span><b>{money(liveCostSummary.direct_cost)}</b></div>
                 </div>
 
                 {missingCostRateRows.length > 0 && (
@@ -4924,7 +5599,7 @@ export default function Page() {
                   />
                 </div></div>
                 <SummaryView
-                  summary={summary}
+                  summary={liveCostSummary}
                   commercialAmountOverrides={commercialAmountOverrides}
                   finalPriceOverride={finalPriceOverride}
                   onChange={updateCommercial}
@@ -5262,7 +5937,7 @@ export default function Page() {
                       </div>
                     </div>
                     <SummaryView
-                      summary={summary}
+                      summary={liveCostSummary}
                       commercialAmountOverrides={commercialAmountOverrides}
                       finalPriceOverride={finalPriceOverride}
                       onChange={updateCommercial}

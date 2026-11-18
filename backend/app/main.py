@@ -103,9 +103,9 @@ def defaults_settings():
     return {
         "company_name": "AI Manufacturing Quotation",
         "currency": "INR",
-        "material_wastage_pct": 8.0,
-        "overhead_pct": 12.0,
-        "markup_pct": 15.0,
+        "material_wastage_pct": 10.0,
+        "overhead_pct": 20.0,
+        "markup_pct": 30.0,
         "auto_dataset_capture": True,
         "learn_from_corrections": True,
         "training_batch_threshold": 25,
@@ -581,6 +581,7 @@ class CadAnalysisReq(BaseModel):
     volume_mm3: float = 0
     component_names: list[str] = Field(default_factory=list)
     shape_hint: str = ""
+    step_metadata: dict = Field(default_factory=dict)
 
 
 class WorkspaceSessionReq(BaseModel):
@@ -3847,11 +3848,15 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
         except (TypeError, ValueError):
             stated_weight = 0.0
         has_stated_weight = str(ai_data.get("weight_source") or "") == "drawing_stated" and stated_weight > 0
+        has_cad_solid_weight = (
+            str(ai_data.get("weight_source") or "") == "cad_solid_volume"
+            and drawing.weight_kg > 0
+        )
 
-        # A weight explicitly printed on the drawing is stronger evidence than
-        # an inferred stock rectangle. Use it as the material basis and let the
-        # editable Weight Allowance control add purchasing allowance separately.
-        internal_material_basis = None if has_stated_weight else _internal_sheet_material_basis(
+        # Drawing-stated mass and exact STEP solid-volume mass are stronger than
+        # a stock-envelope estimate. Keep the existing blank logic for ordinary
+        # PDF/sheet flows, but use physical STEP mass for STEP material costing.
+        internal_material_basis = None if (has_stated_weight or has_cad_solid_weight) else _internal_sheet_material_basis(
             ai_data,
             drawing,
         )
@@ -3864,12 +3869,16 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
             f"Drawing-stated weight {stated_weight:g} kg/piece × {max(1, drawing.quantity)} part(s)"
             if has_stated_weight
             else (
-                f"{max(1, drawing.quantity)} part(s) · "
-                f"costing blank {internal_material_basis[1]:g} × "
-                f"{internal_material_basis[2]:g} mm each "
-                f"(drawing envelope + {_MATERIAL_BLANK_MARGIN_MM:g} mm)"
-                if internal_material_basis
-                else f"{max(1, drawing.quantity)} part(s)"
+                f"STEP solid-volume weight {drawing.weight_kg:g} kg/piece × {max(1, drawing.quantity)} part(s)"
+                if has_cad_solid_weight
+                else (
+                    f"{max(1, drawing.quantity)} part(s) · "
+                    f"costing blank {internal_material_basis[1]:g} × "
+                    f"{internal_material_basis[2]:g} mm each "
+                    f"(drawing envelope + {_MATERIAL_BLANK_MARGIN_MM:g} mm)"
+                    if internal_material_basis
+                    else f"{max(1, drawing.quantity)} part(s)"
+                )
             )
         )
 
@@ -3884,9 +3893,13 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
             stated_weight * max(1, drawing.quantity)
             if has_stated_weight
             else (
-                internal_material_qty
-                if internal_material_qty is not None
-                else (drawing.weight_kg * max(1, drawing.quantity) if drawing.weight_kg > 0 else 0)
+                drawing.weight_kg * max(1, drawing.quantity)
+                if has_cad_solid_weight
+                else (
+                    internal_material_qty
+                    if internal_material_qty is not None
+                    else (drawing.weight_kg * max(1, drawing.quantity) if drawing.weight_kg > 0 else 0)
+                )
             )
         )
 
@@ -5012,6 +5025,104 @@ def analyze_fallback(value: FallbackAnalysisReq):
     }
 
 
+def _parse_cad_material_hint(step_metadata: dict, fallback_text: str = "") -> tuple[str, str, str, int]:
+    explicit_text = str((step_metadata or {}).get("material_text") or "").strip()
+    text = explicit_text
+    if not text:
+        text = str(fallback_text or "").strip()
+    if not text:
+        return "", "", "", 0
+
+    upper = text.upper()
+    patterns = [
+        (r"(?:AISI|SUS|SS)?\s*[-_/ ]?(304L|316L|304|316|321|430|201|202)\b", "Stainless Steel", "AISI {}"),
+        (r"\b(304L|316L|304|316|321|430|201|202)\s*SS\b", "Stainless Steel", "AISI {}"),
+        (r"\b(304L|316L|304|316|321|430|201|202)\s*STAINLESS(?:\s+STEEL)?\b", "Stainless Steel", "AISI {}"),
+        (r"\b1\.(4301|4307|4401|4404)\b", "Stainless Steel", "EN 1.{}"),
+        (r"\b(?:IS\s*2062\s*)?(E250|E350)\b", "Mild Steel", "IS 2062 {}"),
+        (r"\b(5052(?:-H32)?|6061(?:-T6)?|6082(?:-T6)?)\b", "Aluminium", "{}"),
+    ]
+    for pattern, family, grade_fmt in patterns:
+        match = re.search(pattern, upper, re.I)
+        if match:
+            # Filename/product-name hints are useful for grade recognition but
+            # must not be copied verbatim into the Material field as a fake spec.
+            specification = explicit_text if explicit_text else ""
+            return family, grade_fmt.format(match.group(1).upper()), specification, 82 if explicit_text else 74
+
+    family = ""
+    if "STAINLESS" in upper:
+        family = "Stainless Steel"
+    elif "ALUMIN" in upper:
+        family = "Aluminium"
+    elif "MILD STEEL" in upper or "CARBON STEEL" in upper:
+        family = "Mild Steel"
+
+    return family, "", text, (60 if family else 45)
+
+
+def _cad_feature_hints(step_metadata: dict, dimensions: tuple[float, float, float]) -> tuple[list[dict], list[dict], list[dict]]:
+    meta = step_metadata or {}
+    counts = meta.get("entity_counts") or {}
+    diameters = [
+        float(v) for v in (meta.get("cylindrical_diameters_mm") or [])
+        if isinstance(v, (int, float)) and float(v) > 0
+    ]
+    diameter_counts = meta.get("cylindrical_diameter_counts") or {}
+    threads = [str(v).strip() for v in (meta.get("thread_labels") or []) if str(v).strip()]
+
+    positive_dims = [v for v in dimensions if v > 0]
+    largest_envelope = max(positive_dims) if positive_dims else 0
+    # Never convert raw CYLINDRICAL_SURFACE counts into hole quantities. STEP
+    # commonly splits one physical hole/OD into several faces, which inflated
+    # real 2-hole parts into 8+ holes. Only the server B-Rep detector's
+    # geometrically deduplicated cross-hole axes are allowed into holes.
+    holes: list[dict] = []
+    for raw_hole in (meta.get("hole_features") or [])[:50]:
+        if not isinstance(raw_hole, dict):
+            continue
+        try:
+            diameter = float(raw_hole.get("diameter_mm") or 0)
+            quantity = int(raw_hole.get("quantity") or 0)
+        except (TypeError, ValueError):
+            continue
+        if diameter <= 0 or quantity <= 0:
+            continue
+        holes.append({
+            "type": str(raw_hole.get("type") or "Hole"),
+            "diameter_mm": round(diameter, 4),
+            "quantity": quantity,
+            "through": raw_hole.get("through"),
+            "confidence": max(1, min(100, int(raw_hole.get("confidence") or 85))),
+            "review_required": bool(raw_hole.get("review_required", True)),
+            "basis": str(raw_hole.get("basis") or "Distinct hole axis from exact OCCT B-Rep")[:300],
+        })
+
+    thread_rows = [
+        {
+            "thread": label,
+            "quantity": 1,
+            "confidence": 60,
+            "review_required": True,
+            "basis": "Thread-like designation found in STEP metadata/name text",
+        }
+        for label in threads[:20]
+    ]
+
+    chamfers: list[dict] = []
+    conical_count = int(counts.get("conical_surfaces") or 0)
+    if conical_count:
+        chamfers.append({
+            "description": f"{conical_count} conical surface(s) detected",
+            "quantity": conical_count,
+            "confidence": 50,
+            "review_required": True,
+            "basis": "STEP CONICAL_SURFACE entities may represent chamfers/countersinks/tapers",
+        })
+
+    return holes, thread_rows, chamfers
+
+
 @app.post("/api/analyze-cad")
 def analyze_cad(value: CadAnalysisReq):
     """
@@ -5046,9 +5157,45 @@ def analyze_cad(value: CadAnalysisReq):
                 }
             )
 
+    step_metadata = value.step_metadata or {}
+
+    # Add source-backed analytic STEP dimensions to the same dimensions array
+    # used by PDF extraction. Overall X/Y/Z come from the parsed B-Rep mesh;
+    # circle/cylinder/torus values come directly from exact STEP entities.
+    seen_dimension_keys = {(str(row.get("label", "")).casefold(), round(float(row.get("value_mm", 0) or 0), 4)) for row in dimensions}
+    for raw_dim in (step_metadata.get("geometry_dimensions") or [])[:100]:
+        if not isinstance(raw_dim, dict):
+            continue
+        try:
+            dim_value = float(raw_dim.get("value_mm") or 0)
+        except (TypeError, ValueError):
+            continue
+        if dim_value <= 0:
+            continue
+        label = str(raw_dim.get("label") or "STEP Geometry Dimension").strip()[:120]
+        key = (label.casefold(), round(dim_value, 4))
+        if key in seen_dimension_keys:
+            continue
+        seen_dimension_keys.add(key)
+        dimensions.append({
+            "label": label,
+            "value_mm": round(dim_value, 4),
+            "tolerance": "",
+            "quantity": max(1, int(raw_dim.get("quantity") or 1)),
+            "confidence": max(1, min(100, int(raw_dim.get("confidence") or 90))),
+            "review_required": bool(raw_dim.get("review_required", True)),
+            "basis": str(raw_dim.get("basis") or "Exact geometric parameter read from STEP entity")[:300],
+            "kind": str(raw_dim.get("kind") or "step_geometry")[:80],
+        })
+
+    step_product_names = [
+        str(name).strip()
+        for name in (step_metadata.get("product_names") or [])
+        if str(name).strip()
+    ][:100]
     component_names = [
         str(name).strip()
-        for name in (value.component_names or [])
+        for name in (value.component_names or step_product_names)
         if str(name).strip()
     ][:100]
 
@@ -5088,6 +5235,72 @@ def analyze_cad(value: CadAnalysisReq):
         )
 
     shape_hint = str(value.shape_hint or "").strip().casefold()
+    material_family, material_grade, material_spec, material_confidence = _parse_cad_material_hint(
+        step_metadata,
+        " ".join([filename, value.root_name or "", *step_product_names, *component_names]),
+    )
+    cad_holes, cad_threads, cad_chamfers = _cad_feature_hints(step_metadata, (x, y, z))
+
+    # Preserve explicit PMI/text that CAD exporters place into STEP/AP242.
+    # These values are source-backed; unresolved semantic links remain review items.
+    tolerance_labels = [str(v).strip() for v in (step_metadata.get("tolerance_labels") or []) if str(v).strip()][:50]
+    datum_labels = [str(v).strip() for v in (step_metadata.get("datum_labels") or []) if str(v).strip()][:30]
+    geometric_tolerance_types = [str(v).strip() for v in (step_metadata.get("geometric_tolerance_types") or []) if str(v).strip()][:30]
+    pmi_entity_counts = step_metadata.get("pmi_entity_counts") or {}
+
+    cad_surface_finish = []
+    for label in (step_metadata.get("surface_finish_labels") or [])[:30]:
+        label_text = str(label).strip()
+        match = re.search(r"\b(RA|RZ)\s*[:=]?\s*([0-9]+(?:\.[0-9]+)?)", label_text, re.I)
+        if match:
+            cad_surface_finish.append({
+                "type": match.group(1).upper(),
+                "value": match.group(2),
+                "unit": "µm",
+                "callout": label_text,
+                "confidence": 78,
+                "review_required": True,
+            })
+
+    sorted_dims = sorted([v for v in (x, y, z) if v > 0])
+    cad_length = max(sorted_dims) if sorted_dims else None
+    cad_width = sorted_dims[-2] if len(sorted_dims) >= 2 else None
+    cad_thickness = sorted_dims[0] if shape_hint == "plate_like" and sorted_dims else None
+
+    # Prefer a Python-OpenCascade wall-thickness candidate derived from exact
+    # analytic B-Rep faces. It is still review-required because CAD topology does
+    # not itself label a face pair as the released wall-thickness dimension.
+    server_wall = step_metadata.get("wall_thickness") or {}
+    if cad_thickness is None and isinstance(server_wall, dict):
+        try:
+            wall_value = float(server_wall.get("value_mm") or 0)
+        except (TypeError, ValueError):
+            wall_value = 0
+        if wall_value > 0:
+            cad_thickness = round(wall_value, 4)
+
+    # For hollow/rotational STEP parts, infer wall thickness only when STEP exposes
+    # at least two concentric-looking cylindrical diameters. Keep it explicitly
+    # predicted/review-required; never pretend a bounding-box dimension is wall THK.
+    predicted_wall_thickness = None
+    if cad_thickness is None and shape_hint == "rotational_like":
+        raw_diameters = sorted({
+            round(float(v), 4)
+            for v in (step_metadata.get("cylindrical_diameters_mm") or [])
+            if isinstance(v, (int, float)) and float(v) > 0
+        })
+        candidates = []
+        for outer_i in range(1, len(raw_diameters)):
+            outer = raw_diameters[outer_i]
+            for inner in raw_diameters[:outer_i]:
+                wall = (outer - inner) / 2.0
+                if wall > 0 and wall <= outer * 0.20:
+                    candidates.append((wall, inner, outer))
+        if candidates:
+            wall, inner_d, outer_d = sorted(candidates, key=lambda item: item[0])[0]
+            predicted_wall_thickness = round(wall, 4)
+            cad_thickness = predicted_wall_thickness
+
     if part_count > 1:
         cad_document_type = "Assembly Drawing"
         cad_part_form = "Assembly"
@@ -5108,7 +5321,7 @@ def analyze_cad(value: CadAnalysisReq):
     ai_raw = {
         "drawing_no": stem,
         "revision": "",
-        "description": value.root_name.strip() or stem,
+        "description": value.root_name.strip() or (step_product_names[0] if step_product_names else stem),
         "drawing_type": "assembly" if part_count > 1 else "machining",
         "document_type": cad_document_type,
         "primary_manufacturing_type": cad_primary,
@@ -5127,21 +5340,23 @@ def analyze_cad(value: CadAnalysisReq):
         ],
         "assembly_parts": assembly_parts,
         "material": {
-            "family": "",
-            "grade": "",
-            "specification": "",
+            "family": material_family,
+            "grade": material_grade,
+            "specification": material_spec,
         },
-        "thickness_mm": None,
+        "length_mm": cad_length,
+        "width_mm": cad_width,
+        "thickness_mm": cad_thickness,
         "weight_kg": None,
         "product_quantity": 1,
         "dimensions": dimensions,
-        "holes": [],
-        "threads": [],
-        "chamfers": [],
+        "holes": cad_holes,
+        "threads": cad_threads,
+        "chamfers": cad_chamfers,
         "bends": [],
         "studs": [],
         "welds": [],
-        "surface_finish": [],
+        "surface_finish": cad_surface_finish,
         "manufacturing_processes": [
             {
                 "process": process_name,
@@ -5169,11 +5384,20 @@ def analyze_cad(value: CadAnalysisReq):
             f"Surface area (triangulated estimate): {float(value.surface_area_mm2 or 0):.2f} mm²",
             f"Solid volume (triangulated estimate): {float(value.volume_mm3 or 0):.2f} mm³",
             f"CAD parts detected: {part_count}",
+            f"STEP faces: {int((step_metadata.get('entity_counts') or {}).get('advanced_faces') or 0)}" if step_metadata else "",
+            f"STEP cylindrical surfaces: {int((step_metadata.get('entity_counts') or {}).get('cylindrical_surfaces') or 0)}" if step_metadata else "",
+            f"STEP exact geometry dimensions: {len(step_metadata.get('geometry_dimensions') or [])}" if step_metadata else "",
+            f"STEP circle diameters: {len(step_metadata.get('circle_diameters_mm') or [])}" if step_metadata else "",
+            f"STEP toroidal/bend surfaces: {len(step_metadata.get('torus_radii_mm') or [])}" if step_metadata else "",
+            f"STEP PMI/tolerance entities: {sum(int(v or 0) for v in pmi_entity_counts.values())}" if pmi_entity_counts else "",
+            f"Datum labels: {', '.join(datum_labels)}" if datum_labels else "",
+            f"Tolerance labels: {', '.join(tolerance_labels[:10])}" if tolerance_labels else "",
+            f"GD&T entities: {', '.join(geometric_tolerance_types[:10])}" if geometric_tolerance_types else "",
         ],
         "confidence": {
             "drawing_no": 90,
-            "material": 0,
-            "thickness": 0,
+            "material": material_confidence,
+            "thickness": 90 if cad_thickness else 0,
             "weight": 0,
             "dimensions": 100 if dimensions else 0,
             "processes": process_confidence,
@@ -5195,9 +5419,71 @@ def analyze_cad(value: CadAnalysisReq):
             "volume_mm3": max(0.0, float(value.volume_mm3 or 0)),
             "component_names": component_names,
             "shape_hint": value.shape_hint,
+            "step_metadata": step_metadata,
         },
     }
 
+    if predicted_wall_thickness:
+        ai_raw.setdefault("evidence", []).append({
+            "field": "Predicted Wall Thickness",
+            "value": f"{predicted_wall_thickness:g} mm",
+            "basis": "Difference between candidate inner/outer STEP cylindrical diameters; engineer verification required",
+            "page": 0,
+            "confidence": 65,
+        })
+        ai_raw.setdefault("missing_or_uncertain", []).append(
+            "Wall thickness was geometrically predicted from STEP cylindrical surfaces; verify before release."
+        )
+        ai_raw["confidence"]["thickness"] = 65
+
+    # If STEP contains a usable material hint, calculate mass from exact solid
+    # volume using the same recognized-density policy used by PDF extraction.
+    if parser_exact and float(value.volume_mm3 or 0) > 0 and material_family:
+        provisional = ai_result_to_drawing(ai_raw)
+        density = _internal_density(ai_raw, provisional)
+        if density > 0:
+            calculated_weight = float(value.volume_mm3 or 0) * density
+            if calculated_weight > 0:
+                ai_raw["weight_kg"] = round(calculated_weight, 6)
+                ai_raw["calculated_weight_kg"] = round(calculated_weight, 6)
+                ai_raw["weight_source"] = "cad_solid_volume"
+                ai_raw["confidence"]["weight"] = 92
+                ai_raw.setdefault("evidence", []).append({
+                    "field": "Calculated Weight",
+                    "value": f"{calculated_weight:.6g} kg",
+                    "basis": "STEP triangulated solid volume × recognized material density",
+                    "page": 0,
+                    "confidence": 92,
+                })
+
+    if material_family:
+        ai_raw["missing_or_uncertain"] = [
+            item for item in ai_raw.get("missing_or_uncertain", [])
+            if not str(item).startswith("Material / grade")
+        ]
+        ai_raw.setdefault("evidence", []).append({
+            "field": "Material",
+            "value": " ".join(v for v in [material_family, material_grade] if v),
+            "basis": "Material designation/name detected in STEP metadata",
+            "page": 0,
+            "confidence": material_confidence,
+        })
+    else:
+        ai_raw["missing_or_uncertain"] = [
+            item for item in ai_raw.get("missing_or_uncertain", [])
+            if not str(item).startswith("Material / grade")
+        ] + ["Material / grade was not present in usable STEP metadata; confirm before costing."]
+
+    if tolerance_labels or geometric_tolerance_types or datum_labels:
+        ai_raw.setdefault("evidence", []).append({
+            "field": "STEP PMI / GD&T",
+            "value": "; ".join((tolerance_labels + geometric_tolerance_types + datum_labels)[:12]),
+            "basis": "Explicit PMI/tolerance/datum text or AP242 entities detected in STEP source",
+            "page": 0,
+            "confidence": 70,
+        })
+
+    ai_raw["notes"] = [note for note in ai_raw.get("notes", []) if str(note).strip()]
     ai_raw = enrich_engineering_intelligence(
         ai_raw, filename=filename, source_format=fmt
     )
@@ -5209,23 +5495,29 @@ def analyze_cad(value: CadAnalysisReq):
     summary = calc(rows)
 
     extraction_id = "CAD-" + uuid.uuid4().hex[:10].upper()
-    warnings = list(missing_or_uncertain)
+    warnings = list(ai_raw.get("missing_or_uncertain") or [])
 
-    settings = load("settings", defaults_settings())
-    if settings.get("auto_dataset_capture", True):
-        append_extraction_record(
-            {
-                "id": extraction_id,
-                "created_at": now(),
-                "filename": filename,
-                "file_hash": value.file_hash,
-                "source": "cad_geometry",
-                "warnings": warnings,
-                "drawing": drawing.model_dump(),
-                "rows": [row.model_dump() for row in rows],
-                "ai_raw": ai_raw,
-            }
-        )
+    # STEP/CAD analysis must never fail because optional persistence is unavailable.
+    # The engineering result is the primary operation; dataset/history capture is
+    # best-effort only, matching the resilient PDF extraction behaviour.
+    try:
+        settings = load("settings", defaults_settings())
+        if settings.get("auto_dataset_capture", True):
+            _persist_extraction_safely(
+                {
+                    "id": extraction_id,
+                    "created_at": now(),
+                    "filename": filename,
+                    "file_hash": value.file_hash,
+                    "source": "cad_geometry",
+                    "warnings": warnings,
+                    "drawing": drawing.model_dump(),
+                    "rows": [row.model_dump() for row in rows],
+                    "ai_raw": ai_raw,
+                }
+            )
+    except Exception as exc:
+        print(f"[CAD EXTRACTION PERSISTENCE WARNING] {type(exc).__name__}: {exc}")
 
     artifact_payload = EngineeringArtifactReq(
         file_hash=value.file_hash,
@@ -5255,6 +5547,151 @@ def analyze_cad(value: CadAnalysisReq):
     }
 
 
+def _merge_step_metadata(browser_meta: dict, server_meta: dict) -> dict:
+    merged = dict(browser_meta or {})
+    server_meta = server_meta or {}
+
+    # When Python OCCT succeeds, its exact B-Rep interpretation is authoritative
+    # for geometric engineering features. Do not append browser mesh/entity
+    # observations: that double-counted split faces/edges and inflated holes,
+    # circles and diameters. Browser metadata remains available for names/PMI.
+    authoritative_geometry_keys = (
+        "geometry_dimensions", "cylindrical_diameters_mm", "circle_diameters_mm",
+        "torus_radii_mm", "conical_surfaces", "hole_features",
+        "primary_outer_diameters_mm", "primary_inner_diameters_mm"
+    )
+    for key in authoritative_geometry_keys:
+        if key in server_meta and server_meta.get(key) is not None:
+            merged[key] = list(server_meta.get(key) or [])[:200]
+
+    entity_counts = dict(merged.get("entity_counts") or {})
+    for key, value in (server_meta.get("entity_counts") or {}).items():
+        try:
+            entity_counts[key] = max(int(entity_counts.get(key) or 0), int(value or 0))
+        except (TypeError, ValueError):
+            continue
+    if entity_counts:
+        merged["entity_counts"] = entity_counts
+
+    if server_meta.get("wall_thickness"):
+        merged["wall_thickness"] = server_meta["wall_thickness"]
+    if server_meta.get("parser"):
+        merged["server_parser"] = server_meta["parser"]
+
+    return merged
+
+
+@app.post("/api/analyze-cad-file")
+async def analyze_cad_file(
+    file: UploadFile = File(...),
+    browser_summary: str = Form(""),
+):
+    """Analyze the original STEP/IGES file with Python OpenCascade.
+
+    The existing browser OpenCascade summary remains a safe fallback.  This
+    endpoint only strengthens CAD extraction; PDF/image analysis is untouched.
+    """
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded CAD file is empty.")
+    if len(content) > 100 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="CAD file exceeds the 100 MB analysis limit.")
+
+    filename = Path(file.filename or "part.step").name
+    extension = Path(filename).suffix.lower()
+    if extension not in {".step", ".stp", ".iges", ".igs"}:
+        raise HTTPException(status_code=400, detail="Server B-Rep analysis currently supports STEP/STP/IGES/IGS.")
+
+    try:
+        browser = json.loads(browser_summary) if browser_summary.strip() else {}
+        if not isinstance(browser, dict):
+            browser = {}
+    except json.JSONDecodeError:
+        browser = {}
+
+    server_warning = ""
+    server_geometry: dict = {}
+    try:
+        from app.cad_brep import analyze_step_brep
+        server_geometry = await run_in_threadpool(analyze_step_brep, content, filename)
+    except Exception as exc:
+        # Never convert a working browser-CAD flow into an Internal Server Error.
+        # Return the browser geometry when available and expose the installation
+        # problem as an engineering warning.
+        server_warning = f"Python OpenCascade B-Rep analyzer unavailable: {type(exc).__name__}: {exc}"
+        print(f"[CAD BREP WARNING] {server_warning}")
+
+    browser_dims = browser.get("dimensions_mm") or {}
+    server_dims = server_geometry.get("dimensions_mm") or {}
+    dimensions_mm = {
+        axis: float(server_dims.get(axis) or browser_dims.get(axis) or 0)
+        for axis in ("x", "y", "z")
+    }
+
+    browser_meta = browser.get("step_metadata") or {}
+    server_meta = {
+        key: server_geometry.get(key)
+        for key in (
+            "geometry_dimensions", "cylindrical_diameters_mm", "circle_diameters_mm",
+            "torus_radii_mm", "conical_surfaces", "hole_features", "primary_outer_diameters_mm", "primary_inner_diameters_mm", "entity_counts", "wall_thickness", "parser"
+        )
+        if server_geometry.get(key) is not None
+    }
+    step_metadata = _merge_step_metadata(browser_meta, server_meta)
+
+    req = CadAnalysisReq(
+        filename=filename,
+        file_hash=sha256(content).hexdigest(),
+        format=extension.lstrip(".").upper(),
+        parser_status="parsed" if server_geometry or browser.get("parser_status") == "parsed" else "metadata_only",
+        root_name=str(browser.get("root_name") or Path(filename).stem),
+        part_count=max(1, int(server_geometry.get("solid_count") or browser.get("part_count") or 1)),
+        mesh_count=max(0, int(browser.get("mesh_count") or 0)),
+        triangle_count=max(0, int(browser.get("triangle_count") or 0)),
+        dimensions_mm=dimensions_mm,
+        surface_area_mm2=float(server_geometry.get("surface_area_mm2") or browser.get("surface_area_mm2") or 0),
+        volume_mm3=float(server_geometry.get("volume_mm3") or browser.get("volume_mm3") or 0),
+        component_names=[str(v) for v in (browser.get("component_names") or []) if str(v).strip()],
+        shape_hint=str(server_geometry.get("shape_hint") or browser.get("shape_hint") or "unknown"),
+        step_metadata=step_metadata,
+    )
+
+    result = analyze_cad(req)
+    result["learning_source"] = "python_ocp_brep" if server_geometry else result.get("learning_source", "cad_geometry")
+    result.setdefault("ai_raw", {}).setdefault("cad_geometry", {})["server_brep"] = {
+        "available": bool(server_geometry),
+        "parser": server_geometry.get("parser") if server_geometry else "browser_fallback",
+        "face_count": server_geometry.get("face_count", 0),
+        "edge_count": server_geometry.get("edge_count", 0),
+        "solid_count": server_geometry.get("solid_count", 0),
+    }
+
+    # Prefer the server's conservative exact-surface wall-thickness candidate.
+    wall = server_geometry.get("wall_thickness") if server_geometry else None
+    if wall and float(wall.get("value_mm") or 0) > 0:
+        thickness = round(float(wall["value_mm"]), 4)
+        result["ai_raw"]["thickness_mm"] = thickness
+        result["ai_raw"].setdefault("confidence", {})["thickness"] = int(wall.get("confidence") or 70)
+        result["ai_raw"].setdefault("evidence", []).append({
+            "field": "Wall Thickness",
+            "value": f"{thickness:g} mm",
+            "basis": f"Python OpenCascade exact analytic faces ({wall.get('basis', 'paired surfaces')}); engineer verification required",
+            "page": 0,
+            "confidence": int(wall.get("confidence") or 70),
+        })
+        # Re-run drawing/cost rows so thickness/material/weight/cost remain synchronized.
+        result["drawing"] = ai_result_to_drawing(result["ai_raw"])
+        result["rows"] = ai_result_to_rows(result["ai_raw"], result["drawing"])
+        result["summary"] = calc(result["rows"])
+        result["cost_trace"] = build_cost_trace(result["rows"])
+
+    if server_warning:
+        result.setdefault("extraction_warnings", []).append(server_warning)
+        result.setdefault("ai_raw", {}).setdefault("missing_or_uncertain", []).append(server_warning)
+
+    return result
+
+
 def _persist_extraction_safely(record: dict) -> None:
     """Persist extraction history after the response without blocking analysis."""
     # Do not spend a serverless background task on a database that is currently
@@ -5272,7 +5709,7 @@ def extraction_capabilities():
     return {
         "pipeline_version": EXTRACTION_PIPELINE_VERSION,
         "formats": ["PDF", "PNG", "JPG", "JPEG", "WEBP", "BMP", "TIF", "TIFF", "DXF", "DWG", "STEP", "STP", "IGES", "IGS", "STL", "OBJ", "GLB", "GLTF", "X_T", "X_B"],
-        "engines": ["PyPDF", "PyMuPDF", "ezdxf", "deterministic engineering parser", "Gemini fallback when configured", "RapidOCR/ONNX when locally installed", "geometry weight", "Rate Master"],
+        "engines": ["PyPDF", "PyMuPDF", "ezdxf", "Python OpenCascade/OCP STEP B-Rep", "browser OpenCascade/WASM fallback", "deterministic engineering parser", "Gemini fallback when configured", "RapidOCR/ONNX when locally installed", "geometry weight", "Rate Master"],
         "cloud_ai_required": False,
         "production_fallback": "Gemini when GEMINI_API_KEY is configured; local RapidOCR remains optional for desktop/local use",
         "mandatory_targets": ["length_mm", "width_mm", "thickness_mm", "material", "material_grade", "weight_kg"],

@@ -1,9 +1,8 @@
 "use client";
 
 import { createElement, useEffect, useMemo, useRef, useState } from "react";
+import * as THREE from "three";
 import {
-  ensureThreeForCadViewer,
-  isKernelCadFormat,
   readCadMesh
 } from "@/lib/cad";
 
@@ -17,6 +16,7 @@ export default function ModelViewer({
   const cadHostRef = useRef<HTMLDivElement | null>(null);
   const [modelViewerReady, setModelViewerReady] = useState(false);
   const [cadMessage, setCadMessage] = useState("");
+  const [cadReady, setCadReady] = useState(false);
 
   const extension = file?.name.split(".").pop()?.toLowerCase() || "";
   const isGlb = extension === "glb" || extension === "gltf";
@@ -75,14 +75,15 @@ export default function ModelViewer({
 
     void (async () => {
       try {
-        setCadMessage("Loading 3D model…");
+        setCadReady(false);
+        setCadMessage("Loading STEP 3D model…");
 
-        const [result, THREE] = await Promise.all([
-          readCadMesh(file),
-          ensureThreeForCadViewer()
-        ]);
+        const result = await readCadMesh(file);
 
         if (disposed) return;
+        if (!result?.success || !Array.isArray(result.meshes) || result.meshes.length === 0) {
+          throw new Error("STEP parser returned no renderable geometry.");
+        }
 
         host.innerHTML = "";
 
@@ -95,8 +96,9 @@ export default function ModelViewer({
         const renderer = new THREE.WebGLRenderer({
           antialias: true,
           alpha: false,
-          powerPreference: "low-power"
+          powerPreference: "high-performance"
         });
+        renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
         host.appendChild(renderer.domElement);
 
@@ -194,8 +196,8 @@ export default function ModelViewer({
         };
 
         const resize = () => {
-          const width = Math.max(1, host.clientWidth);
-          const height = Math.max(1, host.clientHeight);
+          const width = Math.max(320, host.clientWidth || 0);
+          const height = Math.max(280, host.clientHeight || 0);
           renderer.setSize(width, height, false);
           camera.aspect = width / height;
           camera.updateProjectionMatrix();
@@ -252,6 +254,7 @@ export default function ModelViewer({
         renderer.domElement.addEventListener("pointercancel", pointerUp);
         renderer.domElement.addEventListener("wheel", wheel, { passive: false });
 
+        setCadReady(true);
         setCadMessage("");
         render();
 
@@ -281,6 +284,7 @@ export default function ModelViewer({
           }
         };
       } catch (error) {
+        setCadReady(false);
         setCadMessage(
           error instanceof Error
             ? error.message
@@ -306,7 +310,15 @@ export default function ModelViewer({
       {file && kernelCad && (
         <div ref={cadHostRef} className="dfm-cad-canvas">
           {cadMessage && (
-            <div className="dfm-model-message">{cadMessage}</div>
+            <div className="dfm-model-message cad-runtime-message">
+              <b>{cadMessage}</b>
+              <span>{file.name}</span>
+            </div>
+          )}
+          {cadReady && (
+            <div className="cad-viewer-badge" aria-label="STEP 3D preview controls">
+              3D STEP · drag to rotate · wheel to zoom
+            </div>
           )}
         </div>
       )}

@@ -262,7 +262,7 @@ def build_premium_estimate(*, drawing: dict, rows: list[dict], ai_raw: dict, rat
     direct_estimated = material_cost + process_cost + other_cost
     current_direct = sum(_num(r.get("cost")) or _num(r.get("costingQty")) * _num(r.get("rate")) for r in rows)
     direct_for_margin = max(current_direct, direct_estimated)
-    markup_pct = _num(settings.get("markup_pct"), 15)
+    markup_pct = _num(settings.get("markup_pct"), 30)
     target_sell = direct_for_margin * (1 + _num(settings.get("material_wastage_pct"), 0) / 100) * (1 + _num(settings.get("overhead_pct"), 0) / 100) * (1 + markup_pct / 100)
     margin_pct = ((target_sell - direct_for_margin) / target_sell * 100) if target_sell else 0
 

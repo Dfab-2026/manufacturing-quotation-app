@@ -3346,7 +3346,7 @@ body,
 .dfm-model-shell-compact {
   width: 100%;
   height: 100%;
-  min-height: 0 !important;
+  min-height: 320px !important;
   position: relative;
   background: #f5f8fb;
 }
@@ -3354,7 +3354,17 @@ body,
 .dfm-cad-canvas {
   width: 100%;
   height: 100%;
+  min-height: 320px;
   position: relative;
+}
+
+.drawing-snapshot > .dfm-model-shell {
+  width: 100%;
+  height: 100%;
+  min-height: 100% !important;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
 }
 
 .dfm-model-shell-compact .dfm-model-message {
@@ -4760,7 +4770,7 @@ body,
 .upload-queue-empty b { color: #456079; font-size: 14px; }
 .upload-queue-empty span { font-size: 11px; }
 
-/* Ongoing quotation: preserve the original compact diamond beside New Quotation. */
+/* Ongoing quotation: original compact animated diamond beside New Quotation. */
 .side nav .new-quotation-nav-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 30px;
@@ -4778,25 +4788,38 @@ body,
   display: grid;
   place-items: center;
   border-radius: 4px;
-  transform: rotate(45deg);
+  transform: rotate(45deg) scale(1);
   border: 1px solid #ffffff32;
   background: #ffffff10;
   color: #d9e3ef;
-  box-shadow: 0 0 0 0 rgba(115, 183, 241, .32);
-  animation: continueDiamondPulse 1.9s ease-out infinite;
+  box-shadow: 0 0 0 0 rgba(115, 183, 241, .34);
+  animation: continueDiamondZoomPulse 1.9s ease-in-out infinite;
 }
-.side nav .resume-quotation-diamond:hover { background: #ffffff25; color: #fff; }
+.side nav .resume-quotation-diamond:hover {
+  background: #ffffff25;
+  color: #fff;
+}
 .side nav .resume-quotation-diamond span {
   display: block;
   transform: rotate(-45deg);
   font-size: 9px;
   line-height: 1;
 }
-@keyframes continueDiamondPulse {
-  0% { box-shadow: 0 0 0 0 rgba(115, 183, 241, .32); }
-  70% { box-shadow: 0 0 0 7px rgba(115, 183, 241, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(115, 183, 241, 0); }
+@keyframes continueDiamondZoomPulse {
+  0%, 100% {
+    transform: rotate(45deg) scale(1);
+    box-shadow: 0 0 0 0 rgba(115, 183, 241, .30);
+  }
+  45% {
+    transform: rotate(45deg) scale(1.13);
+    box-shadow: 0 0 0 6px rgba(115, 183, 241, .08);
+  }
+  75% {
+    transform: rotate(45deg) scale(1.04);
+    box-shadow: 0 0 0 8px rgba(115, 183, 241, 0);
+  }
 }
+
 
 /* Cost Sheet: dense, segregated single-line desktop cards. */
 @media (min-width: 1180px) {
@@ -4990,4 +5013,71 @@ body,
 @media (max-width: 720px) {
   .header-quotation-actions { gap: 6px; }
   .header-end-process-btn { padding: 7px 9px; }
+}
+
+/* v0.9.5 — removable analyzed-source cards */
+.source-selector-item {
+  position: relative;
+  flex: 0 0 auto;
+  min-width: 175px;
+}
+.source-selector-item > button {
+  width: 100%;
+  padding-right: 34px;
+}
+.source-remove-x {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid #d7e0e9;
+  background: rgba(255,255,255,.96);
+  color: #9d2f2f;
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 900;
+  cursor: pointer;
+  box-shadow: 0 2px 6px rgba(28,46,64,.08);
+}
+.source-remove-x:hover,
+.source-remove-x:focus-visible {
+  background: #fff1f1;
+  border-color: #e5a8a8;
+  outline: none;
+}
+
+/* v0.4.8 STEP snapshot reliability: keep the real WebGL canvas visible and
+   expose viewer state instead of leaving an apparently blank drawing card. */
+.drawing-snapshot .dfm-cad-canvas,
+.drawing-snapshot .dfm-cad-canvas canvas {
+  width: 100% !important;
+  height: 100% !important;
+  min-height: 455px !important;
+  display: block;
+}
+.dfm-cad-canvas .cad-runtime-message {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: #f5f8fb;
+}
+.cad-viewer-badge {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 4;
+  border: 1px solid #cbd7e3;
+  border-radius: 999px;
+  background: rgba(255,255,255,.92);
+  padding: 6px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: #34516c;
+  pointer-events: none;
+  box-shadow: 0 3px 10px rgba(35,57,78,.08);
 }
