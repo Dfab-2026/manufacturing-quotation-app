@@ -1416,6 +1416,8 @@ export default function Page() {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [sourceFiles, setSourceFiles] = useState<File[]>([]);
   const [activeSourceKey, setActiveSourceKey] = useState("");
+  const [persistentPreviewFile, setPersistentPreviewFile] = useState<File | null>(null);
+  const persistentPreviewFileRef = useRef<File | null>(null);
   // Quotation-lifetime source references. These survive normal step/view navigation
   // and are cleared only by explicit quotation reset/end or source deletion.
   const quotationPrimaryFileRef = useRef<File | null>(null);
@@ -1848,6 +1850,9 @@ export default function Page() {
     quotationPrimaryFileRef.current = restoredPrimaryFile;
     quotationModelFileRef.current = isBrowserFile(saved.modelFile) ? saved.modelFile : null;
     quotationSourceFilesRef.current = restoredSources;
+    const restoredPreviewFile = restoredSources[0] || restoredPrimaryFile || (isBrowserFile(saved.modelFile) ? saved.modelFile : null);
+    persistentPreviewFileRef.current = restoredPreviewFile;
+    setPersistentPreviewFile(restoredPreviewFile);
     setActiveSourceKey(
       saved.activeSourceKey
       || (restoredSources[0] ? fileKey(restoredSources[0]) : "")
@@ -2037,6 +2042,8 @@ export default function Page() {
     quotationPrimaryFileRef.current = null;
     quotationModelFileRef.current = null;
     quotationSourceFilesRef.current = [];
+    persistentPreviewFileRef.current = null;
+    setPersistentPreviewFile(null);
     setUploadedFileStatus({});
     setShowDfmHistory(false);
     setShowBomHistory(false);
@@ -2138,11 +2145,53 @@ export default function Page() {
     const oldDatasetId = workspaceDatasetId;
     const draftItems = saveAsDraft ? currentBatchPayload() : [];
     const draftCustomer = customer;
+    const draftSnapshot = saveAsDraft && draftItems.length > 0
+      ? captureCurrentWorkflowSnapshot()
+      : null;
+
+    // End Process must put the quotation in History BEFORE the active workflow is
+    // cleared. This local-first record is immediate and does not depend on FastAPI.
+    const now = new Date().toISOString();
+    const localDrafts: QuoteRecord[] = draftItems.map((item, index) => ({
+      id: `LOCAL-END-${Date.now()}${draftItems.length > 1 ? `-${index + 1}` : ""}`,
+      created_at: now,
+      updated_at: now,
+      name: item.drawing.description || item.drawing.drawing_no || `Draft ${index + 1}`,
+      customer: draftCustomer,
+      drawing_no: item.drawing.drawing_no || "",
+      revision: item.drawing.revision || "",
+      description: item.drawing.description || "",
+      selling_price: Number(item.summary.selling_price || 0),
+      status: "Draft / Incomplete",
+      drawing: item.drawing,
+      rows: item.rows,
+      summary: item.summary
+    }));
+    const localIds = localDrafts.map((quote) => quote.id);
+
+    if (localDrafts.length > 0) {
+      setQuotes((current) => {
+        const next = [...localDrafts, ...current].sort((a, b) =>
+          new Date(b.updated_at || b.created_at || 0).getTime()
+          - new Date(a.updated_at || a.created_at || 0).getTime()
+        );
+        persistQuoteCache(next);
+        return next;
+      });
+
+      if (draftSnapshot) {
+        await Promise.allSettled(
+          localIds.map((quoteId) => saveHistoryDraftSnapshot(quoteId, draftSnapshot))
+        );
+        // Preserve the exact File-backed drawing source independently of the active
+        // workspace that will be cleared below.
+        await saveWorkspaceDataset(draftSnapshot).catch(() => undefined);
+      }
+    }
 
     // Once a process is ended, the diamond must not resurrect that quotation
-    // from History or a workspace that is still being deleted asynchronously.
+    // from the active workspace that is being cleared.
     processEndedRef.current = true;
-
     artifactLifecycleRef.current += 1;
 
     const activeHashes = new Set<string>();
@@ -2154,8 +2203,8 @@ export default function Page() {
     if (selectedDfm?.file_hash) activeHashes.add(selectedDfm.file_hash);
     if (selectedBom?.file_hash) activeHashes.add(selectedBom.file_hash);
 
-    // Clear the active workspace immediately. Draft persistence continues in
-    // the background and appears in Quotation History when confirmed.
+    // History is already populated locally at this point, so clearing the active
+    // workflow can never make the quotation disappear from History.
     resetOngoingQuotationState(message);
 
     setSelectedDfmId("");
@@ -2166,19 +2215,16 @@ export default function Page() {
     if (draftItems.length > 0) {
       void (async () => {
         try {
+          let serverDrafts: QuoteRecord[] = [];
           if (draftItems.length === 1) {
             const item = draftItems[0];
-            const saved = await api.saveQuote({
+            serverDrafts = [await api.saveQuote({
               customer: draftCustomer,
               drawing: item.drawing,
               rows: item.rows,
               summary: item.summary,
               status: "Draft / Incomplete"
-            });
-            setQuotes((current) => [
-              ...current.filter((quote) => quote.id !== saved.id),
-              saved
-            ]);
+            })];
           } else {
             const saved = await api.saveBatchQuote(
               draftCustomer,
@@ -2186,19 +2232,34 @@ export default function Page() {
               draftItems,
               "Draft / Incomplete"
             );
-            setQuotes((current) => {
-              const incomingIds = new Set(saved.records.map((quote) => quote.id));
-              return [
-                ...current.filter((quote) => !incomingIds.has(quote.id)),
-                ...saved.records
-              ];
-            });
+            serverDrafts = saved.records;
           }
+
+          const serverIds = serverDrafts.map((quote) => quote.id).filter(Boolean);
+          if (draftSnapshot) {
+            await Promise.allSettled(
+              serverIds.map((quoteId) => saveHistoryDraftSnapshot(quoteId, draftSnapshot))
+            );
+          }
+
+          setQuotes((current) => {
+            const incomingIds = new Set(serverIds);
+            const next = [
+              ...serverDrafts,
+              ...current.filter((quote) => !localIds.includes(quote.id) && !incomingIds.has(quote.id))
+            ].sort((a, b) =>
+              new Date(b.updated_at || b.created_at || 0).getTime()
+              - new Date(a.updated_at || a.created_at || 0).getTime()
+            );
+            persistQuoteCache(next);
+            return next;
+          });
           setMsg("Process ended. Current quotation saved in History as Draft / Incomplete.");
         } catch (error) {
-          setMsg(error instanceof Error
-            ? `Process ended. Draft save needs retry: ${error.message}`
-            : "Process ended. Draft save needs retry.");
+          // The local History Draft is already safe and visible. Backend sync may
+          // retry later without affecting the user's saved quotation.
+          console.warn("End Process backend History sync deferred", error);
+          setMsg("Process ended. Quotation saved locally in History; backend sync is pending.");
         }
       })();
     }
@@ -2220,7 +2281,8 @@ export default function Page() {
 
     void Promise.allSettled([
       clearWorkflowDraft(),
-      deleteWorkspaceDataset(oldDatasetId),
+      // Do not delete the File-backed dataset here: Draft/History continuation
+      // needs it to render the original STEP/PDF/image preview.
       api.deleteWorkspaceSession(oldDatasetId)
     ]).finally(() => {
       void refreshWorkspaceDatasets();
@@ -2451,6 +2513,11 @@ export default function Page() {
     const remainingSources = allSourceFiles.filter(
       (item) => fileKey(item) !== removedKey
     );
+    if (fileKey(persistentPreviewFileRef.current) === removedKey) {
+      const nextPreview = remainingSources[0] || null;
+      persistentPreviewFileRef.current = nextPreview;
+      setPersistentPreviewFile(nextPreview);
+    }
     const remainingDrawings = files.filter(
       (item) => fileKey(item) !== removedKey
     );
@@ -4623,20 +4690,37 @@ export default function Page() {
     || quotationModelFileRef.current
     || null;
 
-  // Preview URL follows the durable active source rather than only the transient
-  // primary file state, so Back/Next navigation cannot blank PDF/image previews.
+  // Keep one concrete source File for the entire quotation lifecycle. Step/view
+  // navigation must never be able to blank the Drawing Snapshot. This is cleared
+  // only by the existing explicit reset/remove/completion flows.
   useEffect(() => {
-    const previewFile = activeSource && !isVisualCadFormat(activeSource)
-      ? activeSource
-      : file || quotationPrimaryFileRef.current;
-    if (!previewFile || isVisualCadFormat(previewFile)) {
+    if (!isBrowserFile(activeSource)) return;
+    persistentPreviewFileRef.current = activeSource;
+    setPersistentPreviewFile((current) => fileKey(current) === fileKey(activeSource) ? current : activeSource);
+  }, [activeSource]);
+
+  const drawingPreviewSource =
+    activeSource
+    || persistentPreviewFile
+    || persistentPreviewFileRef.current
+    || quotationPrimaryFileRef.current
+    || quotationModelFileRef.current
+    || null;
+
+  // Preview URL follows the quotation-lifetime source rather than transient page
+  // state, so Back/Next and Draft continuation cannot blank PDF/image previews.
+  useEffect(() => {
+    const previewFile = drawingPreviewSource && !isVisualCadFormat(drawingPreviewSource)
+      ? drawingPreviewSource
+      : null;
+    if (!previewFile) {
       setFileUrl("");
       return;
     }
     const url = URL.createObjectURL(previewFile);
     setFileUrl(url);
     return () => URL.revokeObjectURL(url);
-  }, [activeSource, file]);
+  }, [drawingPreviewSource]);
 
   const selectedDfm = dfmReports.find((item) => item.id === selectedDfmId) || dfmReports.at(-1) || null;
   const selectedBom = bomReports.find((item) => item.id === selectedBomId) || bomReports.at(-1) || null;
@@ -5354,8 +5438,12 @@ export default function Page() {
               </section>
             )}
 
-            {step === 2 && drawing && (
-              <section className="panel">
+            {drawing && (
+              <section
+                className="panel"
+                style={{ display: step === 2 ? undefined : "none" }}
+                aria-hidden={step === 2 ? undefined : true}
+              >
                 <div className="heading row">
                   <div><p className="eyebrow">STEP 2</p><h2>Drawing Snapshot & Basic Details</h2><p>Confirm the drawing identity and key values. Full engineering details stay in the Excel sheet.</p></div>
                   <div className="actions compact">
@@ -5431,21 +5519,21 @@ export default function Page() {
                 <div className="review">
                   <div className="paperbox">
                     <div className="drawing-snapshot">
-                      {activeSource && isVisualCadFormat(activeSource)
+                      {drawingPreviewSource && isVisualCadFormat(drawingPreviewSource)
                         ? (
                           <ModelViewer
-                            file={activeSource}
+                            file={drawingPreviewSource}
                             issueCount={(analysis?.extraction_warnings || []).length}
                           />
                         )
-                        : fileUrl && (activeSource?.type === "application/pdf" || file?.type === "application/pdf")
+                        : fileUrl && drawingPreviewSource?.type === "application/pdf"
                         ? (
                           <iframe
                             src={`${fileUrl}#toolbar=0&navpanes=0&view=FitH`}
                             title="Uploaded engineering drawing"
                           />
                         )
-                        : fileUrl && ((activeSource?.type || file?.type || "").startsWith("image/"))
+                        : fileUrl && ((drawingPreviewSource?.type || "").startsWith("image/"))
                           ? <img src={fileUrl} alt="Uploaded drawing"/>
                           : analysis?.preview_image
                             ? <img src={analysis.preview_image} alt="Drawing snapshot"/>
@@ -5464,7 +5552,7 @@ export default function Page() {
                     </div>
                     <div className="snapshot-caption">
                       <b>Drawing Snapshot</b>
-                      <span>{activeSource?.name || file?.name || drawing.description}</span>
+                      <span>{drawingPreviewSource?.name || drawing.description}</span>
                     </div>
                   </div>
 
