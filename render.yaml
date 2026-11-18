@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: manufacturing-quotation-api
+    name: ai-quotation-api
     runtime: python
     rootDir: backend
     buildCommand: python -m pip install --upgrade pip && pip install -r requirements-render.txt
@@ -11,8 +11,6 @@ services:
       - key: PYTHON_VERSION
         value: 3.12.10
       - key: DATABASE_URL
-        sync: false
-      - key: FRONTEND_ORIGIN
         sync: false
       - key: LOCAL_OCR_ENABLED
         value: false

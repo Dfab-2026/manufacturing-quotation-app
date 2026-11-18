@@ -1015,6 +1015,20 @@ type PersistedWorkflowDraft = {
   modelFile?: File | null;
   sourceFiles?: File[];
   activeSourceKey?: string;
+  // The Drawing Review preview has its own selection so DFM/BOM browsing cannot
+  // silently replace the drawing shown when the user returns to the workflow.
+  previewSourceKey?: string;
+  remoteFiles?: Array<{
+    id: string;
+    filename: string;
+    mime_type: string;
+    role: string;
+    size_bytes: number;
+    file_hash: string;
+    lastModified?: number;
+    sourceKey?: string;
+  }>;
+  remoteQuoteIds?: string[];
   datasetId: string;
   datasetName: string;
   batchFailures?: BatchFailure[];
@@ -1416,6 +1430,7 @@ export default function Page() {
   const [modelFile, setModelFile] = useState<File | null>(null);
   const [sourceFiles, setSourceFiles] = useState<File[]>([]);
   const [activeSourceKey, setActiveSourceKey] = useState("");
+  const [previewSourceKey, setPreviewSourceKey] = useState("");
   const [persistentPreviewFile, setPersistentPreviewFile] = useState<File | null>(null);
   const persistentPreviewFileRef = useRef<File | null>(null);
   // Quotation-lifetime source references. These survive normal step/view navigation
@@ -1423,6 +1438,12 @@ export default function Page() {
   const quotationPrimaryFileRef = useRef<File | null>(null);
   const quotationModelFileRef = useRef<File | null>(null);
   const quotationSourceFilesRef = useRef<File[]>([]);
+  const remoteWorkspaceFileCacheRef = useRef<Map<string, {
+    id: string; filename: string; mime_type: string; role: string;
+    size_bytes: number; file_hash: string; lastModified?: number; sourceKey?: string;
+  }>>(new Map());
+  const remoteWorkspaceSaveQueueRef = useRef<Map<string, Promise<void>>>(new Map());
+  const activeRemoteQuoteIdsRef = useRef<string[]>([]);
   const [showDfmHistory, setShowDfmHistory] = useState(false);
   const [showBomHistory, setShowBomHistory] = useState(false);
   const [workspaceDatasetId, setWorkspaceDatasetId] = useState(() => createWorkspaceDatasetId());
@@ -1438,6 +1459,7 @@ export default function Page() {
   const [costSheetSaveState, setCostSheetSaveState] = useState<"idle" | "saving" | "saved" | "deferred">("idle");
   const costSheetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fileUrl, setFileUrl] = useState("");
+  const [fileUrlSourceFile, setFileUrlSourceFile] = useState<File | null>(null);
   const [revisionComparison, setRevisionComparison] = useState<RevisionComparison | null>(null);
   const [premiumEstimate, setPremiumEstimate] = useState<PremiumEstimate | null>(null);
   const [premiumBusy, setPremiumBusy] = useState(false);
@@ -1850,14 +1872,23 @@ export default function Page() {
     quotationPrimaryFileRef.current = restoredPrimaryFile;
     quotationModelFileRef.current = isBrowserFile(saved.modelFile) ? saved.modelFile : null;
     quotationSourceFilesRef.current = restoredSources;
-    const restoredPreviewFile = restoredSources[0] || restoredPrimaryFile || (isBrowserFile(saved.modelFile) ? saved.modelFile : null);
+    const restoredPreviewKey =
+      saved.previewSourceKey
+      || saved.activeSourceKey
+      || (restoredSources[0] ? fileKey(restoredSources[0]) : "");
+    const restoredPreviewFile =
+      restoredSources.find((item) => fileKey(item) === restoredPreviewKey)
+      || restoredPrimaryFile
+      || (isBrowserFile(saved.modelFile) ? saved.modelFile : null);
     persistentPreviewFileRef.current = restoredPreviewFile;
     setPersistentPreviewFile(restoredPreviewFile);
+    setPreviewSourceKey(restoredPreviewFile ? fileKey(restoredPreviewFile) : restoredPreviewKey);
     setActiveSourceKey(
       saved.activeSourceKey
       || (restoredSources[0] ? fileKey(restoredSources[0]) : "")
     );
 
+    activeRemoteQuoteIdsRef.current = Array.isArray(saved.remoteQuoteIds) ? saved.remoteQuoteIds : [];
     setWorkspaceDatasetId(saved.datasetId || createWorkspaceDatasetId());
     setWorkspaceDatasetName(saved.datasetName || "Quotation Dataset");
 
@@ -1914,17 +1945,15 @@ export default function Page() {
       snapshot.step = Math.min(4, Math.max(1, Number(step || 1)));
       snapshot.savedAt = new Date().toISOString();
 
-      void Promise.all([
+      // Local IndexedDB and backend file storage are independent persistence
+      // layers. A browser quota/private-mode failure must not skip the remote copy.
+      saveWorkspaceToDatabase(snapshot);
+      void Promise.allSettled([
         saveWorkflowDraft(snapshot),
         saveWorkspaceDataset(snapshot)
-      ])
-        .then(() => {
-          saveWorkspaceToDatabase(snapshot);
-          void refreshWorkspaceDatasets();
-        })
-        .catch(() => {
-          // Non-blocking auto-save. The current workflow remains usable.
-        });
+      ]).then(() => {
+        void refreshWorkspaceDatasets();
+      });
     }, 1200);
 
     return () => window.clearTimeout(timer);
@@ -1947,6 +1976,7 @@ export default function Page() {
     modelFile,
     sourceFiles,
     activeSourceKey,
+    previewSourceKey,
     workspaceDatasetId,
     workspaceDatasetName,
     batchFailures,
@@ -2039,9 +2069,11 @@ export default function Page() {
     setModelFile(null);
     setSourceFiles([]);
     setActiveSourceKey("");
+    setPreviewSourceKey("");
     quotationPrimaryFileRef.current = null;
     quotationModelFileRef.current = null;
     quotationSourceFilesRef.current = [];
+    activeRemoteQuoteIdsRef.current = [];
     persistentPreviewFileRef.current = null;
     setPersistentPreviewFile(null);
     setUploadedFileStatus({});
@@ -2097,6 +2129,8 @@ export default function Page() {
       modelFile: effectiveModel,
       sourceFiles: effectiveSources,
       activeSourceKey,
+      previewSourceKey,
+      remoteQuoteIds: activeRemoteQuoteIdsRef.current,
       datasetId: workspaceDatasetId,
       datasetName: workspaceDatasetName,
       batchFailures,
@@ -2120,22 +2154,135 @@ export default function Page() {
       )
     );
 
+  const hydrateRemoteWorkspaceSession = async (
+    session: api.WorkspaceSessionRecord
+  ): Promise<PersistedWorkflowDraft | null> => {
+    const payload = (session.payload || {}) as Record<string, any>;
+    const refs = Array.isArray(payload.remoteFiles)
+      ? payload.remoteFiles
+      : (session.files || []).map((item) => ({ ...item }));
+    if (!refs.length) return null;
+
+    const restored = await Promise.all(refs.map(async (ref: Record<string, any>) => {
+      try {
+        const blob = await api.downloadWorkspaceFile(session.id, String(ref.id || ""));
+        const file = new File([blob], String(ref.filename || "drawing.bin"), {
+          type: String(ref.mime_type || blob.type || "application/octet-stream"),
+          lastModified: Number(ref.lastModified || Date.now())
+        });
+        return { ref, file };
+      } catch (error) {
+        console.warn(`Could not restore workspace file ${String(ref.filename || ref.id || "")}`, error);
+        return null;
+      }
+    }));
+    const entries = restored.filter((item): item is { ref: Record<string, any>; file: File } => Boolean(item));
+    if (!entries.length) return null;
+
+    const byKey = new Map<string, File>();
+    entries.forEach(({ ref, file }) => {
+      const key = String(ref.sourceKey || `${file.name}::${file.size}::${file.lastModified}`);
+      byKey.set(key, file);
+    });
+    const sourceFiles = entries.map((item) => item.file);
+    const primaryKey = String(payload.primaryFileKey || "");
+    const modelKey = String(payload.modelFileKey || "");
+    const primaryFile = byKey.get(primaryKey) || sourceFiles.find((item) => !isVisualCadFormat(item)) || sourceFiles[0] || null;
+    const modelFile = byKey.get(modelKey) || sourceFiles.find((item) => isVisualCadFormat(item)) || null;
+    const rawBatch = Array.isArray(payload.batchItems) ? payload.batchItems : [];
+    const batchItems = rawBatch.map((item: Record<string, any>) => {
+      const batchFile = byKey.get(String(item.fileKey || "")) || primaryFile;
+      return batchFile ? { ...item, file: batchFile } as BatchWorkspace : null;
+    }).filter((item: BatchWorkspace | null): item is BatchWorkspace => Boolean(item));
+
+    return {
+      view: "workflow",
+      step: Math.min(4, Math.max(1, Number(payload.step || 1))),
+      file: primaryFile,
+      files: sourceFiles.filter((item) => !isVisualCadFormat(item)),
+      batchItems,
+      activeBatchId: String(payload.activeBatchId || batchItems[0]?.id || ""),
+      quoteMode: payload.quoteMode === "separate" ? "separate" : "merge",
+      analysis: payload.analysis || batchItems[0]?.analysis || null,
+      drawing: payload.drawing || batchItems[0]?.drawing || null,
+      rows: Array.isArray(payload.rows) ? payload.rows : batchItems[0]?.rows || [],
+      summary: payload.summary || batchItems[0]?.summary || emptySummary,
+      finalPriceOverride: payload.finalPriceOverride ?? null,
+      commercialAmountOverrides: payload.commercialAmountOverrides || { material_wastage: null, overhead: null, markup: null },
+      customer: String(payload.customer || "Sample Customer"),
+      modelFile,
+      sourceFiles,
+      activeSourceKey: String(payload.activeSourceKey || primaryKey || fileKey(primaryFile)),
+      previewSourceKey: String(payload.previewSourceKey || payload.activeSourceKey || primaryKey || fileKey(primaryFile)),
+      remoteFiles: refs,
+      remoteQuoteIds: Array.isArray(payload.quoteIds) ? payload.quoteIds.map(String) : [],
+      datasetId: session.id,
+      datasetName: String(session.name || payload.datasetName || "Quotation Dataset"),
+      batchFailures: [],
+      dfmReports: Array.isArray(payload.dfmReports) ? payload.dfmReports : [],
+      bomReports: Array.isArray(payload.bomReports) ? payload.bomReports : [],
+      selectedDfmId: String(payload.selectedDfmId || ""),
+      selectedBomId: String(payload.selectedBomId || ""),
+      savedAt: String(payload.savedAt || session.updated_at || new Date().toISOString())
+    };
+  };
+
+  const loadRemoteWorkspaceById = async (datasetId: string) => {
+    if (!datasetId) return null;
+    try {
+      const session = await api.getWorkspaceSession(datasetId);
+      return await hydrateRemoteWorkspaceSession(session);
+    } catch {
+      return null;
+    }
+  };
+
+  const loadRemoteWorkspaceForQuote = async (quoteId: string) => {
+    if (!quoteId) return null;
+    try {
+      const sessions = await api.listWorkspaceSessions();
+      const match = sessions.find((session) => {
+        const ids = Array.isArray(session.payload?.quoteIds) ? session.payload.quoteIds.map(String) : [];
+        return ids.includes(quoteId);
+      });
+      return match ? await hydrateRemoteWorkspaceSession(match) : null;
+    } catch {
+      return null;
+    }
+  };
+
   const restorePreviewSourcesFromDataset = async (
     snapshot: PersistedWorkflowDraft
   ): Promise<PersistedWorkflowDraft> => {
-    if (snapshotHasPreviewSource(snapshot) || !snapshot.datasetId) return snapshot;
-    const datasetSnapshot = await loadWorkspaceDataset(snapshot.datasetId).catch(() => null);
-    if (!snapshotHasPreviewSource(datasetSnapshot)) return snapshot;
+    if (snapshotHasPreviewSource(snapshot)) return snapshot;
 
-    return {
-      ...snapshot,
-      file: isBrowserFile(datasetSnapshot?.file) ? datasetSnapshot!.file : snapshot.file,
-      files: (datasetSnapshot?.files || []).filter(isBrowserFile),
-      modelFile: isBrowserFile(datasetSnapshot?.modelFile) ? datasetSnapshot!.modelFile : snapshot.modelFile,
-      sourceFiles: (datasetSnapshot?.sourceFiles || []).filter(isBrowserFile),
-      activeSourceKey: snapshot.activeSourceKey || datasetSnapshot?.activeSourceKey || "",
-      batchItems: snapshot.batchItems?.length ? snapshot.batchItems : (datasetSnapshot?.batchItems || [])
-    };
+    if (snapshot.datasetId) {
+      const datasetSnapshot = await loadWorkspaceDataset(snapshot.datasetId).catch(() => null);
+      if (snapshotHasPreviewSource(datasetSnapshot)) {
+        return {
+          ...snapshot,
+          file: isBrowserFile(datasetSnapshot?.file) ? datasetSnapshot!.file : snapshot.file,
+          files: (datasetSnapshot?.files || []).filter(isBrowserFile),
+          modelFile: isBrowserFile(datasetSnapshot?.modelFile) ? datasetSnapshot!.modelFile : snapshot.modelFile,
+          sourceFiles: (datasetSnapshot?.sourceFiles || []).filter(isBrowserFile),
+          activeSourceKey: snapshot.activeSourceKey || datasetSnapshot?.activeSourceKey || "",
+          previewSourceKey: snapshot.previewSourceKey || datasetSnapshot?.previewSourceKey || snapshot.activeSourceKey || datasetSnapshot?.activeSourceKey || "",
+          batchItems: snapshot.batchItems?.length ? snapshot.batchItems : (datasetSnapshot?.batchItems || [])
+        };
+      }
+
+      const remoteSnapshot = await loadRemoteWorkspaceById(snapshot.datasetId);
+      if (snapshotHasPreviewSource(remoteSnapshot)) {
+        return { ...remoteSnapshot!, ...snapshot, file: remoteSnapshot!.file, files: remoteSnapshot!.files,
+          modelFile: remoteSnapshot!.modelFile, sourceFiles: remoteSnapshot!.sourceFiles,
+          batchItems: remoteSnapshot!.batchItems, activeSourceKey: snapshot.activeSourceKey || remoteSnapshot!.activeSourceKey,
+          previewSourceKey: snapshot.previewSourceKey || remoteSnapshot!.previewSourceKey || snapshot.activeSourceKey || remoteSnapshot!.activeSourceKey,
+          remoteFiles: remoteSnapshot!.remoteFiles,
+          remoteQuoteIds: snapshot.remoteQuoteIds?.length ? snapshot.remoteQuoteIds : remoteSnapshot!.remoteQuoteIds };
+      }
+    }
+
+    return snapshot;
   };
 
   const deleteOngoingQuotation = async (
@@ -2186,6 +2333,10 @@ export default function Page() {
         // Preserve the exact File-backed drawing source independently of the active
         // workspace that will be cleared below.
         await saveWorkspaceDataset(draftSnapshot).catch(() => undefined);
+        if (localIds.length) {
+          try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, localIds[localIds.length - 1]); } catch {}
+        }
+        saveWorkspaceToDatabase(draftSnapshot, localIds);
       }
     }
 
@@ -2240,6 +2391,10 @@ export default function Page() {
             await Promise.allSettled(
               serverIds.map((quoteId) => saveHistoryDraftSnapshot(quoteId, draftSnapshot))
             );
+            saveWorkspaceToDatabase({ ...draftSnapshot, remoteQuoteIds: serverIds }, serverIds);
+            if (serverIds.length) {
+              try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, serverIds[serverIds.length - 1]); } catch {}
+            }
           }
 
           setQuotes((current) => {
@@ -2279,12 +2434,13 @@ export default function Page() {
       return next;
     });
 
-    void Promise.allSettled([
-      clearWorkflowDraft(),
-      // Do not delete the File-backed dataset here: Draft/History continuation
-      // needs it to render the original STEP/PDF/image preview.
-      api.deleteWorkspaceSession(oldDatasetId)
-    ]).finally(() => {
+    const cleanupTasks: Promise<unknown>[] = [clearWorkflowDraft()];
+    // A saved Draft owns this workspace session and its uploaded source files.
+    // Only remove the remote session when the user explicitly discarded the files.
+    if (!saveAsDraft || !draftSnapshot) {
+      cleanupTasks.push(api.deleteWorkspaceSession(oldDatasetId));
+    }
+    void Promise.allSettled(cleanupTasks).finally(() => {
       void refreshWorkspaceDatasets();
     });
   };
@@ -2400,6 +2556,7 @@ export default function Page() {
     }
 
     try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, localIds[localIds.length - 1]); } catch {}
+    saveWorkspaceToDatabase(draftSnapshot, localIds);
 
     processEndedRef.current = false;
     forceFreshUploadPage(
@@ -2430,6 +2587,7 @@ export default function Page() {
 
         const serverIds = serverDrafts.map((quote) => quote.id).filter(Boolean);
         await Promise.allSettled(serverIds.map((quoteId) => saveHistoryDraftSnapshot(quoteId, draftSnapshot)));
+        saveWorkspaceToDatabase({ ...draftSnapshot, remoteQuoteIds: serverIds }, serverIds);
 
         setQuotes((current) => {
           const serverIdSet = new Set(serverIds);
@@ -2479,8 +2637,15 @@ export default function Page() {
       }
 
       const exactSnapshot = await loadHistoryDraftSnapshot(latestDraft.id).catch(() => null);
-      if (exactSnapshot) {
-        const resumableSnapshot = await restorePreviewSourcesFromDataset(exactSnapshot);
+      const remoteSnapshot = exactSnapshot
+        ? null
+        : await loadRemoteWorkspaceForQuote(latestDraft.id);
+      if (exactSnapshot || remoteSnapshot) {
+        const restoredSnapshot = await restorePreviewSourcesFromDataset(exactSnapshot || remoteSnapshot!);
+        const resumableSnapshot = {
+          ...restoredSnapshot,
+          remoteQuoteIds: Array.from(new Set([...(restoredSnapshot.remoteQuoteIds || []), latestDraft.id]))
+        };
         restoringOngoingRef.current = true;
         applyPersistedWorkflow(resumableSnapshot, false);
         const resumeStep = Math.min(4, Math.max(1, Number(resumableSnapshot.step || 1)));
@@ -2489,6 +2654,10 @@ export default function Page() {
         setRevisionSourceQuoteId("");
         processEndedRef.current = false;
         await saveWorkflowDraft({ ...resumableSnapshot, view: "workflow", step: resumeStep, savedAt: new Date().toISOString() }).catch(() => undefined);
+        if (snapshotHasPreviewSource(resumableSnapshot)) {
+          await saveHistoryDraftSnapshot(latestDraft.id, resumableSnapshot).catch(() => undefined);
+        }
+        saveWorkspaceToDatabase({ ...resumableSnapshot, remoteQuoteIds: [latestDraft.id] }, [latestDraft.id]);
         window.setTimeout(() => { restoringOngoingRef.current = false; }, 350);
         setMsg(`Draft ${latestDraft.id} continued from the same saved step.`);
         return;
@@ -2513,10 +2682,12 @@ export default function Page() {
     const remainingSources = allSourceFiles.filter(
       (item) => fileKey(item) !== removedKey
     );
-    if (fileKey(persistentPreviewFileRef.current) === removedKey) {
+    if (previewSourceKey === removedKey || fileKey(persistentPreviewFileRef.current) === removedKey) {
       const nextPreview = remainingSources[0] || null;
+      const nextPreviewKey = nextPreview ? fileKey(nextPreview) : "";
       persistentPreviewFileRef.current = nextPreview;
       setPersistentPreviewFile(nextPreview);
+      setPreviewSourceKey(nextPreviewKey);
     }
     const remainingDrawings = files.filter(
       (item) => fileKey(item) !== removedKey
@@ -2626,6 +2797,7 @@ export default function Page() {
 
     setActiveBatchId(target.id);
     setActiveSourceKey(fileKey(target.file));
+    setPreviewSourceKey(fileKey(target.file));
     setFile(target.file);
     setAnalysis(target.analysis);
     setDrawing(target.drawing);
@@ -2984,6 +3156,7 @@ export default function Page() {
           const first = merged[0];
           setActiveBatchId(first.id);
           setActiveSourceKey(fileKey(first.file));
+          setPreviewSourceKey(fileKey(first.file));
           setFile(first.file);
           setAnalysis(first.analysis);
           setDrawing(first.drawing);
@@ -3500,6 +3673,7 @@ export default function Page() {
         replaceBatchItems([workspace]);
         setActiveBatchId(workspace.id);
         setActiveSourceKey(fileKey(selected));
+        setPreviewSourceKey(fileKey(selected));
         setFile(selected);
         setAnalysis(result);
         setDrawing(result.drawing);
@@ -3544,6 +3718,7 @@ export default function Page() {
               firstDisplayed = true;
               setActiveBatchId(workspace.id);
               setActiveSourceKey(fileKey(workspace.file));
+              setPreviewSourceKey(fileKey(workspace.file));
               setFile(workspace.file);
               setAnalysis(workspace.analysis);
               setDrawing(workspace.drawing);
@@ -3575,6 +3750,7 @@ export default function Page() {
       const first = ordered[0];
       setActiveBatchId(first.id);
       setActiveSourceKey(fileKey(first.file));
+      setPreviewSourceKey(fileKey(first.file));
       setFile(first.file);
       setAnalysis(first.analysis);
       setDrawing(first.drawing);
@@ -3812,7 +3988,7 @@ export default function Page() {
     const category = String(row.category || "OTHER").toUpperCase() as RateTab;
     setRateTab((["MATERIAL", "PROCESS", "LABOUR", "COMMERCIAL", "OTHER"] as RateTab[]).includes(category) ? category : "ALL");
     setRateSearch(String(row.item || "").trim());
-    setView("rates");
+    navigateToView("rates");
     setMsg(`Rate Master opened for ${row.item || "missing rate"}. Add or select the rate, then return to the Cost Sheet.`);
     window.setTimeout(() => {
       document.querySelector<HTMLInputElement>(".rate-toolbar .search")?.focus();
@@ -4044,8 +4220,11 @@ export default function Page() {
         status
       });
       if (String(status).toLowerCase().includes("draft")) {
-        await saveHistoryDraftSnapshot(quote.id, captureCurrentWorkflowSnapshot()).catch(() => undefined);
+        const snapshot = captureCurrentWorkflowSnapshot();
+        await saveHistoryDraftSnapshot(quote.id, snapshot).catch(() => undefined);
         try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, quote.id); } catch {}
+        activeRemoteQuoteIdsRef.current = [quote.id];
+        saveWorkspaceToDatabase({ ...snapshot, remoteQuoteIds: [quote.id] }, [quote.id]);
       }
       await refresh();
       setMsg(`Quotation ${quote.id} saved as ${status}.`);
@@ -4063,7 +4242,11 @@ export default function Page() {
       const snapshot = captureCurrentWorkflowSnapshot();
       const ids = result.records.map((quote) => quote.id).filter(Boolean);
       await Promise.all(ids.map((quoteId) => saveHistoryDraftSnapshot(quoteId, snapshot).catch(() => undefined)));
-      if (ids.length) { try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, ids[ids.length - 1]); } catch {} }
+      if (ids.length) {
+        try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, ids[ids.length - 1]); } catch {}
+        activeRemoteQuoteIdsRef.current = ids;
+        saveWorkspaceToDatabase({ ...snapshot, remoteQuoteIds: ids }, ids);
+      }
     }
 
     await refresh();
@@ -4138,8 +4321,15 @@ export default function Page() {
 
     if (isDraft) {
       const exactSnapshot = await loadHistoryDraftSnapshot(quote.id).catch(() => null);
-      if (exactSnapshot) {
-        const resumableSnapshot = await restorePreviewSourcesFromDataset(exactSnapshot);
+      const remoteSnapshot = exactSnapshot
+        ? null
+        : await loadRemoteWorkspaceForQuote(quote.id);
+      if (exactSnapshot || remoteSnapshot) {
+        const restoredSnapshot = await restorePreviewSourcesFromDataset(exactSnapshot || remoteSnapshot!);
+        const resumableSnapshot = {
+          ...restoredSnapshot,
+          remoteQuoteIds: Array.from(new Set([...(restoredSnapshot.remoteQuoteIds || []), quote.id]))
+        };
         restoringOngoingRef.current = true;
         applyPersistedWorkflow(resumableSnapshot, false);
         const resumeStep = Math.min(4, Math.max(1, Number(resumableSnapshot.step || 1)));
@@ -4149,6 +4339,10 @@ export default function Page() {
         processEndedRef.current = false;
         try { localStorage.setItem(LAST_DRAFT_QUOTE_KEY, quote.id); } catch {}
         await saveWorkflowDraft({ ...resumableSnapshot, view: "workflow", step: resumeStep, savedAt: new Date().toISOString() }).catch(() => undefined);
+        if (snapshotHasPreviewSource(resumableSnapshot)) {
+          await saveHistoryDraftSnapshot(quote.id, resumableSnapshot).catch(() => undefined);
+        }
+        saveWorkspaceToDatabase({ ...resumableSnapshot, remoteQuoteIds: [quote.id] }, [quote.id]);
         window.setTimeout(() => { restoringOngoingRef.current = false; }, 350);
         setMsg(`Draft ${quote.id} continued from Quotation History with its saved drawing preview.`);
         return;
@@ -4331,7 +4525,7 @@ export default function Page() {
   };
 
   const openRates = () => {
-    setView("rates");
+    navigateToView("rates");
     setRateTab("MATERIAL");
     setRateSearch("");
 
@@ -4556,12 +4750,20 @@ export default function Page() {
     snapshot.step = Math.min(4, Math.max(1, Number(step || 1)));
     snapshot.savedAt = new Date().toISOString();
 
-    await Promise.all([
+    saveWorkspaceToDatabase(snapshot);
+    await Promise.allSettled([
       saveWorkflowDraft(snapshot),
       saveWorkspaceDataset(snapshot)
     ]);
+  };
 
-    saveWorkspaceToDatabase(snapshot);
+  const navigateToView = (target: View) => {
+    if (hasActiveDrawing) {
+      void saveCurrentWorkspaceNow(target).catch((error) => {
+        console.warn(`Could not persist quotation before opening ${target}.`, error);
+      });
+    }
+    setView(target);
   };
 
   const openEngineeringArtifact = (target: "dfm" | "bom") => {
@@ -4611,50 +4813,99 @@ export default function Page() {
     setDeleteArtifactTarget({ kind: "workspace", id: datasetId, label: item?.datasetName || "saved workspace dataset" });
   };
 
-  const saveWorkspaceToDatabase = (snapshot: PersistedWorkflowDraft) => {
-    const payload: Record<string, unknown> = {
-      view: snapshot.view,
-      step: snapshot.step,
-      activeBatchId: snapshot.activeBatchId,
-      quoteMode: snapshot.quoteMode,
-      analysis: snapshot.analysis,
-      drawing: snapshot.drawing,
-      rows: snapshot.rows,
-      summary: snapshot.summary,
-      customer: snapshot.customer,
-      datasetId: snapshot.datasetId,
-      datasetName: snapshot.datasetName,
-      dfmReports: snapshot.dfmReports,
-      bomReports: snapshot.bomReports,
-      savedAt: snapshot.savedAt,
-      files: (snapshot.files || []).map((item) => ({
-        name: item.name,
-        size: item.size,
-        type: item.type,
-        lastModified: item.lastModified
-      })),
-      sourceFiles: (snapshot.sourceFiles || []).map((item) => ({
-        name: item.name,
-        size: item.size,
-        type: item.type,
-        lastModified: item.lastModified
-      })),
-      activeSourceKey: snapshot.activeSourceKey || "",
-      modelFile: snapshot.modelFile
-        ? {
-            name: snapshot.modelFile.name,
-            size: snapshot.modelFile.size,
-            type: snapshot.modelFile.type,
-            lastModified: snapshot.modelFile.lastModified
-          }
-        : null
-    };
+  const saveWorkspaceToDatabase = (snapshot: PersistedWorkflowDraft, quoteIds: string[] = []) => {
+    const datasetId = snapshot.datasetId;
+    if (!datasetId) return;
 
-    void api.saveWorkspaceSession(
-      snapshot.datasetId,
-      snapshot.datasetName,
-      payload
-    ).catch(() => undefined);
+    const previous = remoteWorkspaceSaveQueueRef.current.get(datasetId) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(async () => {
+      const candidates = [
+        ...(snapshot.sourceFiles || []),
+        ...(snapshot.files || []),
+        ...(snapshot.file ? [snapshot.file] : []),
+        ...(snapshot.modelFile ? [snapshot.modelFile] : []),
+        ...(snapshot.batchItems || []).map((item) => item?.file)
+      ].filter(isBrowserFile);
+      const uniqueFiles = Array.from(new Map(candidates.map((item) => [fileKey(item), item])).values());
+
+      const uploadedRefs = await Promise.all(uniqueFiles.map(async (selected) => {
+        const sourceKey = fileKey(selected);
+        const cacheKey = `${datasetId}::${sourceKey}`;
+        const cached = remoteWorkspaceFileCacheRef.current.get(cacheKey);
+        if (cached) return cached;
+
+        try {
+          const uploaded = await api.uploadWorkspaceFile(
+            datasetId,
+            selected,
+            isVisualCadFormat(selected) ? "model" : "drawing"
+          );
+          const ref = { ...uploaded, mime_type: selected.type || "application/octet-stream", lastModified: selected.lastModified, sourceKey };
+          remoteWorkspaceFileCacheRef.current.set(cacheKey, ref);
+          return ref;
+        } catch (error) {
+          console.warn(`Workspace source upload deferred for ${selected.name}`, error);
+          return null;
+        }
+      }));
+
+      const savedQuoteIds = Array.from(new Set([
+        ...(activeRemoteQuoteIdsRef.current || []),
+        ...(snapshot.remoteQuoteIds || []),
+        ...quoteIds
+      ].filter(Boolean)));
+      const remoteFiles = [
+        ...(snapshot.remoteFiles || []),
+        ...uploadedRefs.filter((item): item is Exclude<typeof item, null> => item !== null)
+      ].filter((item, index, values) => values.findIndex((other) => other.id === item.id) === index);
+
+      const payload: Record<string, unknown> = {
+        view: snapshot.view,
+        step: snapshot.step,
+        activeBatchId: snapshot.activeBatchId,
+        quoteMode: snapshot.quoteMode,
+        analysis: snapshot.analysis,
+        drawing: snapshot.drawing,
+        rows: snapshot.rows,
+        summary: snapshot.summary,
+        finalPriceOverride: snapshot.finalPriceOverride,
+        commercialAmountOverrides: snapshot.commercialAmountOverrides,
+        customer: snapshot.customer,
+        datasetId: snapshot.datasetId,
+        datasetName: snapshot.datasetName,
+        dfmReports: snapshot.dfmReports,
+        bomReports: snapshot.bomReports,
+        selectedDfmId: snapshot.selectedDfmId,
+        selectedBomId: snapshot.selectedBomId,
+        savedAt: snapshot.savedAt,
+        primaryFileKey: snapshot.file ? fileKey(snapshot.file) : (snapshot.sourceFiles?.[0] ? fileKey(snapshot.sourceFiles[0]) : ""),
+        modelFileKey: snapshot.modelFile ? fileKey(snapshot.modelFile) : "",
+        activeSourceKey: snapshot.activeSourceKey || "",
+        previewSourceKey: snapshot.previewSourceKey || "",
+        quoteIds: savedQuoteIds,
+        remoteFiles,
+        sourceFiles: uniqueFiles.map((item) => ({
+          sourceKey: fileKey(item), name: item.name, size: item.size, type: item.type, lastModified: item.lastModified
+        })),
+        files: (snapshot.files || []).filter(isBrowserFile).map((item) => ({
+          sourceKey: fileKey(item), name: item.name, size: item.size, type: item.type, lastModified: item.lastModified
+        })),
+        batchItems: (snapshot.batchItems || []).map((item) => ({
+          id: item.id, fileKey: fileKey(item.file), analysis: item.analysis, drawing: item.drawing, rows: item.rows, summary: item.summary
+        }))
+      };
+
+      await api.saveWorkspaceSession(
+        datasetId,
+        snapshot.datasetName,
+        payload
+      );
+    });
+
+    remoteWorkspaceSaveQueueRef.current.set(datasetId, next);
+    void next.catch((error) => {
+      console.warn("Remote workspace persistence deferred; local IndexedDB snapshot remains available.", error);
+    });
   };
 
   const modelSourceExtensions = useMemo(
@@ -4690,22 +4941,28 @@ export default function Page() {
     || quotationModelFileRef.current
     || null;
 
-  // Keep one concrete source File for the entire quotation lifecycle. Step/view
-  // navigation must never be able to blank the Drawing Snapshot. This is cleared
-  // only by the existing explicit reset/remove/completion flows.
-  useEffect(() => {
-    if (!isBrowserFile(activeSource)) return;
-    persistentPreviewFileRef.current = activeSource;
-    setPersistentPreviewFile((current) => fileKey(current) === fileKey(activeSource) ? current : activeSource);
-  }, [activeSource]);
-
+  // Drawing Review owns a stable preview selection. DFM/BOM selectors continue
+  // using activeSourceKey for their own report context without changing this key.
+  const keyedPreviewSource = previewSourceKey
+    ? allSourceFiles.find((selected) => fileKey(selected) === previewSourceKey) || null
+    : null;
   const drawingPreviewSource =
-    activeSource
-    || persistentPreviewFile
-    || persistentPreviewFileRef.current
+    keyedPreviewSource
+    || (previewSourceKey && fileKey(persistentPreviewFile) === previewSourceKey ? persistentPreviewFile : null)
+    || (previewSourceKey && fileKey(persistentPreviewFileRef.current) === previewSourceKey ? persistentPreviewFileRef.current : null)
+    || (!previewSourceKey ? (persistentPreviewFile || persistentPreviewFileRef.current || activeSource) : null)
     || quotationPrimaryFileRef.current
     || quotationModelFileRef.current
     || null;
+
+  // Keep one concrete source File for the entire quotation lifecycle. Step/view
+  // navigation and DFM/BOM report selection cannot replace the Drawing Snapshot.
+  useEffect(() => {
+    if (!isBrowserFile(drawingPreviewSource)) return;
+    persistentPreviewFileRef.current = drawingPreviewSource;
+    setPersistentPreviewFile((current) => fileKey(current) === fileKey(drawingPreviewSource) ? current : drawingPreviewSource);
+    setPreviewSourceKey((current) => current || fileKey(drawingPreviewSource));
+  }, [drawingPreviewSource]);
 
   // Preview URL follows the quotation-lifetime source rather than transient page
   // state, so Back/Next and Draft continuation cannot blank PDF/image previews.
@@ -4715,12 +4972,26 @@ export default function Page() {
       : null;
     if (!previewFile) {
       setFileUrl("");
+      setFileUrlSourceFile(null);
       return;
     }
     const url = URL.createObjectURL(previewFile);
     setFileUrl(url);
+    setFileUrlSourceFile(previewFile);
     return () => URL.revokeObjectURL(url);
   }, [drawingPreviewSource]);
+
+  const currentPreviewUrl =
+    drawingPreviewSource && fileUrlSourceFile === drawingPreviewSource
+      ? fileUrl
+      : "";
+  const previewExtension = drawingPreviewSource?.name.split(".").pop()?.toLowerCase() || "";
+  const isPdfPreview = drawingPreviewSource?.type === "application/pdf" || previewExtension === "pdf";
+  const isImagePreview = Boolean(
+    drawingPreviewSource
+    && ((drawingPreviewSource.type || "").startsWith("image/")
+      || ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"].includes(previewExtension))
+  );
 
   const selectedDfm = dfmReports.find((item) => item.id === selectedDfmId) || dfmReports.at(-1) || null;
   const selectedBom = bomReports.find((item) => item.id === selectedBomId) || bomReports.at(-1) || null;
@@ -4872,7 +5143,7 @@ export default function Page() {
           </button>
         </div>
         <nav>
-          <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => setView("dashboard")}>Dashboard</button>
+          <button type="button" className={view === "dashboard" ? "active" : ""} onClick={() => navigateToView("dashboard")}>Dashboard</button>
           <div className="new-quotation-nav-row">
             <button type="button" className="new-quotation-nav-main" onClick={() => void newQuote()}>New Quotation</button>
             <button
@@ -4894,7 +5165,7 @@ export default function Page() {
                 const deletedIds = readDeletedQuoteIds();
                 if (Array.isArray(cached) && cached.length) setQuotes(cached.filter((item) => !deletedIds.has(item.id)));
               } catch {}
-              setView("quotes");
+              navigateToView("quotes");
               void refreshQuotes();
             }}
           >
@@ -4915,11 +5186,11 @@ export default function Page() {
               <em>{bomReports.length}</em>
             </span>
           </button>
-          <button type="button" className={view === "dataset" ? "active" : ""} onClick={() => { setView("dataset"); void refresh(); void refreshWorkspaceDatasets(); }}>Dataset Learning</button>
+          <button type="button" className={view === "dataset" ? "active" : ""} onClick={() => { navigateToView("dataset"); void refresh(); void refreshWorkspaceDatasets(); }}>Dataset Learning</button>
           <button
             type="button"
             className={`settings-nav-button ${view === "settings" ? "active" : ""}`}
-            onClick={() => setView("settings")}
+            onClick={() => navigateToView("settings")}
           >
             Settings
           </button>
@@ -5061,6 +5332,7 @@ export default function Page() {
                           className={`${sourceKey === activeSourceKey ? "active" : ""} ${model ? "source-model" : ""}`}
                           onClick={() => {
                             setActiveSourceKey(sourceKey);
+                            setPreviewSourceKey(sourceKey);
 
                             if (batchItem) {
                               selectBatchDrawing(batchItem.id);
@@ -5224,6 +5496,9 @@ export default function Page() {
 
                       if (!activeSourceKey && nextSourceFiles[0]) {
                         setActiveSourceKey(fileKey(nextSourceFiles[0]));
+                      }
+                      if (!previewSourceKey && nextSourceFiles[0]) {
+                        setPreviewSourceKey(fileKey(nextSourceFiles[0]));
                       }
 
                       // Instant UI response: file is accepted immediately.
@@ -5522,19 +5797,25 @@ export default function Page() {
                       {drawingPreviewSource && isVisualCadFormat(drawingPreviewSource)
                         ? (
                           <ModelViewer
+                            key={fileKey(drawingPreviewSource)}
                             file={drawingPreviewSource}
                             issueCount={(analysis?.extraction_warnings || []).length}
                           />
                         )
-                        : fileUrl && drawingPreviewSource?.type === "application/pdf"
-                        ? (
-                          <iframe
-                            src={`${fileUrl}#toolbar=0&navpanes=0&view=FitH`}
-                            title="Uploaded engineering drawing"
-                          />
-                        )
-                        : fileUrl && ((drawingPreviewSource?.type || "").startsWith("image/"))
-                          ? <img src={fileUrl} alt="Uploaded drawing"/>
+                        : drawingPreviewSource && isPdfPreview
+                        ? currentPreviewUrl
+                          ? (
+                            <iframe
+                              key={fileKey(drawingPreviewSource)}
+                              src={`${currentPreviewUrl}#toolbar=0&navpanes=0&view=FitH`}
+                              title={`Uploaded engineering drawing: ${drawingPreviewSource.name}`}
+                            />
+                          )
+                          : <div className="drawing-preview-loading">Loading {drawingPreviewSource.name}…</div>
+                        : drawingPreviewSource && isImagePreview
+                          ? currentPreviewUrl
+                            ? <img key={fileKey(drawingPreviewSource)} src={currentPreviewUrl} alt={`Uploaded drawing: ${drawingPreviewSource.name}`}/>
+                            : <div className="drawing-preview-loading">Loading {drawingPreviewSource.name}…</div>
                           : analysis?.preview_image
                             ? <img src={analysis.preview_image} alt="Drawing snapshot"/>
                             : (
@@ -6474,7 +6755,7 @@ export default function Page() {
                             {rate.category === "COMMERCIAL" ? (
                               <button
                                 className="mini save"
-                                onClick={() => setView("settings")}
+                                onClick={() => navigateToView("settings")}
                                 title="Commercial percentages are managed only in Settings"
                               >
                                 Settings
@@ -6657,6 +6938,7 @@ export default function Page() {
 
                             <div className="dfm-cad-square">
                               <ModelViewer
+                                key={fileKey(selectedDfmSourceFile)}
                                 file={selectedDfmSourceFile}
                                 issueCount={selectedDfm.checks.filter(
                                   (item) => item.result !== "PASS"

@@ -614,6 +614,45 @@ export async function saveWorkspaceSession(
   );
 }
 
+export type WorkspaceFileRecord = {
+  id: string;
+  filename: string;
+  mime_type: string;
+  role: string;
+  size_bytes: number;
+  file_hash: string;
+};
+
+export type WorkspaceSessionRecord = {
+  id: string;
+  name: string;
+  created_at?: string;
+  updated_at?: string;
+  payload: Record<string, unknown>;
+  files?: WorkspaceFileRecord[];
+};
+
+export async function getWorkspaceSession(sessionId: string) {
+  return j<WorkspaceSessionRecord>(
+    `/api/workspaces/${encodeURIComponent(sessionId)}`,
+    undefined,
+    20000
+  );
+}
+
+export async function listWorkspaceSessions() {
+  return j<WorkspaceSessionRecord[]>("/api/workspaces", undefined, 20000);
+}
+
+export async function downloadWorkspaceFile(sessionId: string, fileId: string) {
+  const response = await request(
+    `/api/workspaces/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}`,
+    undefined,
+    120000
+  );
+  return response.blob();
+}
+
 export async function uploadWorkspaceFile(
   sessionId: string,
   file: File,

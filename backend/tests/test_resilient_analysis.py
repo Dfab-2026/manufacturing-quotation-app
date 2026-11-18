@@ -58,3 +58,32 @@ def test_drawing_primary_key_supports_legacy_uuid_schema():
     assert len(uuid_key) == 36
     assert uuid_key.count("-") == 4
     assert _drawing_primary_key(digest, "VARCHAR(128)") == digest
+
+
+def test_workspace_file_upload_and_download_round_trip():
+    session_id = "preview-test-session"
+    payload = {"step": 2, "quoteIds": ["preview-test-quote"]}
+
+    saved_session = client.put(
+        f"/api/workspaces/{session_id}",
+        json={"name": "Preview persistence test", "payload": payload},
+    )
+    assert saved_session.status_code == 200
+
+    content = b"ISO-10303-21;\nHEADER;\nENDSEC;\n"
+    uploaded = client.post(
+        f"/api/workspaces/{session_id}/files",
+        data={"role": "model"},
+        files={"file": ("sample.step", content, "application/step")},
+    )
+    assert uploaded.status_code == 200
+    file_id = uploaded.json()["id"]
+
+    session = client.get(f"/api/workspaces/{session_id}")
+    assert session.status_code == 200
+    assert session.json()["payload"]["quoteIds"] == ["preview-test-quote"]
+    assert any(item["id"] == file_id for item in session.json()["files"])
+
+    downloaded = client.get(f"/api/workspaces/{session_id}/files/{file_id}")
+    assert downloaded.status_code == 200
+    assert downloaded.content == content

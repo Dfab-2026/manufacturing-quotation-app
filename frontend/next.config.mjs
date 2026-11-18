@@ -1,5 +1,8 @@
 /** @type {import('next').NextConfig} */
-const fastApiInternalUrl = (process.env.FASTAPI_INTERNAL_URL || "http://127.0.0.1:8000").replace(/\/$/, "");
+const defaultFastApiUrl = process.env.VERCEL
+  ? "https://ai-quotation-api.onrender.com"
+  : "http://127.0.0.1:8000";
+const fastApiInternalUrl = (process.env.FASTAPI_INTERNAL_URL || defaultFastApiUrl).replace(/\/$/, "");
 
 const nextConfig = {
   reactStrictMode: true,

@@ -47,3 +47,6 @@ Fast path for vector PDFs:
 Scanned/image drawings use local RapidOCR/ONNX only when needed. Clean vector PDFs do not run full-page OCR.
 
 Diagnostic endpoint: `GET /api/extraction/capabilities`.
+
+
+Latest targeted update: see `PREVIEW_SELECTION_LOCK_V68.md` for the Drawing Review preview persistence fix.

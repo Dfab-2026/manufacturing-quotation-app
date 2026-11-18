@@ -2,6 +2,7 @@ from __future__ import annotations
 from app.engineering_intelligence import enrich_engineering_intelligence, build_cost_trace
 from app.premium_engine import build_premium_estimate
 from app.db import (
+    DATABASE_CONFIGURED,
     append_extraction_record,
     append_review_record,
     database_stats,
@@ -4241,9 +4242,11 @@ def health():
     gemini_ready = bool(_gemini_api_key())
 
     return {
-        "status": "ok" if core_ready else "degraded",
+        "status": "ok" if core_ready and DATABASE_CONFIGURED and connected else "degraded",
         "version": "0.15.0",
         "database": "connected" if connected else "unavailable",
+        "database_configured": DATABASE_CONFIGURED,
+        "persistent_storage": "postgresql" if DATABASE_CONFIGURED and connected else "ephemeral_or_unavailable",
         "analysis": "fastapi_local_with_optional_visual_fallback",
         "local_ocr": "ready" if ocr_ready else "optional_not_bundled",
         "gemini_fallback": "configured" if gemini_ready else "not_configured",

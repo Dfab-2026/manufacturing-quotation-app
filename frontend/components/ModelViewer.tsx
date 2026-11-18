@@ -75,6 +75,9 @@ export default function ModelViewer({
 
     void (async () => {
       try {
+        // Clear the previous source immediately. Otherwise a newly selected or
+        // restored STEP file can briefly show the old model while parsing.
+        host.replaceChildren();
         setCadReady(false);
         setCadMessage("Loading STEP 3D model…");
 
