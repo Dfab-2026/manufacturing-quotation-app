@@ -4,7 +4,7 @@ const readJSON = path=>JSON.parse(readFileSync(path,'utf8'));
 try {
   const manifest=readJSON(new URL('../package.json',import.meta.url));
   const lock=readJSON(new URL('../package-lock.json',import.meta.url));
-  if(!nodeSupported(process.versions.node)) throw new Error('Use Node.js 22 or 24 LTS.');
+  if(!nodeSupported(process.versions.node)) throw new Error(`Use Node.js 22 or 24 LTS; found ${process.version}.`);
   if(!releaseLockReady(manifest,lock)) throw new Error('Unsupported or inconsistent dependency lock. Run npm run release:install.');
   for(const name of CHECKED_PACKAGES) {
     const version=readJSON(new URL(`../node_modules/${name}/package.json`,import.meta.url)).version;

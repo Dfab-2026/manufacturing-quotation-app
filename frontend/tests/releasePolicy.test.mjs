@@ -83,3 +83,19 @@ test('Vercel and ordinary builds use the installer and keep real build and audit
   assert.equal(sourceManifest.scripts.build,'npm run release:check');
   for(const check of ['install-release.mjs --if-needed','check-release.mjs','next build','tsc --noEmit','npm audit --audit-level=high']) assert.ok(sourceManifest.scripts['release:check'].includes(check),check);
 });
+
+test('Vercel runtime is pinned in both manifests and both lockfile roots',()=>{
+  for(const base of ['../','../../']) {
+    const manifest=JSON.parse(readFileSync(new URL(base+'package.json',import.meta.url),'utf8'));
+    const lock=JSON.parse(readFileSync(new URL(base+'package-lock.json',import.meta.url),'utf8'));
+    assert.equal(manifest.engines.node,'22.x');
+    assert.equal(lock.packages[''].engines.node,'22.x');
+  }
+  assert.equal(readFileSync(new URL('../../.nvmrc',import.meta.url),'utf8').trim(),'22');
+});
+test('installer distinguishes missing npm lifecycle from a Node version failure',()=>withFixture(f=>{
+  const run=f.run('install-release.mjs',[],{npm_execpath:''});
+  assert.equal(run.status,1); assert.match(run.stdout,/Release runtime: Node.js v/);
+  assert.match(run.stderr,/npm_execpath missing/);
+  assert.equal(readFileSync(f.manifestPath,'utf8'),f.manifestBytes);
+}));

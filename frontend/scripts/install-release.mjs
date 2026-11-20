@@ -10,8 +10,13 @@ const cwd = fileURLToPath(new URL('../', import.meta.url));
 const manifestPath = new URL('../package.json', import.meta.url);
 const lockPath = new URL('../package-lock.json', import.meta.url);
 const npmCli = process.env.npm_execpath;
-if (!npmCli || !nodeSupported(process.versions.node)) {
-  console.error('Release requires Node.js 22 or 24 LTS. Run npm run release:install.');
+console.log(`Release runtime: Node.js ${process.version} (${process.platform}/${process.arch}).`);
+if (!nodeSupported(process.versions.node)) {
+  console.error(`Release requires Node.js 22 or 24 LTS; found ${process.version}. Vercel: use Node.js 22.x in Project Settings and deploy the frontend package.json with engines.node=22.x.`);
+  process.exit(1);
+}
+if (!npmCli) {
+  console.error('Release requires the npm lifecycle environment (npm_execpath missing). Invoke npm run release:install using npm, not node directly.');
   process.exit(1);
 }
 const originals = [manifestPath, lockPath].map(path=>[path, readFileSync(path)]);

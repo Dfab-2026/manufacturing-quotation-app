@@ -10,5 +10,8 @@
     "frontend:dev": "npm --prefix frontend run dev",
     "frontend:build": "npm --prefix frontend run build",
     "backend:dev": "cd backend && uvicorn app.main:app --reload --host 127.0.0.1 --port 8000"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }
