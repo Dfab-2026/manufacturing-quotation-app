@@ -17,6 +17,7 @@ REQUIRED = {
     "ezdxf": "ezdxf",
     "openpyxl": "OpenPyXL",
     "reportlab": "ReportLab",
+    "cv2": "OpenCV drawing-region filter",
 }
 
 failed = []
@@ -53,6 +54,13 @@ if os.getenv("LOCAL_OCR_ENABLED", "true").lower() in {"true", "1", "yes", "on"}:
                 print(f"[FAIL] {label}: {exc}")
 
 print(f"[OPTIONAL] Gemini visual fallback: {'configured' if os.getenv('GEMINI_API_KEY') else 'not configured'}")
+
+if "--require-ocr" in sys.argv:
+    from app.extraction.ocr_runtime import smoke_test
+    result = smoke_test()
+    print(f"[OCR SMOKE] backend={result['backend']} verified={result['verified']} reason={result['reason']} error_type={result.get('error_type', 'none')}")
+    if not result['verified']:
+        failed.append(("Production drawing OCR", result['reason']))
 
 if failed:
     print("\nProduction runtime verification failed.")

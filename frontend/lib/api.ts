@@ -18,24 +18,15 @@ import type {
   PremiumEstimate
 } from "./types";
 
-function normalizeApiBase(value: string): string {
-  const trimmed = String(value || "").trim().replace(/\/$/, "");
-  // Users often paste a backend URL ending in /api. All client functions below
-  // already include /api/... in their paths, so normalize that suffix away.
-  return trimmed.replace(/\/api$/i, "");
+import { resolveApiRouting } from "./apiRouting";
+
+function routing() {
+  return resolveApiRouting(
+    typeof window !== "undefined" ? window.location.hostname : "",
+    process.env.NEXT_PUBLIC_API_BASE_URL || "",
+    process.env.NEXT_PUBLIC_FASTAPI_URL || ""
+  );
 }
-
-const configuredApi = normalizeApiBase(process.env.NEXT_PUBLIC_API_BASE_URL || "");
-const configuredDirectFastApi = normalizeApiBase(process.env.NEXT_PUBLIC_FASTAPI_URL || "");
-const RENDER_FASTAPI_FALLBACK = "https://ai-quotation-api.onrender.com";
-
-const API = /^(?:https?:\/\/)?(?:127\.0\.0\.1|localhost):8000$/i.test(configuredApi)
-  ? "/backend-api"
-  : (configuredApi || "/backend-api");
-
-const DIRECT_FASTAPI = configuredDirectFastApi
-  || (/^https?:\/\//i.test(configuredApi) ? configuredApi : "")
-  || RENDER_FASTAPI_FALLBACK;
 
 async function parseErrorResponse(response: Response): Promise<Error> {
   let message = `Request failed (${response.status})`;
@@ -80,7 +71,7 @@ async function request(url: string, init?: RequestInit, timeoutMs = 45000): Prom
   const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
 
   try {
-    const response = await fetch(API + url, {
+    const response = await fetch(routing().primary + url, {
       ...init,
       signal: init?.signal || controller.signal
     });
@@ -105,7 +96,7 @@ async function request(url: string, init?: RequestInit, timeoutMs = 45000): Prom
       throw new Error("Backend request timed out. Check the FastAPI service and retry.");
     }
     if (error instanceof TypeError) {
-      throw new Error(`Cannot reach the FastAPI extraction service through ${API}. Make sure FastAPI is running and FASTAPI_INTERNAL_URL points to it.`);
+      throw new Error(`Cannot reach the FastAPI extraction service through ${routing().primary}. Make sure FastAPI is running and the configured API URL is correct.`);
     }
     throw error;
   } finally {
@@ -124,9 +115,7 @@ async function postJsonResilient<T>(
   payload: unknown,
   timeoutMs: number
 ): Promise<T> {
-  const targets = [DIRECT_FASTAPI, API].filter(
-    (value, index, values) => Boolean(value) && values.indexOf(value) === index
-  );
+  const targets = routing().targets;
 
   let lastError: unknown = null;
 
@@ -202,13 +191,7 @@ export async function analyzeCad(payload: {
 }
 
 export async function analyzeCadFile(file: File, browserSummary: unknown) {
-  const localFastApi = typeof window !== "undefined"
-    && ["localhost", "127.0.0.1"].includes(window.location.hostname)
-      ? "http://127.0.0.1:8000"
-      : "";
-  const targets = [localFastApi, DIRECT_FASTAPI, API].filter(
-    (value, index, values) => Boolean(value) && values.indexOf(value) === index
-  );
+  const targets = routing().targets;
   let lastError: unknown = null;
 
   for (const target of targets) {
@@ -241,15 +224,9 @@ export async function analyzeCadFile(file: File, browserSummary: unknown) {
 }
 
 export async function analyzeDrawing(file: File, forceAI = false) {
-  // Production critical path: call Render directly first. Do not route the
-  // multipart drawing through Next.js/Vercel unless the direct API is genuinely
-  // unreachable. This keeps one click -> one FastAPI POST.
-  const localFastApi = typeof window !== "undefined"
-    && ["localhost", "127.0.0.1"].includes(window.location.hostname)
-      ? "http://127.0.0.1:8000" : "";
-  const targets = [localFastApi, DIRECT_FASTAPI, API].filter(
-    (value, index, values) => Boolean(value) && values.indexOf(value) === index
-  );
+  // Use the same backend as rates, history and review. Local requests never
+  // fall through to the shared production database.
+  const targets = routing().targets;
 
   let lastError: unknown = null;
   for (const target of targets) {
@@ -469,9 +446,7 @@ export async function sendTrainingSample(payload: {
   });
 }
 export async function getQuotes() {
-  const targets = [DIRECT_FASTAPI, API].filter(
-    (value, index, values) => Boolean(value) && values.indexOf(value) === index
-  );
+  const targets = routing().targets;
 
   let lastError: unknown = null;
   for (const target of targets) {
@@ -563,8 +538,7 @@ export async function recoverDrawingEvidence(file: File, data: AIExtraction | nu
   const { evidence_preview, evidence_pages, drawing_locations, ...engineering } = data || {};
   form.append("engineering", JSON.stringify(engineering));
   if (sourceHash && /^[a-f0-9]{64}$/i.test(sourceHash)) form.append("expected_hash", sourceHash);
-  const local = typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname) ? "http://127.0.0.1:8000" : "";
-  const targets = [local, DIRECT_FASTAPI, API].filter((target,index,all)=>Boolean(target) && all.indexOf(target)===index);
+  const targets = routing().targets;
   let lastError: unknown;
   for (const target of targets) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -586,8 +560,7 @@ export async function fetchDrawingPage(file: File, page: number, signal: AbortSi
   const form = new FormData();
   form.append("file",file); form.append("page",String(page));
   if(sourceHash && /^[a-f0-9]{64}$/i.test(sourceHash)) form.append("expected_hash",sourceHash);
-  const local = typeof window !== "undefined" && ["localhost","127.0.0.1"].includes(window.location.hostname) ? "http://127.0.0.1:8000" : "";
-  const targets = [local,DIRECT_FASTAPI,API].filter((target,index,all)=>Boolean(target) && all.indexOf(target)===index);
+  const targets = routing().targets;
   let lastError: unknown;
   for(const target of targets) {
     if(signal.aborted) throw new DOMException("Aborted","AbortError");

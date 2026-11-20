@@ -2,6 +2,8 @@ from __future__ import annotations
 from app.manual_rfq import ADDITIONS, SOURCE, apply_template_defaults, upgrade_starter, feature_count, positive, laser_units, historical_note
 from app.manufacturing_scope import standard_component
 from app.extraction.detail_ocr import read_detail, detail_text, cached_regions
+from app.extraction.ocr_runtime import ocr_configuration, smoke_test
+from app.extraction.dimension_cleanup import clean_dimensions, dimension_name
 from app.extraction.product_regions import source_text, geometry_text, administrative, dxf_administrative, normalize_length_units, field_applicability, vector_dimension_callouts
 from app.drawing_evidence import attach_pdf_evidence, attach_dxf_evidence, attach_image_evidence, render_pdf_evidence_page, EVIDENCE_VERSION
 from app.rfq_material import normalize_wall, pipe_dimensions, purchased_callouts, recover_printed_thickness, normalize_thickness, recover_cad_thickness
@@ -37,7 +39,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Literal
 from concurrent.futures import ThreadPoolExecutor
-from time import perf_counter
+from time import perf_counter, monotonic
+from threading import Lock
 import base64
 import importlib
 import json
@@ -385,7 +388,7 @@ else:
         _HOT_CACHE.setdefault("quotations", [])
         _HOT_CACHE.setdefault("actuals", [])
 
-EXTRACTION_PIPELINE_VERSION = "fastapi-product-regions-v19-20261120"
+EXTRACTION_PIPELINE_VERSION = "fastapi-product-regions-v22-ruled-cells"
 MAX_UPLOAD_BYTES = max(1, int(os.getenv("MAX_UPLOAD_MB", "100"))) * 1024 * 1024
 
 
@@ -413,6 +416,7 @@ app = FastAPI(title="AI Manufacturing Quotation API", version="0.15.0")
 _allowed_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://[::1]:3000",
 ]
 
 _frontend_origins = [
@@ -431,6 +435,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],
 )
 
 app.add_middleware(GZipMiddleware, minimum_size=1024)
@@ -1604,10 +1609,14 @@ def _local_ocr_enabled() -> bool:
 
 
 def _local_ocr_runtime_available() -> bool:
-    if not _local_ocr_enabled():
-        return False
-    import shutil
-    return bool(shutil.which("tesseract")) or (importlib.util.find_spec("rapidocr") is not None and importlib.util.find_spec("onnxruntime") is not None)
+    return bool(ocr_configuration()["available"])
+
+
+def _ocr_unavailable_warning() -> str:
+    reason = ocr_configuration()["reason"]
+    if reason == "disabled_by_environment":
+        return "Detailed drawing reader disabled. Set LOCAL_OCR_ENABLED=true in the Render backend, then rebuild and redeploy."
+    return "Detailed drawing reader dependencies missing. Install requirements-render.txt on the backend and redeploy."
 
 
 def _get_local_ocr_engine():
@@ -1679,8 +1688,10 @@ def _extract_local_ocr_text(content: bytes, filename: str, *, text_hint: str = "
     """Read all applicable pages at high resolution with source coordinates."""
     import shutil
     if not _local_ocr_runtime_available():
-        return "", ["Detailed drawing reader unavailable; enable local OCR and install requirements-render.txt."]
+        return "", [_ocr_unavailable_warning()]
     engine = None if shutil.which("tesseract") else _get_local_ocr_engine()
+    if not shutil.which("tesseract") and engine is None:
+        return "", ["Detailed drawing reader initialization failed; check Render model/runtime logs and /api/ocr/health."]
     try:
         regions, warnings = read_detail(content, filename, engine)
         return geometry_text(content, filename, regions), warnings
@@ -2199,11 +2210,17 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     dimensions: list[dict] = []
     seen_dims: set[tuple[str, float]] = set()
 
-    def add_dim(label: str, value: float, confidence: int = 82, quantity: int = 1, callout: str = "") -> None:
+    def add_dim(label: str, value: float, confidence: int = 82, quantity: int = 1, callout: str = "", tolerance: str = "") -> None:
         if not (0 < value < 1_000_000):
             return
         key = (label.casefold(), round(float(value), 4))
         if key in seen_dims:
+            existing = next((row for row in dimensions if row['label'].casefold()==key[0] and round(row['value_mm'],4)==key[1]), None)
+            if existing is not None:
+                if tolerance and existing.get('tolerance') and existing['tolerance'] != tolerance:
+                    dimensions.append({**existing, 'tolerance': tolerance, 'callout': callout})
+                elif tolerance: existing['tolerance'] = tolerance
+                if quantity > existing.get('quantity',1): existing['quantity'] = quantity; existing['callout'] = callout or existing['callout']
             return
         seen_dims.add(key)
         dimensions.append({
@@ -2212,7 +2229,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
             "original_value": round(float(value), 4),
             "original_unit": "mm",
             "callout": callout or f"{value:g} mm",
-            "tolerance": "",
+            "tolerance": tolerance,
             "quantity": max(1, int(quantity or 1)),
             "confidence": confidence,
         })
@@ -2354,9 +2371,11 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
                 value = float(match.group("value").replace(",", "."))
             except Exception:
                 continue
-            add_dim("Linear Dimension", value, 92, 1, match.group(0)[:120])
-            if dimensions:
-                dimensions[-1]["tolerance"] = re.sub(r"\s+", "", match.group("tol"))
+            line=hay[hay.rfind("\n",0,match.start())+1:hay.find("\n",match.end()) if "\n" in hay[match.end():] else len(hay)]
+            # Preserve tolerance on its named measurement instead of creating a second numerical row.
+            named = next((d for d in dimensions if d['label'] in ('Length','Width','Height','Thickness') and d['value_mm']==value and d.get('callout','') in line), None)
+            label = named['label'] if named else 'Linear Dimension'
+            add_dim(label, value, 92, 1, match.group(0)[:120], re.sub(r"\s+", "", match.group("tol")))
             if len(dimensions) >= 70:
                 break
 
@@ -2381,6 +2400,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         except Exception as exc:
             warnings.append(f"Vector dimension-line analysis could not complete ({type(exc).__name__}); review unlabelled callouts.")
 
+    dimensions = clean_dimensions(dimensions)
     holes: list[dict] = []
     seen_holes: set[tuple[float, int, str]] = set()
     for dim in dimensions:
@@ -4315,6 +4335,8 @@ def health():
         "persistent_storage": ("sqlite_local" if LOCAL_DATABASE else "postgresql") if connected and not DATABASE_ENGINE_FALLBACK else "ephemeral_or_unavailable",
         "analysis": "fastapi_local_with_optional_visual_fallback",
         "local_ocr": "ready" if ocr_ready else "disabled_or_unavailable",
+        "ocr_configuration": ocr_configuration(),
+        "extraction_pipeline_version": EXTRACTION_PIPELINE_VERSION,
         "gemini_fallback": "configured" if gemini_ready else "not_configured",
         "dependencies": {
             "pymupdf": pymupdf_installed,
@@ -4325,6 +4347,33 @@ def health():
         },
         "max_upload_mb": MAX_UPLOAD_BYTES // (1024 * 1024),
     }
+
+
+_ocr_health_lock = Lock()
+_ocr_health_cached = None
+
+
+@app.get("/api/ocr/health")
+def ocr_health():
+    # GET /api/health stays lightweight; this endpoint runs a synthetic OCR test.
+    # Cache the probe per process, with a short retry interval for failures.
+    global _ocr_health_cached
+    config = ocr_configuration()
+    if not config["available"]:
+        return {**config, "verified": False, "extraction_pipeline_version": EXTRACTION_PIPELINE_VERSION}
+    with _ocr_health_lock:
+        if _ocr_health_cached:
+            cached_at, cached_config, cached_result = _ocr_health_cached
+            if config == cached_config and monotonic() - cached_at < (300 if cached_result["verified"] else 30):
+                return cached_result
+        engine = _get_local_ocr_engine() if config["backend"] == "rapidocr_onnx" else None
+        if config["backend"] == "rapidocr_onnx" and engine is None:
+            result = {**config, "verified": False, "reason": "initialization_failed"}
+        else:
+            result = smoke_test(engine)
+        result["extraction_pipeline_version"] = EXTRACTION_PIPELINE_VERSION
+        _ocr_health_cached = (monotonic(), config, result)
+        return result
 
 
 @app.get("/api/database/stats")
@@ -5849,6 +5898,11 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
     if extraction_memory and extraction_memory.get("pipeline_version") != EXTRACTION_PIPELINE_VERSION:
         extraction_memory = None
 
+    if extraction_memory and extension in {".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"} and _local_ocr_runtime_available():
+        prior_warnings = " ".join(str(w) for w in (extraction_memory.get("warnings") or [])).lower()
+        if any(flag in prior_warnings for flag in ("drawing reader disabled", "drawing reader dependencies", "drawing reader unavailable", "drawing reader initialization failed", "ocr runtime unavailable", "detail tile unreadable", "no reliable optical text", "complete pages")):
+            extraction_memory = None
+
     ai_raw = None
     text_preview = ""
 
@@ -5917,7 +5971,7 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
             except Exception as exc:
                 warnings.append(f"Detailed local reading failed: {type(exc).__name__}")
         elif needs_detail:
-            warnings.append("Detailed drawing reader unavailable. Install OCR dependencies and enable LOCAL_OCR_ENABLED.")
+            warnings.append(_ocr_unavailable_warning())
         if ai_raw is None:
             warnings.append("No verifiable local product callouts were recovered; review the drawing rather than using unverified title-block values.")
 
@@ -5937,7 +5991,7 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
                 source = "fastapi_local_ocr_failed"
         else:
             ai_raw, drawing, rows, warnings, text_preview = await run_in_threadpool(_local_fastapi_engineering_extract, content, filename, False)
-            warnings.append("OCR runtime unavailable; product measurements remain editable and unverified.")
+            warnings.append(_ocr_unavailable_warning())
             source = "fastapi_visual_review"
 
         if ai_raw is None:
@@ -6090,6 +6144,7 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
         if "predicted" not in source:
             source = f"{source}+predicted_review"
 
+    ai_raw['dimensions'] = clean_dimensions(ai_raw.get('dimensions'))
     if extension in (".pdf", ".dxf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"):
         try:
             if extension == '.pdf':
@@ -6221,8 +6276,9 @@ async def recover_drawing_evidence(file: UploadFile = File(...), engineering: st
             if _local_ocr_runtime_available() and not data.get('optical_text_regions'):
                 text, _ = await run_in_threadpool(_extract_local_ocr_text, content, file.filename)
                 data['optical_text_regions'] = cached_regions(content)
-                recover_printed_thickness(data,normalize_length_units(text))
+                recover_printed_thickness(data,normalize_length_units(geometry_text(content, file.filename, data['optical_text_regions'])))
             await run_in_threadpool(attach_image_evidence,data,content,None)
+        data['dimensions']=clean_dimensions(data.get('dimensions'))
         data['evidence_hash']=digest
     except HTTPException: raise
     except Exception as exc:
@@ -6960,7 +7016,10 @@ def excel(value: DetailedExportReq):
             tab.column_dimensions[c.column_letter].width = 24
     detail_tab("RFQ Details", [{"Customer":value.customer, "Drawing":value.drawing.drawing_no, "Category":value.engineering.get("manufacturing_category"), "Scope":value.engineering.get("quotation_scope")}])
     for key, title in [("dimensions","Dimensions"),("holes","Holes"),("threads","Threads"),("bends","Bends"),("chamfers","Chamfers"),("assembly_parts","Assembly Parts"),("manufacturing_processes","Processes")]:
-        detail_tab(title, [r for r in value.engineering.get(key,[]) if isinstance(r,dict)])
+        records = [r for r in value.engineering.get(key,[]) if isinstance(r,dict)]
+        if key == 'dimensions':
+            records = [{**r, 'label': dimension_name(r.get('label'))} for r in clean_dimensions(records)]
+        detail_tab(title, records)
     detail_tab("BOM", value.bom)
     detail_tab("Commercial Summary", [value.summary.model_dump()])
     # Formula injection protection for user-supplied text in the legacy sheet.

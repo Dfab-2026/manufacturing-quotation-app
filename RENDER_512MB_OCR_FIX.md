@@ -1,19 +1,5 @@
-# Render 512 MB production fix
+# Superseded Render OCR instructions
 
-Production Render intentionally does not install or initialize RapidOCR/ONNX on 512 MB instances.
+The earlier 512 MB workaround disabled OCR, which means scanned drawings and small callouts can be missed. **Do not set LOCAL_OCR_ENABLED=false** when deploying the current drawing reader. Follow `backend/RENDER_DEPLOY.md` for the current build command and diagnostic endpoint.
 
-Render settings:
-- Root Directory: `backend`
-- Build: `python -m pip install --upgrade pip && pip install -r requirements-render.txt`
-- Start: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
-- `LOCAL_OCR_ENABLED=false`
-
-Local/full OCR:
-```powershell
-cd backend
-python -m pip install -r requirements.txt
-$env:LOCAL_OCR_ENABLED="true"
-uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
-```
-
-When local OCR is disabled, FastAPI uses PDF/DXF extraction and the configured Gemini fallback for unresolved scanned/image content.
+If Render logs show out-of-memory termination, the service needs sufficient RAM for its OCR/CAD workload. No instance-size guarantee is made. Preserve existing database configuration.

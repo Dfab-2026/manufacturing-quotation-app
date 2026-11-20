@@ -42,3 +42,38 @@ test('all pages are selectable even when only some are cached or have anchors',(
   assert.deepEqual(availableDrawingPages({evidence_preview:'first',drawing_locations:[anchor]}),[0,2]);
   assert.deepEqual(availableDrawingPages(null),[]);
 });
+
+import {canonicalMeasurementLabel,uniqueDimensionRows} from '../lib/drawingLocator.ts';
+test('compact field names and alias dedup retain equal independent dimensions',()=>{
+  const rows=[{label:'Overall X',value_mm:40},{label:'Length X axis',value_mm:40},{label:'Overall Y',value_mm:40},{label:'Linear Dimension',value_mm:40},{label:'Radius',value_mm:40},{label:'Length (Predicted)',value_mm:0}];
+  assert.deepEqual(uniqueDimensionRows(rows).map(r=>canonicalMeasurementLabel(r.label)),['Length','Width','Radius']);
+  assert.equal(anchorMatches({...anchor,label:'Overall X',value:'40 mm'},{label:'Length',value:'40 mm'}),true);
+});
+test('different tolerance, handle and thickness candidates survive dedup',()=>{
+  const rows=[{label:'Radius',value_mm:2,tolerance:'±0.1'},{label:'Radius',value_mm:2,tolerance:'±0.2'},{label:'Thickness',value_mm:2},{label:'THK',value_mm:3},{label:'Linear Dimension',value_mm:2,source_handle:'A'},{label:'Linear Dimension',value_mm:2,source_handle:'B'}];
+  assert.equal(uniqueDimensionRows(rows).length,6);
+});
+
+import {measurementStatus} from '../lib/drawingLocator.ts';
+test('prediction status survives clean dimension labels and matching anchors',()=>{
+  const item={label:'Thickness',value:'2.1 mm'};
+  assert.equal(measurementStatus({thickness_basis:'Estimated flat plate thickness'},item,[{...anchor,kind:'verified'}],true),'Predicted');
+  assert.equal(measurementStatus({dimensions:[{label:'Thickness (Predicted)',value_mm:2.1}]},item,[],false),'Predicted');
+  assert.equal(measurementStatus({thickness_basis:'(OD − ID) / 2'},item,[],false),'Calculated');
+  assert.equal(measurementStatus({},item,[],false),'Source unverified');
+  assert.equal(measurementStatus({},item,[{...anchor,kind:'verified'}],false),'Verified');
+  assert.equal(measurementStatus({}, {...item,value:'Review required'},[],false),'Review required');
+  assert.equal(measurementStatus({}, {...item,value:'N/A'},[],false),'N/A');
+});
+test('weight provenance distinguishes stated and predicted weight',()=>{
+  const item={label:'Weight',value:'1.2 kg'};
+  assert.equal(measurementStatus({weight_source:'geometry_prediction'},item,[],false),'Predicted');
+  assert.equal(measurementStatus({weight_source:'drawing_stated'},item,[{...anchor,kind:'verified'}],false),'Verified');
+  assert.equal(measurementStatus({weight_source:'cad_solid_volume'},item,[],true),'Calculated');
+});
+test('feature-specific predicted dimensions retain their provenance',()=>{
+  const item={label:'Hole depth',value:'12 mm'};
+  assert.equal(measurementStatus({holes:[{depth_mm:12,source:'estimated depth'}]},item,[],false),'Predicted');
+  assert.equal(anchorMatches({...anchor,label:'Hole depth',value:'12 mm'},item),true);
+  assert.equal(anchorMatches({...anchor,label:'Hole diameter',value:'12 mm'},item),false);
+});

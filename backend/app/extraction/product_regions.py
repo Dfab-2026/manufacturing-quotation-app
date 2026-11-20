@@ -15,8 +15,11 @@ WEIGHT = re.compile(r'\b(?:net\s+weight|unit\s+weight|weight|mass|wt\.?)\s*[:= ]
 PAPER = re.compile(r'\b(?:ISO\s*216|A[0-5]\s+(?:sheet|paper)|(?:sheet|paper)\s+A[0-5]|(?:paper|sheet|drawing|border|frame)\s+(?:width|height|length|dimensions?))\b', re.I)
 
 
+NON_GEOMETRY = re.compile(r"^\s*(?:(?:general|standard|unspecified|default)\s+tolerances?\b|unless\s+otherwise\s+(?:specified|stated|noted)\b|do\s+not\s+scale\b|all\s+dimensions\s+(?:are\s+)?in\b|(?:sheet|page)\s+\d+\s*(?:of|/)\s*\d+|(?:drawing|document|part)\s+(?:no\.?|number|id)\b|(?:copyright|confidential|proprietary)\b|(?:note|notes)\s*[:.]?\s*(?:general|all\s+dimensions|unless\s+otherwise))", re.I)
+
+
 def administrative(text):
-    return bool(ADMIN.search(text) or PAPER.search(text))
+    return bool(ADMIN.search(text) or PAPER.search(text) or NON_GEOMETRY.search(text))
 
 
 def _page_grid(page):
@@ -40,20 +43,76 @@ def _page_grid(page):
     return rules
 
 
+def _image_content_boxes(image):
+    """Find actual closed table cells from long horizontal/vertical rules.
+
+    Work on the page image, so scanned and vector drawings use the same rules.
+    A page frame or large component outline is not itself a content cell.
+    """
+    try:
+        import cv2
+        import numpy as np
+        from PIL import Image
+        image=image.convert('L'); image.thumbnail((1800,1800))
+        gray=np.asarray(image); h,w=gray.shape
+        if min(h,w)<20: return []
+        ink=cv2.threshold(gray,0,255,cv2.THRESH_BINARY_INV|cv2.THRESH_OTSU)[1]
+        horizontal=cv2.morphologyEx(ink,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(max(12,w//45),1)))
+        vertical=cv2.morphologyEx(ink,cv2.MORPH_OPEN,cv2.getStructuringElement(cv2.MORPH_RECT,(1,max(10,h//65))))
+        grid=cv2.morphologyEx(horizontal|vertical,cv2.MORPH_CLOSE,np.ones((3,3),np.uint8))
+        contours,_=cv2.findContours(grid,cv2.RETR_LIST,cv2.CHAIN_APPROX_SIMPLE)
+        boxes=[]
+        for contour in contours:
+            x,y,bw,bh=cv2.boundingRect(contour)
+            if bw<w*.035 or bh<h*.012 or bw>w*.97 or bh>h*.26: continue
+            if cv2.contourArea(contour)<.78*bw*bh: continue
+            # Four ruled sides, not a dimension line or isolated character.
+            t=max(2,round(min(w,h)*.003))
+            if min(np.count_nonzero(horizontal[max(0,y-t):y+t+1,x:x+bw].max(axis=0))/bw,
+                   np.count_nonzero(horizontal[max(0,y+bh-t-1):min(h,y+bh+t),x:x+bw].max(axis=0))/bw,
+                   np.count_nonzero(vertical[y:y+bh,max(0,x-t):x+t+1].max(axis=1))/bh,
+                   np.count_nonzero(vertical[y:y+bh,max(0,x+bw-t-1):min(w,x+bw+t)].max(axis=1))/bh)<.65: continue
+            boxes.append((x/w,y/h,(x+bw)/w,(y+bh)/h))
+        return boxes
+    except (ImportError, ValueError, RuntimeError):
+        return []
+
+
+def _page_content_boxes(page):
+    from PIL import Image
+    import fitz
+    scale=1600/max(page.rect.width,page.rect.height,1)
+    pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),colorspace=fitz.csGRAY,alpha=False)
+    return _image_content_boxes(Image.frombytes('L',(pix.width,pix.height),pix.samples))
+
+
+def _boxed_text(row, rows, boxes):
+    x,y,x1,y1=row['box']; cx=(x+x1)/2; cy=(y+y1)/2
+    for a,b,c,d in boxes:
+        if not (a<cx<c and b<cy<d and x>=a-.006 and x1<=c+.006): continue
+        # Text tightly contained in a ruled cell, multi-row content panel,
+        # or neighbouring ruled cells. Do not discard a lone dimension
+        # inside a large rectangular component outline.
+        contained=[q for q in rows if a<(q['box'][0]+q['box'][2])/2<c and b<(q['box'][1]+q['box'][3])/2<d]
+        tight=(d-b)<=max(.035,3*(y1-y)) and (c-a)<=max(.16,8*(x1-x))
+        adjacent=any(abs(e-c)<.008 or abs(g-a)<.008 for e,f,g,h in boxes if min(d,h)-max(b,f)>.5*min(d-b,h-f)) or any(abs(f-d)<.008 or abs(h-b)<.008 for e,f,g,h in boxes if min(c,g)-max(a,e)>.5*min(c-a,g-e))
+        if tight or adjacent or len(contained)>=2: return True
+    return False
+
 def native_regions(content):
     import fitz
     from app.drawing_evidence import _pdf_lines
     regions=[]
     with fitz.open(stream=content,filetype='pdf') as doc:
         for i,p in enumerate(doc):
-            rules=_page_grid(p)
+            rules=_page_grid(p); boxes_on_page=_page_content_boxes(p)
             for text,boxes in _pdf_lines(p):
                 box=fitz.Rect(boxes[0])
                 for b in boxes[1:]: box |= b
                 box=box*p.rotation_matrix
                 r=p.rect
                 if r.width and r.height:
-                    regions.append({'page':i,'text':text.strip(),'box':[(box.x0-r.x0)/r.width,(box.y0-r.y0)/r.height,(box.x1-r.x0)/r.width,(box.y1-r.y0)/r.height],'score':1.0,'rules':rules})
+                    regions.append({'page':i,'text':text.strip(),'box':[(box.x0-r.x0)/r.width,(box.y0-r.y0)/r.height,(box.x1-r.x0)/r.width,(box.y1-r.y0)/r.height],'score':1.0,'rules':rules,'content_boxes':boxes_on_page})
     return regions
 
 
@@ -92,10 +151,11 @@ def partition(regions):
                 if eligible:
                     a,b,c=min(eligible,key=lambda v:v[1]); x0=min(x0,a); x1=max(x1,c); y0=min(y0,b)
             zones.append((x0,y0,x1,y1))
+        boxes=next((r.get('content_boxes') for r in rows if r.get('content_boxes')),[])
         for r in rows:
             text=r['text']; x,y,x1,y1=r['box']; cx=(x+x1)/2; cy=(y+y1)/2
             inside=any(a<=cx<=c and b<=cy<=d for a,b,c,d in zones)
-            if administrative(text) or inside:
+            if administrative(text) or inside or _boxed_text(r,rows,boxes):
                 excluded.append(r)
                 # Material and printed product weight have their own explicit
                 # fields; never expose the rest of an administrative row as geometry.
@@ -121,6 +181,20 @@ def source_text(content, filename, optical=()):
             if n['page']!=r.get('page') or re.sub(r'\s+','',n['text']).casefold()!=key: return False
             a,b=n['box'],r['box']; return abs((a[0]+a[2]-b[0]-b[2])/2)<.015 and abs((a[1]+a[3]-b[1]-b[3])/2)<.015
         if not any(same(n) for n in native): all_regions.append(r)
+    # Optical-only rows must inherit the same page geometry as native rows.
+    if filename.lower().endswith('.pdf'):
+        import fitz
+        page_boxes={r['page']:r.get('content_boxes',[]) for r in native}
+        with fitz.open(stream=content,filetype='pdf') as doc:
+            for i in {r.get('page',0) for r in all_regions}:
+                if i not in page_boxes and 0<=i<len(doc): page_boxes[i]=_page_content_boxes(doc[i])
+    else:
+        from PIL import Image,ImageOps
+        from io import BytesIO
+        try:
+            with Image.open(BytesIO(content)) as im: page_boxes={0:_image_content_boxes(ImageOps.exif_transpose(im))}
+        except (OSError,ValueError): page_boxes={}
+    all_regions=[{**r,'content_boxes':page_boxes.get(r.get('page',0),[])} for r in all_regions]
     product,metadata,excluded=partition(all_regions)
     def text(rows):
         rows=sorted(rows,key=lambda r:(r.get('page',0),round(r['box'][1],3),r['box'][0]))
@@ -244,9 +318,10 @@ def vector_dimension_callouts(content):
             if len(segments)>15000: continue
             arrows=[(a,b) for a,b in segments if .5<abs(a-b)<18 and abs(a.x-b.x)>.4 and abs(a.y-b.y)>.4]
             baselines=[(a,b) for a,b in segments if abs(a-b)>12 and (abs(a.x-b.x)<.5 or abs(a.y-b.y)<.5)]
-            rows=[r for r in native_regions_for_page(page,i) if re.fullmatch(r'\s*'+_LENGTH_NUMBER+r'\s*(?:'+_LENGTH_UNITS+r')?\s*',r['text'],re.I)]
+            page_rows=native_regions_for_page(page,i)
+            rows=[r for r in page_rows if re.fullmatch(r'\s*'+_LENGTH_NUMBER+r'\s*(?:'+_LENGTH_UNITS+r')?\s*',r['text'],re.I)]
             # Exclusion happens on the same page/all labels, not just the bare values.
-            allowed,_,_=partition(native_regions_for_page(page,i))
+            allowed,_,_=partition(page_rows)
             allowed_keys={(r['text'],tuple(r['box'])) for r in allowed}
             for row in rows:
                 if (row['text'],tuple(row['box'])) not in allowed_keys: continue
@@ -269,10 +344,10 @@ def vector_dimension_callouts(content):
 def native_regions_for_page(page,index):
     import fitz
     from app.drawing_evidence import _pdf_lines
-    rules=_page_grid(page);r=page.rect;rows=[]
+    rules=_page_grid(page);content_boxes=_page_content_boxes(page);r=page.rect;rows=[]
     for text,boxes in _pdf_lines(page):
         box=fitz.Rect(boxes[0])
         for b in boxes[1:]: box|=b
         box=box*page.rotation_matrix
-        rows.append({'page':index,'text':text.strip(),'box':[(box.x0-r.x0)/r.width,(box.y0-r.y0)/r.height,(box.x1-r.x0)/r.width,(box.y1-r.y0)/r.height],'score':1.,'rules':rules})
+        rows.append({'page':index,'text':text.strip(),'box':[(box.x0-r.x0)/r.width,(box.y0-r.y0)/r.height,(box.x1-r.x0)/r.width,(box.y1-r.y0)/r.height],'score':1.,'rules':rules,'content_boxes':content_boxes})
     return rows

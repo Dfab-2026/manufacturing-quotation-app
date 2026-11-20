@@ -7,7 +7,7 @@ The Render Blueprint is `../render.yaml` and creates the service `ai-quotation-a
 
 - Runtime: Python
 - Root directory: `backend`
-- Build command: `python -m pip install --upgrade pip && pip install -r requirements-render.txt`
+- Build command: `python -m pip install --upgrade pip && pip install -r requirements-render.txt && python verify_runtime.py --require-ocr`
 - Start command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
 - Health check: `/api/health`
 - Python: `3.12.10`
@@ -42,3 +42,11 @@ Set the Vercel project Root Directory to `frontend`, Framework Preset to Next.js
 - `FASTAPI_INTERNAL_URL=https://ai-quotation-api.onrender.com`
 
 Redeploy the backend first, then redeploy the Vercel frontend. The frontend build has a local Three.js declaration shim so a missing optional `@types/three` package does not block the production type-check.
+
+## Verify the live reader
+
+Existing manually configured services must update their Dashboard build command and Environment values; changing the repository Blueprint alone may not update them. Save, rebuild, and deploy, or choose Manual Deploy → Clear build cache & deploy. Keep the existing DATABASE_URL.
+
+Open `/api/ocr/health` on the backend after deployment. A verified reader returns `verified: true` and `reason: recognition_passed`; the `extraction_pipeline_version` should be `fastapi-product-regions-v20-deploy-ocr`. `/api/health` reports configuration and installed packages but does not execute OCR. Reanalyze the original drawing after verification.
+
+If the build fails on the OCR smoke test, inspect the build logs for model download, package installation, or runtime errors. If the running service is killed for insufficient memory, increase the instance resources before enabling high-resolution OCR. Do not disable OCR as a workaround for scanned drawings.

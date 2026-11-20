@@ -8,6 +8,7 @@ import DrawingEvidence, { DrawingEvidenceDisclosure } from "@/components/Drawing
 import { estimateStock } from "@/lib/stockEstimate";
 import BomThumbnail from "@/components/BomThumbnail";
 import { dimensionApplicability } from "@/lib/drawingApplicability";
+import { canonicalMeasurementLabel, uniqueDimensionRows } from "@/lib/drawingLocator";
 import {
   inspectCadFile,
   isVisualCadFormat
@@ -826,7 +827,7 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
   const normalizedWidth = Number(envelope?.widthMm || cadAxes[0] || 0);
   const normalizedHeight = Number(envelope?.heightMm || cadAxes[1] || 0);
 
-  const hasCadAxisDimensions = ["overall x", "overall y", "overall z"].every((axisLabel) =>
+  const hasCadAxisDimensions = ["overall x", "overall y", "overall z"].some((axisLabel) =>
     normalizedDimensions.some((row) =>
       String(row.label || row.type || row.description || "").trim().toLowerCase() === axisLabel
       && normalizedDimensionMm(row) > 0
@@ -848,23 +849,9 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
     addDerivedDimension("Thickness", Number(raw.thickness_mm), raw.thickness_basis || thicknessPrediction?.basis || "Normalized product thickness");
   }
 
-  const cadAxisValues = hasCadAxisDimensions
-    ? normalizedDimensions
-        .filter((row) => /^overall [xyz]$/i.test(String(row.label || row.type || row.description || "").trim()))
-        .map((row) => normalizedDimensionMm(row))
-        .filter((value) => value > 0)
-    : [];
-  const isSameCadAxisValue = (value: number) => cadAxisValues.some((axisValue) =>
-    Math.abs(axisValue - value) <= Math.max(0.01, Math.abs(axisValue) * 0.0001)
-  );
-
-  raw.dimensions = normalizedDimensions.filter((row) => {
-    if (!hasCadAxisDimensions) return true;
-    const label = String(row.label || row.type || row.description || "").trim();
-    if (!/^(overall\s+)?(width|height|length)$/i.test(label)) return true;
-    const value = normalizedDimensionMm(row);
-    return !(value > 0 && isSameCadAxisValue(value));
-  });
+  // Match aliases within each axis, never remove a distinct dimension just
+  // because another axis happens to have the same numerical value.
+  raw.dimensions = uniqueDimensionRows(normalizedDimensions);
 
   const weightMeta = raw as AIExtraction & {
     drawing_stated_weight_kg?: number;
@@ -5042,7 +5029,7 @@ export default function Page() {
                   const recoveredThickness=Number(evidence.thickness_mm||0);
                   if(recoveredThickness>0 && !(Number(drawing.thickness_mm||0)>0)) {
                     nextRaw.thickness_mm=recoveredThickness;nextRaw.thickness_basis=evidence.thickness_basis;
-                    nextRaw.dimensions=[...(nextRaw.dimensions||[]).filter(d=>!(/thickness|thk/i.test(String(d.label||"")) && !(Number(d.value_mm||0)>0))),...(evidence.dimensions||[]).filter(d=>!(nextRaw.dimensions||[]).some(old=>old.label===d.label && Number(old.value_mm)===Number(d.value_mm)))];
+                    nextRaw.dimensions=uniqueDimensionRows([...(nextRaw.dimensions||[]),...(evidence.dimensions||[])]);
                     const normalized=enrichPartSummary({...analysis,preview_image:evidence_preview||analysis.preview_image,drawing:{...drawing,thickness_mm:recoveredThickness},rows,ai_raw:nextRaw});
                     setAnalysis(normalized);setDrawing(normalized.drawing);setRows(normalized.rows);void api.calculateQuote(normalized.rows).then(setSummary).catch(()=>undefined);
                   } else {setAnalysis(current=>current?.file_hash===analysis.file_hash?{...current,preview_image:evidence_preview||current.preview_image,ai_raw:{...current.ai_raw,evidence_preview,evidence_pages,evidence_page_count,drawing_locations,geometry_locations,evidence_version,evidence_hash}}:current);}
@@ -7727,7 +7714,7 @@ function EditableFeatureTable({
                   <td className="status-col"><StatusDot signal={signal}/></td>
 
                   {columns.map((column) => {
-                    const value = item[column.key];
+                    const value = sectionKey === "dimensions" && column.key === "label" ? canonicalMeasurementLabel(String(item[column.key] || "")) : item[column.key];
 
                     if (column.kind === "boolean") {
                       return (
@@ -8125,7 +8112,7 @@ function EngineeringDetails({
     if (item && typeof item === "object" && !Array.isArray(item)) return item as Record<string, unknown>;
     return { type: "Finish", value: String(item || ""), unit: "", location: "", confidence: 80 };
   });
-  const notes = (data.notes || []).map((x) => String(x));
+  const notes = (data.notes || []).map((x) => String(x)).filter(note=>!/^Dimension:|^Detected hole pattern:|^Detected studs:|^Overall profile extents:|^DXF entities:/i.test(note));
   const uncertain = Array.from(new Set([
     ...(data.missing_or_uncertain || []).map((x) => String(x)),
     ...(completeness?.review_required || []).map((x) => String(x))
@@ -8224,7 +8211,7 @@ function EngineeringDetails({
 
         <div className="engineering-feature-stack">
           <EditableFeatureTable sectionKey="assembly_parts" title="Assembly Components / Plates" columns={assemblyColumns} items={(data.assembly_parts || []) as Record<string, unknown>[]} onChange={(items) => setFeature("assembly_parts", items)}/>
-          <EditableFeatureTable sectionKey="dimensions" title="Dimensions & Tolerances" columns={dimensionsColumns} items={(data.dimensions || []) as Record<string, unknown>[]} onChange={(items) => setFeature("dimensions", items)}/>
+          <EditableFeatureTable sectionKey="dimensions" title="Dimensions & Tolerances" columns={dimensionsColumns} items={uniqueDimensionRows((data.dimensions || []) as Record<string, unknown>[])} onChange={(items) => setFeature("dimensions", items)}/>
           <EditableFeatureTable sectionKey="holes" title="Holes / Slots / Counterbores" columns={holesColumns} items={(data.holes || []) as Record<string, unknown>[]} onChange={(items) => setFeature("holes", items)}/>
           <EditableFeatureTable sectionKey="threads" title="Threads / Tapping" columns={threadsColumns} items={(data.threads || []) as Record<string, unknown>[]} onChange={(items) => setFeature("threads", items)}/>
           <EditableFeatureTable sectionKey="chamfers" title="Chamfers" columns={chamferColumns} items={(data.chamfers || []) as Record<string, unknown>[]} onChange={(items) => setFeature("chamfers", items)}/>
@@ -8241,7 +8228,7 @@ function EngineeringDetails({
         </div>
         <div className="engineering-feature-stack notes-stack">
           <EditableFeatureTable sectionKey="surface-finish" title="Surface Finish / Coating" columns={finishColumns} items={finishes} onChange={(items) => setFeature("surface_finish", items)}/>
-          <div id="sheet-notes"><EditableTextList title="Drawing Notes / Special Requirements" items={notes} status="green" onChange={(items) => setFeature("notes", items)}/></div>
+          <div id="sheet-notes"><EditableTextList title="Drawing Notes / Special Requirements" items={notes} status="green" onChange={(items) => setFeature("notes", [...items, ...(data.notes || []).filter(note=>/^Dimension:|^Detected hole pattern:|^Detected studs:|^Overall profile extents:|^DXF entities:/i.test(String(note)))])}/></div>
           {uncertain.length > 0 && <div id="sheet-review"><ReviewItems items={uncertain} data={data} onChange={(items) => setFeature("missing_or_uncertain", items)}/></div>}
         </div>
       </section>

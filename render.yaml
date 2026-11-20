@@ -3,7 +3,7 @@ services:
     name: ai-quotation-api
     runtime: python
     rootDir: backend
-    buildCommand: python -m pip install --upgrade pip && pip install -r requirements-render.txt
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements-render.txt && python verify_runtime.py --require-ocr
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     autoDeploy: true

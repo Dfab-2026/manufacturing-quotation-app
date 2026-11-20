@@ -4,13 +4,14 @@ export type DrawingAnchor = NonNullable<AIExtraction['drawing_locations']>[numbe
 export type Measurement = { label: string; value: string };
 
 export function measurementSemantic(label: string) {
-  const l = label.toLowerCase().replace(/\s*\([^)]*\)/g, '').replace(/^(overall|primary)\s+/, '').trim();
+  const l = canonicalMeasurementLabel(label).toLowerCase().replace(/\s*\([^)]*\)/g, '').replace(/^(overall|primary)\s+/, '').trim();
   if (/thickness|\bthk\b|gauge/.test(l)) return 'thickness';
   if (/^(x|length)$/.test(l)) return 'length';
   if (/^(y|width)$/.test(l)) return 'width';
   if (/^(z|height|depth)$/.test(l)) return 'height';
   if (/^(od|o\.d\.?)$|outer|outside|external/.test(l)) return 'outer diameter';
   if (/^(id|i\.d\.?)$|inner|inside|internal/.test(l)) return 'inner diameter';
+  if (/^(hole depth|thread depth|bend angle|chamfer angle|stud length|weld size|weld length)$/.test(l)) return l;
   if (/radius/.test(l)) return 'radius';
   if (/diameter|hole|[ø⌀∅]/.test(l)) return 'diameter';
   if (/chamfer/.test(l)) return 'chamfer';
@@ -62,4 +63,63 @@ export function availableDrawingPages(data: AIExtraction | null | undefined): nu
   if(data?.evidence_preview) pages.add(0);
   for(const a of data?.drawing_locations||[]) if(validAnchor(a)) pages.add(a.page??0);
   return [...pages].sort((a,b)=>a-b);
+}
+
+/** User-facing names; persisted CAD axis identities remain intact. */
+export function canonicalMeasurementLabel(label: string): string {
+  const clean = label.replace(/\s*\((?:predicted|review(?: required)?)\)\s*$/i, '').trim();
+  const key = clean.toLowerCase().replace(/^(overall|primary|total)\s+/, '').replace(/-/g, ' ').replace(/\(([xyz])(?: axis)?\)/g,' $1').replace(/\s+/g, ' ').trim();
+  for (const [name, axis] of [['Length','x'],['Width','y'],['Height','z']]) {
+    if ([name.toLowerCase(),axis,`${axis} axis`,`${name.toLowerCase()} ${axis}`,`${name.toLowerCase()} ${axis} axis`,`${axis} axis ${name.toLowerCase()}`,`${axis} dimension`].includes(key)) return name;
+  }
+  if (/^(thk|thick|thickness|wall thickness|sheet thickness|plate thickness|gauge)$/.test(key)) return 'Thickness';
+  if (/^(od|o\.d\.?|outer diameter|outside diameter|external diameter)$/.test(key)) return 'Outer Diameter';
+  if (/^(id|i\.d\.?|inner diameter|inside diameter|internal diameter)$/.test(key)) return 'Inner Diameter';
+  if (/^hole\s*[ø⌀∅]\s*[\d.,]+$/i.test(key)) return 'Hole diameter';
+  if (/^(dimension|linear dimension)$/.test(key)) return 'Linear Dimension';
+  return clean;
+}
+
+export function uniqueDimensionRows<T extends Record<string, unknown>>(rows: T[]): T[] {
+  const name=(row:T)=>canonicalMeasurementLabel(String(row.label||'')).toLowerCase();
+  const value=(row:T)=>Number(row.value_mm||0);
+  const compatible=(a:T,b:T)=>['tolerance','source_handle','kind'].every(k=>!a[k]||!b[k]||a[k]===b[k]) && !(Number(a.quantity||1)>1 && Number(b.quantity||1)>1 && Number(a.quantity)!==Number(b.quantity));
+  const out:T[]=[];
+  for(const row of rows) {
+    const n=name(row),v=value(row);
+    if(!n){out.push(row);continue;}
+    if(!(v>0) && rows.some(other=>name(other)===n&&value(other)>0)) continue;
+    const duplicate=out.findIndex(other=>name(other)===n&&equalMeasurement(value(other),v)&&compatible(other,row));
+    if(duplicate<0){out.push(row);continue;}
+    const old=out[duplicate];
+    const merged={...row,...old} as T;
+    for(const key of Object.keys(row)) if(!old[key]&&row[key]) (merged as Record<string,unknown>)[key]=row[key];
+    (merged as Record<string,unknown>).quantity=Math.max(Number(old.quantity||1),Number(row.quantity||1));
+    (merged as Record<string,unknown>).confidence=Math.max(Number(old.confidence||0),Number(row.confidence||0));
+    out[duplicate]=merged;
+  }
+  return out.filter(row=> !(name(row)==='linear dimension'&&value(row)>0&&!row.source_handle&&out.some(other=>['length','width','height','thickness'].includes(name(other))&&equalMeasurement(value(other),value(row))&&compatible(other,row)&&(!row.tolerance||row.tolerance===other.tolerance))));
+}
+
+export type MeasurementStatus = 'Verified' | 'Predicted' | 'Calculated' | 'Source unverified' | 'Review required' | 'N/A';
+export function measurementStatus(data: AIExtraction | null | undefined, item: Measurement, anchors: DrawingAnchor[], geometry: boolean): MeasurementStatus {
+  if(item.value === 'N/A') return 'N/A';
+  if(!Number.isFinite(parseFloat(item.value))) return 'Review required';
+  const sem=measurementSemantic(item.label), n=parseFloat(item.value);
+  const rows=(data?.dimensions || []).filter(r=>measurementSemantic(String(r.label||''))===sem && equalMeasurement(Number(r.value_mm),n));
+  const fields = [
+    ['Hole diameter',data?.holes,'diameter_mm'],['Hole depth',data?.holes,'depth_mm'],
+    ['Bend radius',data?.bends,'radius_mm'],['Bend angle',data?.bends,'angle_deg'],
+    ['Chamfer',data?.chamfers,'size_mm'],['Chamfer angle',data?.chamfers,'angle_deg'],
+    ['Thread depth',data?.threads,'depth_mm'],['Stud length',data?.studs,'length_mm'],
+    ['Weld size',data?.welds,'size_mm'],['Weld length',data?.welds,'length_mm'],
+  ] as const;
+  for(const [label,features,field] of fields) if(label===item.label) rows.push(...(features||[]).filter(r=>equalMeasurement(Number(r[field]),n)));
+  const prediction=/predict|estimat|assum|infer/i;
+  const basis=sem==='thickness' ? data?.thickness_basis : sem==='weight' ? [data?.weight_source,data?.weight_prediction?.source,data?.weight_prediction?.basis].join(' ') : '';
+  const explicit=sem==='weight' && data?.weight_source==='drawing_stated';
+  if(!explicit && (prediction.test(basis||'') || rows.some(r=>prediction.test([r.label,r.source,r.basis,r.status,r.prediction_status].join(' '))) || (data?.evidence||[]).some(r=>measurementSemantic(r.field.replace(/^predicted\s+/i,''))===sem && equalMeasurement(parseFloat(r.value),n) && prediction.test(r.field+' '+r.basis)))) return 'Predicted';
+  if(anchors.some(a=>a.kind==='calculation') || /calculat|\(OD|solid_volume/i.test(basis||'')) return 'Calculated';
+  if(geometry || anchors.some(a=>a.kind==='verified')) return 'Verified';
+  return 'Source unverified';
 }

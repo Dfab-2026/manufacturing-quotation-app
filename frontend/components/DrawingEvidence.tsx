@@ -5,7 +5,7 @@ import type { AIExtraction } from '@/lib/types';
 import ModelViewer from '@/components/ModelViewer';
 import { isVisualCadFormat } from '@/lib/cad';
 import { dimensionApplicability } from '@/lib/drawingApplicability';
-import { anchorMatches, anchorPosition, evidenceImage, evidenceMatchesSource, equalMeasurement as equalValue, measurementSemantic as semantic, validAnchor, markerSide, availableDrawingPages } from '@/lib/drawingLocator';
+import { anchorMatches, anchorPosition, evidenceImage, evidenceMatchesSource, equalMeasurement as equalValue, measurementSemantic as semantic, validAnchor, markerSide, availableDrawingPages, canonicalMeasurementLabel, uniqueDimensionRows, measurementStatus } from '@/lib/drawingLocator';
 
 export default function DrawingEvidence({data,source,previewUrl,fallbackImage,sourceHash,onEvidenceRecovered}: {data: AIExtraction | null; source?: File | null; previewUrl?: string; fallbackImage?: string | null; sourceHash?: string; onEvidenceRecovered?: (result:AIExtraction)=>void}) {
   const previewRef = useRef<HTMLDivElement>(null);
@@ -46,7 +46,7 @@ export default function DrawingEvidence({data,source,previewUrl,fallbackImage,so
   useEffect(() => {
     const original = dataRef.current;
     const file = sourceRef.current;
-    if (!file || !supported || (!retry && evidenceMatchesSource(original,sourceHash) && original?.evidence_version === 7 && (original?.drawing_locations?.some(validAnchor) || original?.geometry_locations?.length) && Number(original?.thickness_mm || 0)>0)) { setRecovering(false); return; }
+    if (!file || !supported || (!retry && evidenceMatchesSource(original,sourceHash) && original?.evidence_version === 10 && (original?.drawing_locations?.some(validAnchor) || original?.geometry_locations?.length) && Number(original?.thickness_mm || 0)>0)) { setRecovering(false); return; }
     const controller = new AbortController();
     setRecovering(true); setFailure(false);
     recoverDrawingEvidence(file, original, controller.signal, sourceHash || original?.evidence_hash).then(value=>{
@@ -59,24 +59,27 @@ export default function DrawingEvidence({data,source,previewUrl,fallbackImage,so
   }, [sourceKey, supported, sourceHash, retry]);
   const combined = recovered ? {...data,...recovered} : data;
   const evidence = evidenceMatchesSource(combined,sourceHash) ? combined : null;
-  const measurements = data ? {...data, thickness_mm: data.thickness_mm || evidence?.thickness_mm, dimensions: [...(data.dimensions || []), ...(recovered?.dimensions || []).filter(d=>!(data.dimensions || []).some(old=>old.label===d.label && Number(old.value_mm)===Number(d.value_mm)))]} : evidence;
+  const measurements = data ? {...data, thickness_basis: data.thickness_mm ? data.thickness_basis : evidence?.thickness_basis || data.thickness_basis, thickness_mm: data.thickness_mm || evidence?.thickness_mm, dimensions: [...(data.dimensions || []), ...(recovered?.dimensions || []).filter(d=>!(data.dimensions || []).some(old=>old.label===d.label && Number(old.value_mm)===Number(d.value_mm)))]} : evidence;
   const locations = (evidence?.drawing_locations || []).filter(validAnchor);
   const entries: {label:string;value:string}[] = [];
   const add = (label:string, value:unknown, unit='mm') => {
+    label=canonicalMeasurementLabel(label);
     const n = Number(value);
     if(n > 0 && Number.isFinite(n)) { const value=`${Number(n.toPrecision(8))} ${unit}`; if(!entries.some(x=>x.label===label && x.value===value)) entries.push({label,value}); }
+    else if(measurements && ['Length','Width','Height','Thickness'].includes(label) && !entries.some(x=>x.label===label)) entries.push({label,value:measurements && !dimensionApplicability(measurements,label)?'N/A':'Review required'});
   };
-  for(const item of measurements?.dimensions || []) { const label=String(item.label || 'Dimension'); if(semantic(label)==='thickness' && Number(measurements?.thickness_mm||0)>0) continue; add(label,item.value_mm); }
-  for(const item of data?.holes || []) add('Hole diameter',item.diameter_mm);
-  for(const item of data?.bends || []) add('Bend radius',item.radius_mm);
-  for(const item of data?.chamfers || []) add('Chamfer',item.size_mm);
-  for(const [label,value] of [['Length',measurements?.length_mm],['Width',measurements?.width_mm],['Height',measurements?.height_mm]] as const) { if(!entries.some(x=>semantic(x.label)===semantic(label))) add(label,value); }
+  for(const item of uniqueDimensionRows(measurements?.dimensions || [])) { const label=String(item.label || 'Dimension'); if(semantic(label)==='thickness' && Number(measurements?.thickness_mm||0)>0) continue; if(canonicalMeasurementLabel(label)==='Diameter' && (data?.holes || []).some(h=>equalValue(Number(h.diameter_mm),Number(item.value_mm)) && h.callout && item.callout && String(item.callout).includes(String(h.callout)))) continue; add(label,item.value_mm); }
+  for(const item of measurements?.holes || []) { add('Hole diameter',item.diameter_mm); if(item.depth_mm != null || item.through === false) add('Hole depth',item.depth_mm); }
+  for(const item of measurements?.bends || []) { if(item.radius_mm != null) add('Bend radius',item.radius_mm); if(item.angle_deg != null) add('Bend angle',item.angle_deg,'°'); }
+  for(const item of measurements?.chamfers || []) { add('Chamfer',item.size_mm); if(item.angle_deg != null) add('Chamfer angle',item.angle_deg,'°'); }
+  for(const item of measurements?.threads || []) if(item.depth_mm != null) add('Thread depth',item.depth_mm);
+  for(const item of measurements?.studs || []) if(item.length_mm != null) add('Stud length',item.length_mm);
+  for(const item of measurements?.welds || []) { if(item.size_mm != null) add('Weld size',item.size_mm); if(item.length_mm != null) add('Weld length',item.length_mm); }
+  for(const [label,value] of [['Length',measurements?.length_mm],['Width',measurements?.width_mm],['Height',measurements?.height_mm]] as const) { if(!entries.some(x=>semantic(x.label)===semantic(label)&&Number.isFinite(parseFloat(x.value)))) add(label,value); }
   add('Thickness',measurements?.thickness_mm);
-  add('Weight',data?.weight_kg,'kg');
-  const items = [...entries];
-  for(const loc of locations) if(!items.some(x=>semantic(x.label)===semantic(loc.label) && (equalValue(parseFloat(x.value),parseFloat(loc.value)) || ['thickness','weight'].includes(semantic(x.label))))) items.push({label:loc.label,value:loc.value});
-  for(const loc of evidence?.geometry_locations || []) { const value=`${Number(loc.value_mm.toPrecision(8))} mm`; if(!items.some(x=>semantic(x.label)===semantic(loc.label) && (equalValue(parseFloat(x.value),parseFloat(value)) || semantic(x.label)==='thickness'))) items.push({label:loc.label,value}); }
-  if(data) for(const label of ['Length','Width','Height','Thickness','Weight']) {
+  add('Weight',measurements?.weight_kg,'kg');
+  const items = entries.filter(x=>Number.isFinite(parseFloat(x.value)) || !entries.some(y=>y.label===x.label && Number.isFinite(parseFloat(y.value)))).filter(x=>x.label!=='Linear Dimension' || !entries.some(y=>['Length','Width','Height','Thickness'].includes(y.label)&&x.value===y.value));
+  if(data) for(const label of ['Length','Width','Height','Thickness']) {
     if(!items.some(x=>semantic(x.label)===semantic(label))) items.push({label,value:dimensionApplicability(data,label)?'Review required':'N/A'});
   }
   const locate = (item:typeof items[number]) => {
@@ -91,6 +94,7 @@ export default function DrawingEvidence({data,source,previewUrl,fallbackImage,so
   const hits = current ? locate(current) : [];
   const active = hits.filter(hit=>(hit.page ?? 0)===page);
   const geometry = (item:typeof items[number]) => (evidence?.geometry_locations || []).filter(g=>item.label === "Weight" && Number.isFinite(parseFloat(item.value)) ? data?.weight_source !== "drawing_stated" && data?.weight_prediction?.source !== "drawing_stated" && g.kind === "extent" : semantic(g.label)===semantic(item.label) && equalValue(g.value_mm,parseFloat(item.value)));
+  const rowStatus = (item:typeof items[number]) => measurementStatus(measurements,item,locate(item),geometry(item).some(g=>g.points.some(p=>p.length===3&&p.every(Number.isFinite))));
   const pointKey = JSON.stringify(current ? geometry(current).flatMap(g=>g.points).filter(p=>p.length===3 && p.every(Number.isFinite)) : []);
   const points = useMemo<number[][]>(()=>JSON.parse(pointKey),[pointKey]);
   const image = pageImages[String(page)] || evidenceImage(evidence,page);
@@ -136,10 +140,10 @@ export default function DrawingEvidence({data,source,previewUrl,fallbackImage,so
     }
     requestAnimationFrame(()=>previewRef.current?.scrollIntoView({behavior:window.matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'center'}));
   };
-  const status = current ? kernelCad && points.length ? 'Measured CAD geometry highlighted.' : active.length && image && !imageFailure && !kernelCad ? `${active.length} source location(s) on this page. ${hits.some(h=>h.kind==='calculation')?'Contributing measurements highlighted.':hits.some(h=>h.kind==='candidate')?'Matching callouts — confirm against the drawing.':'Source highlighted.'}` : pageLoading || recovering ? 'Locating source…' : hits.length && !active.length ? 'Source is on another page. Select a page marked source.' : 'No verified source position for this value. Review the drawing or retry source extraction.' : 'Select Locate beside a measurement to highlight its source in the drawing.';
+  const status = current ? current.value==='Review required' ? 'No usable value detected. Review the original drawing before entering this measurement.' : kernelCad && points.length ? (rowStatus(current)==='Predicted'?'Supporting CAD geometry highlighted for the predicted value.':'Measured CAD geometry highlighted.') : active.length && image && !imageFailure && !kernelCad ? `${active.length} source location(s) on this page. ${rowStatus(current)==='Predicted'?'Supporting drawing evidence for the predicted value.':hits.some(h=>h.kind==='calculation')?'Contributing measurements highlighted.':hits.some(h=>h.kind==='candidate')?'Matching callouts — confirm against the drawing.':'Source highlighted.'}` : pageLoading || recovering ? 'Locating source…' : hits.length && !active.length ? 'Source is on another page. Select a page marked source.' : 'No verified position in the drawing. Review the drawing or retry source extraction.' : 'Select Locate beside a measurement to highlight its source in the drawing.';
   return <section className="sheet-section drawing-evidence-review"><h3>Interactive Drawing Analysis</h3>
     <div className="drawing-locator-status">
-      <div><strong>{current ? `${current.label} · ${current.value}` : 'Drawing source locator'}</strong><p role="status" aria-live="polite">{status}</p></div>
+      <div><strong>{current ? `${current.label} · ${current.value} · ${rowStatus(current)}` : 'Drawing source locator'}</strong><p role="status" aria-live="polite">{status}</p></div>
       {current && <div className="drawing-locator-actions">{supported && !recovering && (!active.length && !points.length || imageFailure) && <button type="button" className="btn secondary" onClick={()=>{setImageFailure(false);setRetry(v=>v+1);}}>Retry source extraction</button>}<button className="btn secondary" type="button" onClick={()=>{choose(null);setPulse(v=>v+1);}}>Clear</button></div>}
     </div>
     {!kernelCad && (image || pdfSource) && <div className="drawing-locator-toolbar">
@@ -157,7 +161,7 @@ export default function DrawingEvidence({data,source,previewUrl,fallbackImage,so
       </div></div> : cadViewer ? <div style={{height:420}}><ModelViewer file={source || null} highlightPoints={points} highlightPulse={pulse}/></div> : <div className="drawing-locator-fallback">{page===0 && (fallbackImage || (previewUrl && !/\.pdf$/i.test(source?.name || '') && source?.type !== 'application/pdf' ? previewUrl : '')) ? <img src={fallbackImage || previewUrl} alt="Original drawing (unregistered preview)"/> : <div role="status">{pageLoading || recovering ? 'Rendering original drawing…' : failure || imageFailure || pageError ? 'Could not render this drawing page.' : 'Original drawing page is not available in this saved quotation.'}</div>}{pdfSource && pageError && <button type="button" className="btn secondary" onClick={()=>setPageRetry(v=>v+1)}>Retry page</button>}{supported && !recovering && <button type="button" className="btn secondary" onClick={()=>{setImageFailure(false);setRetry(v=>v+1);}}>Retry source extraction</button>}</div>}
     </div>
     {current && active.length>0 && image && !kernelCad && !imageFailure && <div className="drawing-locator-callouts"><strong>Highlighted drawing evidence</strong>{active.slice(0,8).map((a,i)=><span key={i}>{a.callout || `${a.label}: ${a.value}`}</span>)}{active.length>8 && <span>+{active.length-8} more locations on this page</span>}</div>}
-    {items.length ? <div className="editable-table-scroll"><table><thead><tr><th>Extracted feature</th><th>Value</th><th>Source</th></tr></thead><tbody>{items.map((item,i)=><tr key={i} className={selected===itemKey(item)?'drawing-locator-selected':''}><td>{item.label}</td><td>{item.value}</td><td>{item.value==='N/A' ? <span>N/A</span> : <button type="button" className="btn secondary" aria-pressed={selected===itemKey(item)} disabled={!Number.isFinite(parseFloat(item.value))} onClick={()=>selectSource(item)}>Locate</button>}</td></tr>)}</tbody></table></div>:<p>No extracted measurements available.</p>}
+    {items.length ? <div className="editable-table-scroll"><table><thead><tr><th>Extracted feature</th><th>Value</th><th>Status</th><th>Source</th></tr></thead><tbody>{items.map((item,i)=><tr key={i} className={selected===itemKey(item)?'drawing-locator-selected':''}><td>{item.label}</td><td>{item.value}</td><td><span className="drawing-measurement-status" data-status={rowStatus(item)}>{rowStatus(item)}</span></td><td>{item.value==='N/A' ? <span>N/A</span> : <button type="button" className="btn secondary" aria-pressed={selected===itemKey(item)} onClick={()=>selectSource(item)}>Locate</button>}</td></tr>)}</tbody></table></div>:<p>No extracted measurements available.</p>}
   </section>;
 }
 

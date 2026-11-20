@@ -18,13 +18,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
         working-directory: frontend
-      - run: npm run test:locator
-        working-directory: frontend
-      - run: npm run build
-        working-directory: frontend
-      - run: npx tsc --noEmit
-        working-directory: frontend
-      - run: npm audit --audit-level=high
+      - run: npm run release:check
         working-directory: frontend
   backend:
     runs-on: ubuntu-latest

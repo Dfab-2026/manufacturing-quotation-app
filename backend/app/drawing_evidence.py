@@ -3,8 +3,9 @@ from __future__ import annotations
 import base64
 import math
 import re
+from app.extraction.dimension_cleanup import dimension_name
 
-EVIDENCE_VERSION = 7
+EVIDENCE_VERSION = 10
 _NUM = r'(?<![\d.,/])(?:\d+\s*[- ]\s*\d+/\d+|\d+/\d+|\d+(?:[.,]\d+)?)(?![\d.,/])'
 _LABELS = {
     'thickness': r'(?:wall\s+thickness|thickness|thk\.?|thick|gauge|sheet|plate|\bt\s*[:=])',
@@ -21,7 +22,7 @@ _LABELS = {
 
 
 def normalized_label(label):
-    label = re.sub(r'\s*\([^)]*\)', '', str(label or '').lower()).strip()
+    label = re.sub(r'\s*\([^)]*\)', '', dimension_name(label).lower()).strip()
     label = re.sub(r'^(overall|primary)\s+', '', label)
     if re.search(r'\b(?:outer|outside|external)\b|^o\.?d\.?$',label): return 'outer diameter'
     if re.search(r'\b(?:inner|inside|internal)\b|^i\.?d\.?$',label): return 'inner diameter'
@@ -29,6 +30,7 @@ def normalized_label(label):
     if label in ('x','length'): return 'length'
     if label in ('y','width'): return 'width'
     if label in ('z','height','depth'): return 'height'
+    if label in ('hole depth','thread depth','bend angle','chamfer angle','stud length','weld size','weld length'): return label
     if 'radius' in label: return 'radius'
     if 'diameter' in label or 'hole' in label or 'ø' in label: return 'diameter'
     if 'chamfer' in label: return 'chamfer'
@@ -52,6 +54,9 @@ def _features(data):
     for key,label,field in [('holes','Hole diameter','diameter_mm'),('bends','Bend radius','radius_mm'),('chamfers','Chamfer','size_mm')]:
         for item in data.get(key) or []:
             if isinstance(item,dict): add(label,item.get(field),item)
+    for key,label,field,unit in [('holes','Hole depth','depth_mm','mm'),('threads','Thread depth','depth_mm','mm'),('bends','Bend angle','angle_deg','°'),('chamfers','Chamfer angle','angle_deg','°'),('studs','Stud length','length_mm','mm'),('welds','Weld size','size_mm','mm'),('welds','Weld length','length_mm','mm')]:
+        for item in data.get(key) or []:
+            if isinstance(item,dict): add(label,item.get(field),item,unit)
     for field,label in [('length_mm','Length'),('width_mm','Width'),('height_mm','Height'),('thickness_mm','Thickness')]:
         value=_positive(data.get(field))
         if value and not any(normalized_label(a)==normalized_label(label) and abs(b-value)<1e-6 for a,b,_,_ in out):
@@ -77,6 +82,13 @@ def _text_hit_score(text, match, label, unit, callout):
     """Prefer explicit semantics, then real standalone dimensions. Not arbitrary title-block numbers."""
     left=text[:match.start()];right=text[match.end():]
     near=left[-42:]+match.group()+right[:28]
+    if label in ('hole depth','thread depth','bend angle','chamfer angle','stud length','weld size','weld length'):
+        clean=lambda s:re.sub(r'\s+','',s).casefold()
+        if not callout or clean(callout) not in clean(text): return 0
+        if unit=='°': return 5 if re.match(r'\s*(?:°|deg\b)',right,re.I) else 0
+        if label.endswith('depth'): return 5 if re.search(r'(?:depth|deep)\s*[:=]?\s*$',left,re.I) else 0
+        # For other feature dimensions, require the number to identify a unique token in its callout.
+        return 5 if len(re.findall(r'(?<![\d.])'+re.escape(match.group())+r'(?![\d.])',callout))==1 and len(re.findall(r'(?<![\d.])'+re.escape(match.group())+r'(?![\d.])',text))==1 else 0
     if unit=='kg':
         if re.match(r'\s*(?:kg|g|grams?|lbs?|pounds?)\b',right,re.I) or re.search(_LABELS['weight']+r'\s*[:=]?\s*$',left,re.I): return 5
         return 0
@@ -191,7 +203,7 @@ def _partitioned_anchors(data, lines, preview, native=None):
         box=box*rotation
         if not rect.width or not rect.height: continue
         r={'page':page,'text':text,'score':1.0,'box':[(box.x0-rect.x0)/rect.width,(box.y0-rect.y0)/rect.height,(box.x1-rect.x0)/rect.width,(box.y1-rect.y0)/rect.height],'index':idx}
-        if native and page in native: r['rules']=native[page]
+        if native and page in native: r.update(native[page])
         regions.append(r)
     product,metadata,_=partition(regions)
     positioned=[lines[r['index']] for r in product]
@@ -256,8 +268,8 @@ def attach_pdf_evidence(data, content):
                     duplicates=True;break
             if not duplicates:
                 lines.append((i,text,[box]*len(text),rect,fitz.Matrix(1,1)))
-        from app.extraction.product_regions import _page_grid
-        rules={i:_page_grid(p) for i,p in enumerate(doc)}
+        from app.extraction.product_regions import _page_grid, _page_content_boxes
+        rules={i:{"rules":_page_grid(p),"content_boxes":_page_content_boxes(p)} for i,p in enumerate(doc)}
         data['drawing_locations'],_=_partitioned_anchors(data,lines,preview,native=rules)
         data['evidence_preview']=previews['0']; data['evidence_pages']=previews
         data['evidence_page_count']=len(doc)
@@ -286,11 +298,15 @@ def attach_image_evidence(data, content, ocr=None):
                 box=fitz.Rect(x*image.width,y*image.height,x1*image.width,y1*image.height)
                 lines.append((0,text,[box]*len(text),fitz.Rect(0,0,image.width,image.height),fitz.Matrix(1,1)))
             from app.rfq_material import recover_printed_thickness,normalize_thickness
-            _,product_lines=_partitioned_anchors({},lines,lambda _:True)
+            from app.extraction.product_regions import _image_content_boxes
+            image_regions={0:{'content_boxes':_image_content_boxes(image)}}
+            _,product_lines=_partitioned_anchors({},lines,lambda _:True,native=image_regions)
             recover_printed_thickness(data,'\n'.join(line[1] for line in product_lines))
             normalize_thickness(data)
-            data['drawing_locations'],_=_partitioned_anchors(data,lines,lambda _:True)
+            data['drawing_locations'],_=_partitioned_anchors(data,lines,lambda _:True,native=image_regions)
         elif ocr is not None:
+            from app.extraction.product_regions import _image_content_boxes
+            image_regions={0:{'content_boxes':_image_content_boxes(image)}}
             try:
                 import numpy as np
                 result=ocr(np.asarray(image))
@@ -304,10 +320,10 @@ def attach_image_evidence(data, content, ocr=None):
                         # OCR boxes cover the whole recognized annotation; don't invent character-level locations.
                         lines.append((0,str(text),[b]*len(str(text)),fitz.Rect(0,0,image.width,image.height),fitz.Matrix(1,1)))
                 from app.rfq_material import recover_printed_thickness,normalize_thickness
-                _,product_lines=_partitioned_anchors({},lines,lambda _:True)
+                _,product_lines=_partitioned_anchors({},lines,lambda _:True,native=image_regions)
                 recover_printed_thickness(data,'\n'.join(line[1] for line in product_lines))
                 normalize_thickness(data)
-                data['drawing_locations'],_=_partitioned_anchors(data,lines,lambda _:True)
+                data['drawing_locations'],_=_partitioned_anchors(data,lines,lambda _:True,native=image_regions)
             except Exception: pass
         data['evidence_version']=EVIDENCE_VERSION
 
