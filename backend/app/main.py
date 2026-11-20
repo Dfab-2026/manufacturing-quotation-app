@@ -1,8 +1,16 @@
 from __future__ import annotations
+from app.manual_rfq import ADDITIONS, SOURCE, apply_template_defaults, upgrade_starter, feature_count, positive, laser_units, historical_note
+from app.manufacturing_scope import standard_component
+from app.extraction.detail_ocr import read_detail, detail_text, cached_regions
+from app.extraction.product_regions import source_text, geometry_text, administrative, dxf_administrative, normalize_length_units, field_applicability, vector_dimension_callouts
+from app.drawing_evidence import attach_pdf_evidence, attach_dxf_evidence, attach_image_evidence, render_pdf_evidence_page, EVIDENCE_VERSION
+from app.rfq_material import normalize_wall, pipe_dimensions, purchased_callouts, recover_printed_thickness, normalize_thickness, recover_cad_thickness
 from app.engineering_intelligence import enrich_engineering_intelligence, build_cost_trace
 from app.premium_engine import build_premium_estimate
 from app.db import (
     DATABASE_CONFIGURED,
+    LOCAL_DATABASE,
+    DATABASE_ENGINE_FALLBACK,
     append_extraction_record,
     append_review_record,
     database_stats,
@@ -106,7 +114,7 @@ def defaults_settings():
         "currency": "INR",
         "material_wastage_pct": 10.0,
         "overhead_pct": 20.0,
-        "markup_pct": 30.0,
+        "markup_pct": 40.0,
         "auto_dataset_capture": True,
         "learn_from_corrections": True,
         "training_batch_threshold": 25,
@@ -141,7 +149,7 @@ def _rate(
 
 def default_rate_items():
     # These are editable starter values, not live market prices.
-    return [
+    return apply_template_defaults([
         _rate("MAT-SS-201", "MATERIAL", "Stainless Steel", "AISI 201", "kg", 210, 88, "Starter rate - replace with supplier rate"),
         _rate("MAT-SS-202", "MATERIAL", "Stainless Steel", "AISI 202", "kg", 225, 88, "Starter rate - replace with supplier rate"),
         _rate("MAT-SS-304", "MATERIAL", "Stainless Steel", "AISI 304", "kg", 280, 92, "Starter rate - replace with supplier rate"),
@@ -201,7 +209,7 @@ def default_rate_items():
         _rate("COMM-WASTE", "COMMERCIAL", "Material Wastage", "", "%", 8, 60, "Applied to material cost"),
         _rate("COMM-OH", "COMMERCIAL", "Factory Overhead", "", "%", 12, 65, "Applied to direct cost + material wastage"),
         _rate("COMM-MARKUP", "COMMERCIAL", "Profit / Markup", "", "%", 15, 80, "Applied to manufacturing cost"),
-    ]
+    ] + [_rate(rid, cat, name, grade, unit, price, 75, SOURCE + evidence) for rid,cat,name,grade,unit,price,evidence in ADDITIONS])
 
 
 def _repair_default_rates(existing_rates: list[dict] | None) -> tuple[list[dict], int]:
@@ -241,6 +249,8 @@ def _repair_default_rates(existing_rates: list[dict] | None) -> tuple[list[dict]
             changed += 1
             continue
 
+        if upgrade_starter(row):
+            changed += 1
         # Preserve approved/manual positive prices. Only repair missing/zero values.
         if float(row.get("price", 0) or 0) <= 0 and float(default.get("price", 0) or 0) > 0:
             row["price"] = default["price"]
@@ -266,6 +276,36 @@ def _repair_default_rates(existing_rates: list[dict] | None) -> tuple[list[dict]
             changed += 1
 
     return rows, changed
+
+
+def workbook_rate_rows(current):
+    """Update workbook-backed rows only, retain custom rows and their active state."""
+    from app.manual_rfq import UPDATES
+    defaults = {r['id']:r for r in default_rate_items()}
+    selected = set(UPDATES) | {r[0] for r in ADDITIONS}
+    rows = [dict(r) for r in current if isinstance(r, dict)]
+    by_id = {str(r.get('id')):r for r in rows}
+    for key in sorted(selected):
+        default = defaults[key]
+        if key not in by_id:
+            rows.append(dict(default))
+        else:
+            by_id[key].update(price=default['price'], unit=default['unit'], notes=default['notes'], updated_at=now())
+    return rows
+
+
+def sync_workbook_rates(force=False):
+    marker = load_store('workbook_rate_import_v76', {})
+    current = load_store('rates', [])
+    if marker and not force:
+        return current
+    repaired, _ = _repair_default_rates(current)
+    rows = workbook_rate_rows(repaired)
+    # No swallowed exception: success only after committing the rate rows.
+    save_store('rates', rows)
+    save_store('workbook_rate_import_v76', {'source':'quotation template excel.xlsx', 'applied_at':now()})
+    _HOT_CACHE['rates'] = rows
+    return rows
 
 
 def ensure_default_rates() -> tuple[list[dict], int]:
@@ -294,6 +334,7 @@ def ensure_data():
 
     # Always guarantee the complete built-in starter Rate Master.
     ensure_default_rates()
+    sync_workbook_rates()
 
     for name, default in [
         ("extractions", []),
@@ -344,7 +385,7 @@ else:
         _HOT_CACHE.setdefault("quotations", [])
         _HOT_CACHE.setdefault("actuals", [])
 
-EXTRACTION_PIPELINE_VERSION = "fastapi-local-mandatory-v15-20261112"
+EXTRACTION_PIPELINE_VERSION = "fastapi-product-regions-v19-20261120"
 MAX_UPLOAD_BYTES = max(1, int(os.getenv("MAX_UPLOAD_MB", "100"))) * 1024 * 1024
 
 
@@ -529,6 +570,12 @@ class ExportReq(BaseModel):
     drawing: Drawing
     rows: list[Row]
     summary: Summary
+
+
+class DetailedExportReq(ExportReq):
+    customer: str = ""
+    engineering: dict = Field(default_factory=dict)
+    bom: list[dict] = Field(default_factory=list)
 
 
 class PdfReq(ExportReq):
@@ -925,7 +972,7 @@ def _generate_bom(payload: EngineeringArtifactReq) -> dict:
     items: list[dict] = []
 
     material_row = next(
-        (row for row in payload.rows if row.category.upper() == "MATERIAL" and row.id != "ai-material-stock"),
+        (row for row in payload.rows if row.category.upper() == "MATERIAL"),
         None,
     )
 
@@ -956,7 +1003,7 @@ def _generate_bom(payload: EngineeringArtifactReq) -> dict:
 
             row = _bom_item(
                 index,
-                "Manufactured Component",
+                "Customer Supplied" if ai_raw.get("quotation_scope") in ("Welding only", "Customer-supplied components") else ("Standard Part" if standard_component(description) else "Manufactured Part"),
                 description,
                 material,
                 "",
@@ -970,11 +1017,14 @@ def _generate_bom(payload: EngineeringArtifactReq) -> dict:
             row["remarks"] = remarks
             items.append(row)
 
-    if material_row and not assembly_parts:
+    if not assembly_parts and ai_raw.get("manufacturing_category") == "Standard Components":
+        items.append(_bom_item(1, "Customer Supplied" if ai_raw.get("quotation_scope") in ("Welding only", "Customer-supplied components") else "Standard Part", drawing.description or drawing.drawing_no, drawing.material, str(material_meta.get("specification") or ""), "", max(1, drawing.quantity), "each", drawing.weight_kg, 0, "Classification — confirm specification and supplier rate"))
+
+    if material_row and ai_raw.get("manufacturing_category") != "Standard Components" and ai_raw.get("quotation_scope") not in ("Welding only", "Customer-supplied components", "Customer-supplied raw material"):
         items.append(_bom_item(
-            1,
+            len(items) + 1,
             "Raw Material",
-            drawing.description or "Manufactured part material",
+            "Assembly raw material allowance" if assembly_parts else drawing.description or "Manufactured part material",
             drawing.material,
             str(material_meta.get("specification") or material_meta.get("grade") or ""),
             material_row.drawingQty,
@@ -1007,19 +1057,27 @@ def _generate_bom(payload: EngineeringArtifactReq) -> dict:
         ))
         item_no += 1
 
-    standard_part_pattern = re.compile(r"\b((?:M\d+(?:\.\d+)?)?\s*(?:bolt|nut|washer|screw|fastener))\b", re.IGNORECASE)
+    for part in ai_raw.get("purchased_callouts") or []:
+        if any(str(item.get("description", "")).casefold() == str(part.get("description", "")).casefold() and str(item.get("specification", "")).casefold() == str(part.get("specification", "")).casefold() for item in items):
+            continue
+        items.append(_bom_item(item_no, "Customer Supplied" if ai_raw.get("quotation_scope") in ("Welding only", "Customer-supplied components") else "Standard Part", part["description"], "", part["specification"], "", part["quantity"], "each", 0, 0, part["source"]))
+        item_no += 1
+
+    standard_part_pattern = re.compile(r"\b((?:M\d+(?:\.\d+)?)?\s*(?:bolt|nut|washer|screw|fastener|weld neck flange|slip-on flange|blind flange|elbow|tee|reducer|coupling|union|nipple|pipe cap|gasket|bearing|circlip|ball valve|gate valve))\b", re.IGNORECASE)
     found_standard: set[str] = set()
 
     for note in [str(note) for note in (ai_raw.get("notes") or drawing.notes or [])]:
+        if re.search(r"\b(?:holes?|clearance|PCD|drill)\b", note, re.I):
+            continue
         for match in standard_part_pattern.findall(note):
             clean = " ".join(match.split())
             key = clean.casefold()
-            if key in found_standard:
+            if not standard_component(note) or key in found_standard or any(re.search(r"\b" + re.escape(clean) + r"\b", str(item.get("description", "")), re.I) for item in items):
                 continue
             found_standard.add(key)
             items.append(_bom_item(
                 item_no,
-                "Standard Part",
+                "Customer Supplied" if ai_raw.get("quotation_scope") in ("Welding only", "Customer-supplied components") else "Standard Part",
                 clean.title(),
                 "",
                 "",
@@ -1035,7 +1093,7 @@ def _generate_bom(payload: EngineeringArtifactReq) -> dict:
     if not items:
         items.append(_bom_item(
             1,
-            "Part",
+            "Customer Supplied" if ai_raw.get("quotation_scope") in ("Welding only", "Customer-supplied components", "Customer-supplied raw material") else "Manufactured Part",
             drawing.description or drawing.drawing_no or "Drawing item",
             drawing.material,
             "",
@@ -1402,32 +1460,55 @@ def parse_float_match(match, group=1, default=0.0) -> float:
 
 def analyze_dxf_geometry(content: bytes, filename: str):
     import ezdxf
-    from ezdxf import bbox
+    from ezdxf import bbox, units
     with tempfile.NamedTemporaryFile(suffix=".dxf", delete=False) as h:
         h.write(content); temp_name=h.name
     try:
         doc=ezdxf.readfile(temp_name); msp=doc.modelspace()
-        texts=[]; counts={}
-        for e in msp:
-            t=e.dxftype(); counts[t]=counts.get(t,0)+1
-            if t=="TEXT": texts.append(str(e.dxf.text or ""))
-            elif t=="MTEXT":
-                try:texts.append(str(e.plain_text() or ""))
-                except Exception:pass
+        texts=[]; counts={}; measured=[]
+        unit_scale=1.0
         try:
-            s=bbox.extents(msp,fast=True).size; x,y,z=float(s.x),float(s.y),float(s.z)
+            if doc.units: unit_scale=units.conversion_factor(doc.units,units.MM)
+        except (ValueError,TypeError): pass
+        for e in msp:
+            if dxf_administrative(e): continue
+            t=e.dxftype(); counts[t]=counts.get(t,0)+1
+            if t=="TEXT" and not administrative(str(e.dxf.text or "")): texts.append(str(e.dxf.text or ""))
+            elif t=="MTEXT":
+                try:
+                    text=str(e.plain_text() or "")
+                    if not administrative(text): texts.append(text)
+                except Exception:pass
+            elif t=="DIMENSION":
+                try:
+                    kind=int(e.dxf.dimtype)&7
+                    if kind in (0,1,3,4):
+                        measurement=float(e.get_measurement())*unit_scale
+                        label={3:'Diameter',4:'Radius'}.get(kind,'Linear dimension')
+                        if measurement>0:
+                            measured.append({'label':label,'value_mm':round(measurement,6),'source_handle':e.dxf.handle,'confidence':95})
+                except Exception:pass
+            elif t in ('CIRCLE','ARC'):
+                radius=positive(e.dxf.radius)*unit_scale
+                if radius>0:
+                    measured.append({'label':'Circle diameter' if t=='CIRCLE' else 'Arc radius','value_mm':round(radius*(2 if t=='CIRCLE' else 1),6),'source_handle':e.dxf.handle,'confidence':95})
+        try:
+            profile=[e for e in msp if not dxf_administrative(e) and e.dxftype() in {'LINE','ARC','CIRCLE','ELLIPSE','LWPOLYLINE','POLYLINE','SPLINE','3DFACE','SOLID','INSERT'}]
+            s=bbox.extents(profile,fast=True).size; x,y,z=float(s.x)*unit_scale,float(s.y)*unit_scale,float(s.z)*unit_scale
         except Exception:x=y=z=0.0
         material,_=detect_material("\n".join(texts),filename)
         ai_raw={
           "drawing_no":Path(filename).stem[:120],"revision":"","description":clean_filename_description(filename),"drawing_type":"mixed","assembly_parts":[],
           "material":{"family":material if material!="Not detected" else "","grade":"","specification":""},"thickness_mm":None,"weight_kg":None,"product_quantity":1,
-          "dimensions":[{"label":"Overall X","value_mm":x,"tolerance":"","quantity":1,"confidence":95},{"label":"Overall Y","value_mm":y,"tolerance":"","quantity":1,"confidence":95},{"label":"Overall Z","value_mm":z,"tolerance":"","quantity":1,"confidence":95}] if (x>0 or y>0 or z>0) else [],
+          "dimensions":[{"label":label,"value_mm":val,"tolerance":"","quantity":1,"confidence":95} for label,val in (("Overall X",x),("Overall Y",y),("Overall Z",z)) if val>0]+measured[:100],
           "holes":[],"threads":[],"chamfers":[],"bends":[],"studs":[],"welds":[],"surface_finish":[],
           "manufacturing_processes":[{"process":"Laser Cutting","reason":"DXF profile geometry detected; verify final process.","confidence":70}],
-          "notes":[f"DXF entities: {counts}",f"Overall extents: {x:g} × {y:g} × {z:g} mm"],
+          "notes":[f"DXF entities: {counts}",f"Overall profile extents: {x:g} × {y:g} × {z:g} mm"]+([] if doc.units else ["DXF drawing units are unspecified; values assume millimetres. Confirm units."]),
           "confidence":{"drawing_no":80,"material":50 if material!="Not detected" else 0,"dimensions":95 if (x>0 or y>0 or z>0) else 0,"processes":70},
           "missing_or_uncertain":["Confirm material grade, thickness, tolerances and final manufacturing route."]
         }
+        recover_printed_thickness(ai_raw,"\n".join(texts))
+        normalize_thickness(ai_raw)
         drawing=ai_result_to_drawing(ai_raw); rows=ai_result_to_rows(ai_raw,drawing)
         return ai_raw,drawing,rows,list(ai_raw["missing_or_uncertain"])
     finally:
@@ -1519,13 +1600,14 @@ _LOCAL_OCR_ERROR = ""
 
 
 def _local_ocr_enabled() -> bool:
-    return os.getenv("LOCAL_OCR_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+    return os.getenv("LOCAL_OCR_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _local_ocr_runtime_available() -> bool:
     if not _local_ocr_enabled():
         return False
-    return importlib.util.find_spec("rapidocr") is not None and importlib.util.find_spec("onnxruntime") is not None
+    import shutil
+    return bool(shutil.which("tesseract")) or (importlib.util.find_spec("rapidocr") is not None and importlib.util.find_spec("onnxruntime") is not None)
 
 
 def _get_local_ocr_engine():
@@ -1594,83 +1676,16 @@ def _ocr_pil_image(image) -> tuple[str, float]:
 
 
 def _extract_local_ocr_text(content: bytes, filename: str, *, text_hint: str = "", title_only: bool = False) -> tuple[str, list[str]]:
-    """Extract drawing text locally for scanned PDFs/images.
-
-    Fast path: vector PDF text remains primary. OCR is targeted at the title
-    block first, then a full page only when the embedded text layer is weak.
-    This keeps normal drawings fast while making image-only sources usable.
-    """
-    suffix = Path(filename or "").suffix.lower()
-    warnings: list[str] = []
-    snippets: list[str] = []
-
-    if _get_local_ocr_engine() is None:
-        detail = f" ({_LOCAL_OCR_ERROR})" if _LOCAL_OCR_ERROR else ""
-        return "", [f"Local OCR engine is unavailable{detail}. Run pip install -r requirements.txt and restart FastAPI."]
-
+    """Read all applicable pages at high resolution with source coordinates."""
+    import shutil
+    if not _local_ocr_runtime_available():
+        return "", ["Detailed drawing reader unavailable; enable local OCR and install requirements-render.txt."]
+    engine = None if shutil.which("tesseract") else _get_local_ocr_engine()
     try:
-        from PIL import Image
-
-        if suffix == ".pdf":
-            doc = fitz.open(stream=content, filetype="pdf")
-            try:
-                if doc.page_count == 0:
-                    return "", ["PDF contains no pages."]
-                page = doc[0]
-                rect = page.rect
-
-                # Title block: engineering identity/material/weight usually lives
-                # in the lower-right region. Higher DPI improves tiny CAD text.
-                title_clip = fitz.Rect(
-                    rect.x0 + rect.width * 0.42,
-                    rect.y0 + rect.height * 0.48,
-                    rect.x1,
-                    rect.y1,
-                )
-                pix = page.get_pixmap(matrix=fitz.Matrix(300 / 72, 300 / 72), clip=title_clip, alpha=False)
-                title_img = Image.open(BytesIO(pix.tobytes("png")))
-                title_text, title_score = _ocr_pil_image(title_img)
-                if title_text:
-                    snippets.append(title_text)
-
-                # Render one full page only when requested/needed. Critical-field
-                # recovery on an otherwise healthy vector PDF uses title_only=True
-                # so the previously fast analysis path stays responsive.
-                if not title_only and len((text_hint or "").strip()) < 100:
-                    pix = page.get_pixmap(matrix=fitz.Matrix(220 / 72, 220 / 72), alpha=False)
-                    full_img = Image.open(BytesIO(pix.tobytes("png")))
-                    full_text, full_score = _ocr_pil_image(full_img)
-                    if full_text:
-                        snippets.append(full_text)
-                    score = max(title_score, full_score)
-                else:
-                    score = title_score
-            finally:
-                doc.close()
-        elif suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
-            img = Image.open(BytesIO(content))
-            text, score = _ocr_pil_image(img)
-            if text:
-                snippets.append(text)
-        else:
-            return "", []
+        regions, warnings = read_detail(content, filename, engine)
+        return geometry_text(content, filename, regions), warnings
     except Exception as exc:
-        return "", [f"Local OCR could not read this file: {exc}"]
-
-    # Preserve reading order while de-duplicating repeated title-block/full-page lines.
-    seen: set[str] = set()
-    lines: list[str] = []
-    for snippet in snippets:
-        for line in snippet.splitlines():
-            clean = " ".join(line.split()).strip()
-            key = clean.casefold()
-            if clean and key not in seen:
-                seen.add(key)
-                lines.append(clean)
-
-    if not lines:
-        warnings.append("Local OCR did not detect readable engineering text; review critical values manually.")
-    return "\n".join(lines), warnings
+        return "", [f"Detailed drawing reader failed ({type(exc).__name__}); verify the source drawing."]
 
 
 def extract_drawing_fields(content: bytes, filename: str, supplemental_text: str = "", primary_text: str | None = None):
@@ -2020,13 +2035,13 @@ def _derive_local_geometry_weight(ai_raw: dict, drawing: Drawing, text: str) -> 
             if value > 0:
                 diameters.append(value)
         diameters = sorted(set(round(v, 4) for v in diameters), reverse=True)
-        if od <= 0 and diameters:
+        if od <= 0 and diameters and not ai_raw.get("product_region_policy"):
             od = diameters[0]
 
         # Only infer the bore from diameter ordering when the part is explicitly
         # ring/flange-like and there is a clear large secondary diameter. Avoid
         # using small bolt-hole diameters as a bore.
-        if bore <= 0 and od > 0:
+        if bore <= 0 and od > 0 and not ai_raw.get("product_region_policy"):
             plausible = [d for d in diameters[1:] if od * 0.20 <= d <= od * 0.80]
             if plausible:
                 bore = plausible[-1] if len(plausible) > 1 else plausible[0]
@@ -2111,7 +2126,7 @@ def _quick_mandatory_measurements(text: str, drawing: Drawing | None = None) -> 
             values[key] = value
 
     stock = first_match([
-        r"\b(?:SIZE|STOCK|BLANK|PLATE|SHEET)?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+        r"\b(?:SIZE|STOCK|BLANK|PLATE|SHEET|OVERALL\s+SIZE)\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
     ], hay)
     if stock and stock.lastindex and stock.lastindex >= 3:
         context = hay[stock.start(): min(len(hay), stock.end() + 28)].upper()
@@ -2152,76 +2167,33 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     else:
         vector_text = ""
 
-    # First pass is near-instant. If critical title-block values are missing,
-    # FastAPI runs its own local OCR and repeats the deterministic parsing with
-    # the OCR text merged in. No Gemini/cloud fallback is involved.
-    first_drawing, _first_rows, _first_source, first_warnings, _first_preview = extract_drawing_fields(content, filename, primary_text=vector_text)
-    # Preserve the original fast path for normal vector/text PDFs.
-    # OCR is intentionally reserved for image files or genuinely scanned PDFs
-    # with little/no embedded text. Missing engineering fields alone must NOT
-    # trigger OCR because that makes ordinary drawings feel slow and changes the
-    # previously working navigation/analyze behavior.
-    initial_measurements = _quick_mandatory_measurements(vector_text, first_drawing)
-    mandatory_missing = not _mandatory_measurements_complete(initial_measurements)
-    needs_ocr = include_ocr and (
-        suffix in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}
-        or (suffix == ".pdf" and len(vector_text.strip()) < 100)
-    )
-
     ocr_text = ""
     ocr_warnings: list[str] = []
-    if needs_ocr:
+    if include_ocr:
         ocr_started = perf_counter()
         ocr_text, ocr_warnings = _extract_local_ocr_text(content, filename, text_hint=vector_text)
         stage_timings["ocr_ms"] = round((perf_counter() - ocr_started) * 1000, 1)
-    elif include_ocr and suffix == ".pdf" and (
-        first_drawing.material == "Not detected"
-        or first_drawing.thickness_mm <= 0
-        or mandatory_missing
-    ):
-        # Target the title block first for material/stock-size data. This keeps
-        # clean CAD PDFs fast while still exhausting local extraction before a
-        # mandatory field is declared missing.
-        title_ocr_started = perf_counter()
-        ocr_text, ocr_warnings = _extract_local_ocr_text(
-            content, filename, text_hint=vector_text, title_only=True
-        )
-        stage_timings["title_ocr_ms"] = round((perf_counter() - title_ocr_started) * 1000, 1)
-
+    raw_text, metadata_text, full_text, excluded_count = source_text(content, filename, cached_regions(content) if include_ocr else [])
+    # No filename or title-block values in dimensional regex input. Keep
+    # document identifiers and separately stated material/weight as metadata.
+    combined = _merge_text_sources(raw_text, metadata_text)
     drawing, base_rows, _source, warnings, text_preview = extract_drawing_fields(
-        content, filename, supplemental_text=ocr_text, primary_text=vector_text
+        content, "drawing" + suffix, supplemental_text=raw_text if suffix != ".pdf" else "", primary_text=raw_text if suffix == ".pdf" else None
     )
+    if drawing.description == clean_filename_description("drawing" + suffix): drawing.description = clean_filename_description(filename)
+    drawing.drawing_no = Path(filename).stem[:60]
+    drawing.thickness_mm = 0
+    drawing.weight_kg = _extract_printed_weight_kg(combined)
+    # Prevent an ordinary linear dimension of 6061/5052/etc. from becoming
+    # an alloy. Bare numeric alloy/steel grades need the material field label.
+    material_lines = [line for line in combined.splitlines() if re.search(r"\b(?:material|matl|grade|AISI|SUS|SS|STAINLESS|MILD\s+STEEL|CARBON\s+STEEL|IS\s*2062|ASTM|EN\s*1\.|AL(?:UMINIUM|UMINUM)?|COPPER|BRASS|BRONZE|CAST\s+IRON|S275|S355|E250|E350)\b",line,re.I)]
+    drawing.material, _ = detect_material("\n".join(material_lines), "")
+    doc_match = first_match([r"\bDRAWING\s*(?:NO\.?|NUMBER)\s*[:#\-]?\s*([A-Z0-9._/-]{3,})", r"\bPID\s*[#:\-]?\s*(\d{3,})\b"], full_text)
+    if doc_match: drawing.drawing_no = doc_match.group(1)
+    rev_match = first_match([r"\bREV(?:ISION)?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9.\-]*)\b"], full_text)
+    drawing.revision = rev_match.group(1) if rev_match else ""
     warnings = [*ocr_warnings, *warnings]
-
-    # Difficult CAD PDFs sometimes keep section-view thickness only as glyphs
-    # rather than usable text. If the two fast text parsers + title-block OCR
-    # still miss thickness, perform one local full-page OCR recovery pass.
-    # This is intentionally conditional so ordinary drawings stay fast.
-    recovered_measurements = _quick_mandatory_measurements(
-        _merge_text_sources(vector_text, ocr_text), drawing
-    )
-    if (
-        include_ocr
-        and suffix == ".pdf"
-        and not needs_ocr
-        and not _mandatory_measurements_complete(recovered_measurements)
-    ):
-        full_ocr_started = perf_counter()
-        full_ocr_text, full_ocr_warnings = _extract_local_ocr_text(
-            content, filename, text_hint="", title_only=False
-        )
-        stage_timings["full_ocr_ms"] = round((perf_counter() - full_ocr_started) * 1000, 1)
-        if full_ocr_text.strip():
-            ocr_text = _merge_text_sources(ocr_text, full_ocr_text)
-            drawing, base_rows, _source, retry_warnings, text_preview = extract_drawing_fields(
-                content, filename, supplemental_text=ocr_text, primary_text=vector_text
-            )
-            warnings = [*full_ocr_warnings, *retry_warnings]
-        else:
-            warnings = [*full_ocr_warnings, *warnings]
-
-    raw_text = _merge_text_sources(vector_text, ocr_text) if suffix == ".pdf" else ocr_text
-    hay = f"{filename}\n{raw_text}"
+    hay = normalize_length_units(raw_text)
     upper = hay.upper()
 
     dimensions: list[dict] = []
@@ -2269,7 +2241,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
 
     # Common overall/title-block dimensions (L x W x T) where explicitly printed.
     for match in re.finditer(
-        r"\b(?P<a>\d+(?:[.,]\d+)?)\s*[X×]\s*(?P<b>\d+(?:[.,]\d+)?)(?:\s*[X×]\s*(?P<c>\d+(?:[.,]\d+)?))?\s*(?:MM)?\b",
+        r"\b(?:OVERALL(?:\s+SIZE)?|SIZE|STOCK(?:\s+SIZE)?|BLANK|PLATE|SHEET)\s*[:=\-]?\s*(?P<a>\d+(?:[.,]\d+)?)\s*[X×]\s*(?P<b>\d+(?:[.,]\d+)?)(?:\s*[X×]\s*(?P<c>\d+(?:[.,]\d+)?))?\s*(?:MM)?\b",
         hay,
         re.I,
     ):
@@ -2308,6 +2280,10 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
             r"\bW\s*[:=]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
             r"\b(\d+(?:[.,]\d+)?)\s*(?:MM)?\s*(?:WIDE|WIDTH)\b",
         ],
+        "Height": [
+            r"\b(?:OVERALL\s+HEIGHT|TOTAL\s+HEIGHT|HEIGHT)\b\s*(?:\(\s*MM\s*\))?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+            r"\bH\s*[:=]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+        ],
         "Thickness": [
             r"\b(?:THICKNESS|THK|THICK)\b\s*(?:\(\s*MM\s*\))?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
             r"\bT\s*[:=]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
@@ -2315,21 +2291,38 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         ],
     }
     named_values: dict[str, float] = {}
+    conflicting_fields: set[str] = set()
     for label, patterns in named_dimension_patterns.items():
-        match = first_match(patterns, hay)
-        value = parse_float_match(match)
-        if value > 0:
+        matches={}; overall_matches={}
+        for pattern in patterns:
+            for match in re.finditer(pattern.replace(r"\s*",r"[^\S\r\n]*"), hay, re.I):
+                line=hay[hay.rfind("\n",0,match.start())+1:hay.find("\n",match.end()) if "\n" in hay[match.end():] else len(hay)]
+                explicit_overall=bool(re.search(r"\b(?:OVERALL|TOTAL|OAL)\b",match.group(0),re.I))
+                if not explicit_overall and re.search(r"\b(?:slot|hole|thread|chamfer|weld|bend|pitch|counterbore|countersink|pocket|groove)\b",line,re.I):
+                    # These are local features, not overall axes. Explicit
+                    # wall/material thickness on its own remains eligible.
+                    if label!="Thickness" or not re.search(r"\b(?:wall|sheet|plate|material)\s+(?:thk|thickness)\b",line,re.I): continue
+                value=parse_float_match(match)
+                if value>0:
+                    matches.setdefault(round(value,7),match.group(0))
+                    if explicit_overall: overall_matches.setdefault(round(value,7),match.group(0))
+        if overall_matches: matches=overall_matches
+        if len(matches)==1:
+            value,callout=next(iter(matches.items()))
             named_values[label] = value
-            add_dim(label, value, 96, 1, match.group(0)[:120] if match else f"{label} {value:g} mm")
+            add_dim(label, value, 96, 1, callout[:120])
+        elif len(matches)>1:
+            conflicting_fields.add(label)
+            for value,callout in matches.items(): add_dim(label+" (Review)", value,55,1,callout[:120])
 
-    if drawing.thickness_mm <= 0 and named_values.get("Thickness", 0) > 0:
+    if named_values.get("Thickness", 0) > 0:
         drawing.thickness_mm = named_values["Thickness"]
 
     # Stock/blank notation is a strong L × W × T source. Re-run a strict
     # version here so all three values become explicit structured dimensions
     # even when the earlier generic pass encountered other callouts first.
     stock_match = first_match([
-        r"\b(?:SIZE|STOCK|BLANK|PLATE|SHEET)?\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
+        r"\b(?:SIZE|STOCK|BLANK|PLATE|SHEET|OVERALL\s+SIZE)\s*[:=\-]?\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\b",
         r"\b(\d+(?:[.,]\d+)?)\s*(?:MM)?\s*(?:LONG|LENGTH)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\s*(?:WIDE|WIDTH)\s*[X×]\s*(\d+(?:[.,]\d+)?)\s*(?:MM)?\s*(?:THK|THICK)\b",
     ], hay)
     if stock_match and stock_match.lastindex and stock_match.lastindex >= 3:
@@ -2376,6 +2369,18 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         add_dim("Radius", value, 88, 1, match.group(0)[:120])
         if len(dimensions) >= 75: break
 
+    # Unlabelled real dimensional callouts remain generic linear dimensions;
+    # never infer L/W/H from magnitude, page orientation or a revision cell.
+    for line in hay.splitlines():
+        match=re.fullmatch(r"\s*(\d+(?:[.,]\d+)?)\s*mm\s*",line,re.I)
+        if match: add_dim("Linear Dimension",parse_float_match(match),90,1,line.strip())
+    if suffix == ".pdf":
+        try:
+            for value,callout in vector_dimension_callouts(content):
+                add_dim("Linear Dimension",value,90,1,callout)
+        except Exception as exc:
+            warnings.append(f"Vector dimension-line analysis could not complete ({type(exc).__name__}); review unlabelled callouts.")
+
     holes: list[dict] = []
     seen_holes: set[tuple[float, int, str]] = set()
     for dim in dimensions:
@@ -2389,7 +2394,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
                     "diameter_mm": dim["value_mm"],
                     "quantity": dim["quantity"],
                     "type": hole_type,
-                    "through": bool(re.search(r"THRU|THROUGH", callout, re.I)) or True,
+                    "through": bool(re.search(r"THRU|THROUGH", callout, re.I)),
                     "depth_mm": None,
                     "callout": callout,
                     "confidence": dim.get("confidence", 85),
@@ -2544,28 +2549,28 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
 
     material_family = drawing.material if drawing.material != "Not detected" else ""
     material_grade = ""
-    grade_match = re.search(r"\b(?:AISI|SUS|SS)?\s*[-_/ ]?(201|202|304L?|316L?|321|430)\b", upper, re.I)
-    en_grade = re.search(r"\bEN\s*1\.(4301|4307|4401|4404)\b", upper, re.I)
+    grade_match = re.search(r"\b(?:AISI|SUS|SS|ASTM\s*A240|MATERIAL(?:\s+GRADE)?\s*[:=]?)\s*[-_/ ]?(201|202|304L?|316L?|321|430)\b", combined, re.I)
+    en_grade = re.search(r"\bEN\s*1\.(4301|4307|4401|4404)\b", combined, re.I)
     if grade_match or en_grade:
         raw_grade = grade_match.group(1).upper() if grade_match else {"4301":"304","4307":"304L","4401":"316","4404":"316L"}[en_grade.group(1)]
         material_grade = f"AISI {raw_grade}"
         material_family = "Stainless Steel"
-    elif (m := re.search(r"\bS(275|355)(?:JR|J2|J0)?\b", upper)):
+    elif (m := re.search(r"\bS(275|355)(?:JR|J2|J0)?\b", "\n".join(material_lines))):
         material_grade = m.group(0).upper(); material_family = "Mild Steel"
-    elif (m := re.search(r"\bIS\s*2062[^\n\r]{0,20}?\b(E250|E350)\b", upper)):
+    elif (m := re.search(r"\bIS\s*2062[^\n\r]{0,20}?\b(E250|E350)\b", "\n".join(material_lines))):
         material_grade = f"IS 2062 {m.group(1).upper()}"; material_family = "Mild Steel"
-    elif (m := re.search(r"\b(?:ASTM\s*A240|A240)[^\n\r]{0,24}?\b(304L?|316L?|321|430)\b", upper)):
+    elif (m := re.search(r"\b(?:ASTM\s*A240|A240)[^\n\r]{0,24}?\b(304L?|316L?|321|430)\b", "\n".join(material_lines))):
         material_grade = f"AISI {m.group(1).upper()}"; material_family = "Stainless Steel"
-    elif (m := re.search(r"\b(5052(?:-H32)?|6061(?:-T6)?|6082(?:-T6)?)\b", upper)):
+    elif (m := re.search(r"\b(5052(?:-H32)?|6061(?:-T6)?|6082(?:-T6)?)\b", "\n".join(material_lines))):
         material_grade = m.group(1).upper(); material_family = "Aluminium"
-    explicit_weight = _extract_printed_weight_kg(hay)
+    explicit_weight = _extract_printed_weight_kg(combined)
 
     # Resolve the primary overall L/W values from the structured dimension
     # rows. Named Length/Width callouts win; otherwise the two largest usable
     # non-feature linear dimensions are used as the drawing envelope.
-    primary_size = _internal_part_length_width({"dimensions": dimensions, "thickness_mm": drawing.thickness_mm, "notes": list(drawing.notes)}, drawing)
-    primary_length_mm = primary_size[0] if primary_size else None
-    primary_width_mm = primary_size[1] if primary_size else None
+    primary_length_mm = (named_values.get("Length") or next((d["value_mm"] for d in dimensions if d["label"] == "Length"), None)) if "Length" not in conflicting_fields else None
+    primary_width_mm = (named_values.get("Width") or next((d["value_mm"] for d in dimensions if d["label"] == "Width"), None)) if "Width" not in conflicting_fields else None
+    if "Thickness" in conflicting_fields: drawing.thickness_mm=0
 
     ai_raw = {
         "drawing_no": drawing.drawing_no,
@@ -2576,6 +2581,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         "material": {"family": material_family, "grade": material_grade, "specification": ""},
         "length_mm": primary_length_mm,
         "width_mm": primary_width_mm,
+        "height_mm": named_values.get("Height"),
         "thickness_mm": drawing.thickness_mm or None,
         "weight_kg": explicit_weight or (drawing.weight_kg or None),
         "drawing_stated_weight_kg": explicit_weight or (drawing.weight_kg or None),
@@ -2604,12 +2610,23 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         ] if explicit_weight > 0 else [],
         "missing_or_uncertain": [],
         "extraction_engine": "fastapi_local",
+        "product_region_policy": "positioned_product_only",
+        "excluded_administrative_regions": excluded_count,
+        "conflicting_fields": sorted(conflicting_fields),
         "extraction_meta": {
             "pipeline_version": EXTRACTION_PIPELINE_VERSION,
-            "stages": ["pypdf", "pymupdf", *( ["rapidocr"] if ocr_text else [] ), "engineering_rules", "geometry_weight", "rate_master"],
+            "stages": ["pypdf", "pymupdf", *( ["detail_ocr"] if ocr_text else [] ), "engineering_rules", "geometry_weight", "rate_master"],
             "timings_ms": stage_timings,
         },
     }
+
+    # Recover explicit thickness/OD/ID from both native and optical source
+    # before calculating the mass and building the costing rows.
+    if not positive(ai_raw.get("thickness_mm")) and "Thickness" not in conflicting_fields:
+        recover_printed_thickness(ai_raw, hay)
+        normalize_thickness(ai_raw)
+        if positive(ai_raw.get("thickness_mm")):
+            drawing.thickness_mm = ai_raw["thickness_mm"]
 
     # If the drawing does not print a weight, calculate one locally from
     # deterministic geometry only when material density + usable geometry exist.
@@ -2632,15 +2649,17 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
             f"Weight calculated locally from drawing geometry: {derived_weight:g} kg ({weight_basis})."
         )
 
+    ai_raw["field_applicability"] = field_applicability(ai_raw, raw_text)
     mandatory_status = {
         "length_mm": float(ai_raw.get("length_mm") or 0) > 0,
-        "width_mm": float(ai_raw.get("width_mm") or 0) > 0,
-        "thickness_mm": float(ai_raw.get("thickness_mm") or drawing.thickness_mm or 0) > 0,
+        "width_mm": float(ai_raw.get("width_mm") or 0) > 0 or ai_raw["field_applicability"].get("width")=="not_applicable",
+        "thickness_mm": float(ai_raw.get("thickness_mm") or drawing.thickness_mm or 0) > 0 or ai_raw["field_applicability"].get("thickness")=="not_applicable",
         "material": bool(material_family),
         "material_grade": bool(material_grade),
         "weight_kg": float(ai_raw.get("weight_kg") or drawing.weight_kg or 0) > 0,
     }
     ai_raw["mandatory_fields"] = mandatory_status
+    ai_raw["missing_or_uncertain"].extend(f"Conflicting {field.lower()} callouts in product views; confirm the intended measurement." for field in sorted(conflicting_fields))
     ai_raw["mandatory_complete"] = all(
         mandatory_status[key]
         for key in ("length_mm", "width_mm", "thickness_mm", "material", "weight_kg")
@@ -2656,13 +2675,16 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
             ai_raw["missing_or_uncertain"].append("Material/grade was not detected from the drawing text.")
         if primary_length_mm is None:
             ai_raw["missing_or_uncertain"].append("Overall length was not reliably detected from drawing data.")
-        if primary_width_mm is None:
+        if primary_width_mm is None and ai_raw["field_applicability"].get("width")!="not_applicable":
             ai_raw["missing_or_uncertain"].append("Overall width was not reliably detected from drawing data.")
-        if drawing.thickness_mm <= 0:
+        if drawing.thickness_mm <= 0 and ai_raw["field_applicability"].get("thickness")!="not_applicable":
             ai_raw["missing_or_uncertain"].append("Thickness was not reliably detected from drawing data.")
         if not dimensions:
             ai_raw["missing_or_uncertain"].append("No reliable dimensional callouts were parsed from the text layer.")
 
+    if include_ocr:
+        ai_raw["optical_text_regions"] = cached_regions(content)
+        ai_raw["missing_or_uncertain"].extend(ocr_warnings)
     ai_raw = enrich_engineering_intelligence(
         ai_raw,
         filename=filename,
@@ -2672,8 +2694,6 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     # Rebuild costing rows from the local structured extraction so detected
     # processes/features feed the same existing costing logic as before.
     local_rows = ai_result_to_rows(ai_raw, drawing)
-    if not local_rows:
-        local_rows = base_rows
     ai_raw = enrich_engineering_intelligence(
         ai_raw,
         filename=filename,
@@ -2773,7 +2793,7 @@ Return this shape (empty arrays / null when absent):
   "notes":[]
 }
 Rules:
-- Inspect the actual drawing visually, including title block, section views, overall dimensions and callouts; do not rely only on extracted text.
+- Inspect only product views, sections, and part callouts for dimensions and features. Exclude sheet/frame sizes, administrative title blocks, dates, and revision tables from all engineering measurements. Use explicitly labelled title-block drawing identifiers/material/product weight only for their matching metadata fields.
 - Never invent a value. Use null when it is genuinely absent/unreadable.
 - Printed drawing weight/mass is authoritative. Convert g to kg when needed.
 - Preserve hole/slot/thread/bend/weld quantities and original callouts.
@@ -2878,6 +2898,12 @@ def _merge_engineering_candidate(local: dict, candidate: dict, drawing: Drawing,
                 merged["drawing_stated_weight_kg"] = candidate_weight
             merged["weight_source"] = str(candidate.get("weight_source") or source_tag)
 
+    if candidate.get("optical_text_regions"):
+        merged["optical_text_regions"] = candidate["optical_text_regions"]
+    if positive(candidate.get("drawing_stated_weight_kg")) and not positive(merged.get("drawing_stated_weight_kg")):
+        merged["drawing_stated_weight_kg"] = candidate["drawing_stated_weight_kg"]
+        merged["weight_kg"] = candidate["drawing_stated_weight_kg"]
+        merged["weight_source"] = "drawing_stated"
     array_fields = ("dimensions", "holes", "threads", "chamfers", "bends", "studs", "welds", "surface_finish", "manufacturing_processes")
     for key in array_fields:
         current_items = list(merged.get(key) or []) if isinstance(merged.get(key), list) else []
@@ -3088,6 +3114,8 @@ def ai_result_to_drawing(ai_data: dict) -> Drawing:
         except (TypeError, ValueError):
             return default
 
+    ref_note = historical_note(ai_data.get("drawing_no"))
+    if ref_note: notes.append(ref_note)
     return Drawing(
         drawing_no=str(ai_data.get("drawing_no") or "").strip(),
         revision=str(ai_data.get("revision") or "").strip(),
@@ -3112,7 +3140,17 @@ def find_material_rate_from_ai(ai_data: dict) -> dict | None:
     spec = str(material.get("specification") or "")
 
     combined = _norm(f"{family} {grade} {spec}")
+    if not combined or combined in {"NOTDETECTED", "UNKNOWN", "PREDICTEDREVIEWREQUIRED"}: return None
 
+    if 'COLDROLLED' in combined:
+        found = rate_by_id('MAT-CRS-MANUAL')
+        if found: return found
+    if 'ALMG' in combined and not any(x in combined for x in ('5052','6061','6082')):
+        found = rate_by_id('MAT-AL-MANUAL')
+        if found: return found
+    if any(x in combined for x in ("DX51D", "HDG", "HOTDIPZINC", "GALVANIZED")):
+        found = rate_by_id("MAT-GI-DX51")
+        if found: return found
     # Strong known-grade aliases first.
     aliases = {
         "S355J0": "MAT-CS-S355J0",
@@ -3287,6 +3325,8 @@ _INTERNAL_STOCK_SIZES_MM = {
 
 _INTERNAL_DENSITY_KG_PER_MM3 = {
     "STAINLESS": 7.93e-6,
+    "SS304": 7.93e-6,
+    "SS316": 7.98e-6,
     "MILDSTEEL": 7.85e-6,
     "CARBONSTEEL": 7.85e-6,
     "STRUCTURALSTEEL": 7.85e-6,
@@ -3377,6 +3417,10 @@ def _internal_part_length_width(
     ai_data: dict,
     drawing: Drawing,
 ) -> tuple[float, float] | None:
+    if ai_data.get("product_region_policy"):
+        length = positive(ai_data.get("length_mm"))
+        width = positive(ai_data.get("width_mm"))
+        return (length,width) if length and width else None
     try:
         thickness = float(ai_data.get("thickness_mm") or drawing.thickness_mm or 0)
     except (TypeError, ValueError):
@@ -3439,7 +3483,8 @@ def _internal_part_length_width(
         return None
 
     length = values[0]
-    width = values[1] if len(values) > 1 else values[0]
+    if len(values) < 2: return None
+    width = values[1]
     return max(1.0, length), max(1.0, width)
 
 
@@ -3655,6 +3700,16 @@ def _estimated_qty_for_process(
     to the engineer's selected Rate Master unit (sec/min/hr/shift/day).
     Fixed units such as job/setup remain quantity 1.
     """
+    part_qty = max(1, drawing.quantity)
+    if unit == "bend":
+        return feature_count(ai_data.get("bends")) * part_qty
+    if unit == "operation":
+        key = "clinching" if str(rate_id).startswith("PROC-CLINCH") else "grinding"
+        return feature_count(ai_data.get(key)) * part_qty
+    if unit == "kg" and rate_id in {"PROC-COAT", "PROC-PAINT-MANUAL", "PROC-BUFF-MANUAL", "PROC-BUFF-MANUAL-300"}:
+        return positive(drawing.weight_kg) * part_qty
+    if unit == "m·mm":
+        return laser_units(ai_data.get("laser_cutting_length_mm"), drawing.thickness_mm, ai_data.get("piercing_count"), part_qty)
     if _time_unit_hours(unit) is not None:
         return _hours_to_rate_quantity(
             _estimate_process_hours(rate_id, ai_data, drawing),
@@ -3689,6 +3744,8 @@ def _estimate_process_hours(rate_id: str | None, ai_data: dict, drawing: Drawing
         hours = 0.55 + 0.30 * size_factor + 0.09 * holes + 0.10 * threads + 0.05 * chamfers
     elif rate_id == "PROC-MACHINE":
         hours = 0.45 + 0.25 * size_factor + 0.06 * holes + 0.08 * threads + 0.04 * chamfers
+    elif rate_id in {"PROC-BORE", "PROC-THREAD"}:
+        hours = 0.15 + 0.04 * size_factor + 0.035 * (threads if rate_id == "PROC-THREAD" else holes)
     elif rate_id == "PROC-HAND-GRIND":
         hours = 0.25 + 0.08 * size_factor
     else:
@@ -3920,6 +3977,10 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
             )
         )
 
+    # Use explicit normalized cutting-length callouts only, not a folded envelope.
+    if not positive(ai_data.get("laser_cutting_length_mm")):
+        lengths = [positive(d.get("value_mm")) for d in ai_data.get("dimensions", []) if isinstance(d, dict) and _norm(str(d.get("label") or "")) in {"LASERCUTTINGLENGTH", "CUTTINGLENGTH", "CUTLENGTH"}]
+        if len(lengths) == 1: ai_data["laser_cutting_length_mm"] = lengths[0]
     # Manufacturing processes extracted by Vision.
     for index, process in enumerate(ai_data.get("manufacturing_processes") or [], start=1):
         if not isinstance(process, dict):
@@ -3930,6 +3991,8 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
             continue
 
         rate_id = process_rate_id(name)
+        if rate_id == "PROC-LASER" and positive(ai_data.get("laser_cutting_length_mm")) and positive(drawing.thickness_mm):
+            rate_id = "PROC-LASER-MANUAL"
         saved_rate = rate_by_id(rate_id) if rate_id else None
 
         # Avoid duplicate semantic process rows.
@@ -3974,6 +4037,8 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
         _recommended_processes(ai_data, drawing),
         start=1,
     ):
+        if rec_rate_id == "PROC-LASER" and positive(ai_data.get("laser_cutting_length_mm")) and positive(drawing.thickness_mm):
+            rec_rate_id = "PROC-LASER-MANUAL"
         if rec_rate_id in seen:
             continue
         saved_rate = rate_by_id(rec_rate_id)
@@ -4024,7 +4089,7 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
                 "PROCESS",
                 "Drilling / Boring",
                 f"{total_plain_holes} hole(s)",
-                1,
+                _estimated_qty_for_process("PROC-BORE", (rate_by_id("PROC-BORE") or {}).get("unit", "job"), ai_data, drawing),
                 ai_confidence_label(max([x or 0 for x in hole_confidences], default=70)),
                 "PROC-BORE",
                 "job",
@@ -4040,7 +4105,7 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
                 "PROCESS",
                 "Threading / Tapping",
                 f"{total_threaded_holes} threaded hole(s)",
-                1,
+                _estimated_qty_for_process("PROC-THREAD", (rate_by_id("PROC-THREAD") or {}).get("unit", "job"), ai_data, drawing),
                 ai_confidence_label(max([x or 0 for x in hole_confidences], default=70)),
                 "PROC-THREAD",
                 "job",
@@ -4063,7 +4128,7 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
                 "PROCESS",
                 "Press Brake Forming",
                 f"{bend_qty} bend(s)",
-                1,
+                _estimated_qty_for_process("PROC-BEND", (rate_by_id("PROC-BEND") or {}).get("unit", "job"), ai_data, drawing),
                 "Estimated",
                 "PROC-BEND",
                 "job",
@@ -4132,16 +4197,17 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
             pass
 
     if total_weld_mm > 0:
+        rows = [r for r in rows if r.rateId not in {"PROC-WELD", "PROC-TIG", "PROC-MIG", "PROC-WELD-MANUAL"}]
         weld_rate_id = "PROC-TIG" if "TIG" in weld_type.upper() else (
-            "PROC-MIG" if "MIG" in weld_type.upper() else None
+            "PROC-MIG" if "MIG" in weld_type.upper() else "PROC-WELD-MANUAL"
         )
         rows.append(
             row_from_rate(
                 "ai-weld",
                 "PROCESS",
                 f"{weld_type or 'Welding'}",
-                f"{total_weld_mm:g} mm",
-                total_weld_mm / 1000.0,
+                f"{total_weld_mm:g} mm · verify passes/joints and applicable weld rate",
+                (total_weld_mm / 25.4 * max(1, drawing.quantity)) if weld_rate_id == "PROC-WELD-MANUAL" else total_weld_mm / 1000.0,
                 ai_confidence_label(weld_score),
                 weld_rate_id,
                 "m",
@@ -4237,18 +4303,18 @@ def health():
     pymupdf_installed = importlib.util.find_spec("pymupdf") is not None
     pypdf_installed = importlib.util.find_spec("pypdf") is not None
     ezdxf_installed = importlib.util.find_spec("ezdxf") is not None
-    ocr_ready = rapidocr_installed and onnxruntime_installed
+    ocr_ready = _local_ocr_runtime_available()
     core_ready = all((pymupdf_installed, pypdf_installed, ezdxf_installed))
     gemini_ready = bool(_gemini_api_key())
 
     return {
-        "status": "ok" if core_ready and DATABASE_CONFIGURED and connected else "degraded",
+        "status": "ok" if core_ready and connected else "degraded",
         "version": "0.15.0",
         "database": "connected" if connected else "unavailable",
         "database_configured": DATABASE_CONFIGURED,
-        "persistent_storage": "postgresql" if DATABASE_CONFIGURED and connected else "ephemeral_or_unavailable",
+        "persistent_storage": ("sqlite_local" if LOCAL_DATABASE else "postgresql") if connected and not DATABASE_ENGINE_FALLBACK else "ephemeral_or_unavailable",
         "analysis": "fastapi_local_with_optional_visual_fallback",
-        "local_ocr": "ready" if ocr_ready else "optional_not_bundled",
+        "local_ocr": "ready" if ocr_ready else "disabled_or_unavailable",
         "gemini_fallback": "configured" if gemini_ready else "not_configured",
         "dependencies": {
             "pymupdf": pymupdf_installed,
@@ -4266,7 +4332,7 @@ def get_database_stats():
     if not db_ping():
         raise HTTPException(
             status_code=503,
-            detail="PostgreSQL database is unavailable.",
+            detail="Configured database is unavailable. Check DATABASE_URL and network connectivity.",
         )
 
     return database_stats()
@@ -4482,8 +4548,21 @@ def export_bom_pdf(payload: dict):
 
 @app.get("/api/rates", response_model=list[RateItem])
 def get_rates():
+    try:
+        sync_workbook_rates()
+        _HOT_CACHE.pop("rates", None)
+    except Exception as exc:
+        print(f"[WORKBOOK RATE SYNC WARNING] {type(exc).__name__}")
     repaired, _ = ensure_default_rates()
     return repaired
+
+
+@app.post("/api/rates/apply-workbook", response_model=list[RateItem])
+def apply_workbook_rates():
+    try:
+        return sync_workbook_rates(force=True)
+    except Exception as exc:
+        raise HTTPException(503, 'Rate Master database is unavailable; workbook rates were not confirmed saved.') from exc
 
 
 @app.post("/api/rates/restore-defaults", response_model=list[RateItem])
@@ -4802,6 +4881,11 @@ def apply_saved_rates(value: CostReq):
             # Preserve the same predicted duration when the engineer changes
             # hr -> min -> sec (or back) in Rate Master.
             old_hours = _rate_quantity_to_hours(row.costingQty, old_unit)
+            if str(saved.get("notes") or "").startswith(SOURCE) and old_unit != new_unit and not (old_hours is not None and _time_unit_hours(new_unit) is not None):
+                # Historical quotations keep their original dimensional basis.
+                row.rateSource = "Manual template unit changed · review quantity before applying"
+                updated.append(row)
+                continue
             if old_hours is not None and _time_unit_hours(new_unit) is not None:
                 row.costingQty = _hours_to_rate_quantity(old_hours, new_unit)
             elif _time_unit_hours(new_unit) is None and old_hours is not None:
@@ -4933,9 +5017,9 @@ def analyze_fallback(value: FallbackAnalysisReq):
         "weight_kg": 0.0,
         "product_quantity": 1,
         "dimensions": [
-            {"label": "Overall Length (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10},
-            {"label": "Overall Width (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10},
-            {"label": "Thickness (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10},
+            {"label": "Overall Length (Review required)", "value_mm": None, "tolerance": "", "quantity": 1, "confidence": 10},
+            {"label": "Overall Width (Review required)", "value_mm": None, "tolerance": "", "quantity": 1, "confidence": 10},
+            {"label": "Thickness (Review required)", "value_mm": None, "tolerance": "", "quantity": 1, "confidence": 10},
         ],
         "holes": [],
         "threads": [],
@@ -5349,7 +5433,8 @@ def analyze_cad(value: CadAnalysisReq):
         },
         "length_mm": cad_length,
         "width_mm": cad_width,
-        "thickness_mm": cad_thickness,
+        "thickness_mm": cad_thickness if part_count<=1 else None,
+        "thickness_basis": ("Estimated minimum flat-plate envelope axis" if shape_hint=="plate_like" else "Estimated section thickness from CAD surfaces") if cad_thickness and part_count<=1 else None,
         "weight_kg": None,
         "product_quantity": 1,
         "dimensions": dimensions,
@@ -5559,7 +5644,7 @@ def _merge_step_metadata(browser_meta: dict, server_meta: dict) -> dict:
     # observations: that double-counted split faces/edges and inflated holes,
     # circles and diameters. Browser metadata remains available for names/PMI.
     authoritative_geometry_keys = (
-        "geometry_dimensions", "cylindrical_diameters_mm", "circle_diameters_mm",
+        "geometry_dimensions", "geometry_locations", "cylindrical_diameters_mm", "circle_diameters_mm",
         "torus_radii_mm", "conical_surfaces", "hole_features",
         "primary_outer_diameters_mm", "primary_inner_diameters_mm"
     )
@@ -5635,7 +5720,7 @@ async def analyze_cad_file(
     server_meta = {
         key: server_geometry.get(key)
         for key in (
-            "geometry_dimensions", "cylindrical_diameters_mm", "circle_diameters_mm",
+            "geometry_dimensions", "geometry_locations", "cylindrical_diameters_mm", "circle_diameters_mm",
             "torus_radii_mm", "conical_surfaces", "hole_features", "primary_outer_diameters_mm", "primary_inner_diameters_mm", "entity_counts", "wall_thickness", "parser"
         )
         if server_geometry.get(key) is not None
@@ -5661,6 +5746,10 @@ async def analyze_cad_file(
 
     result = analyze_cad(req)
     result["learning_source"] = "python_ocp_brep" if server_geometry else result.get("learning_source", "cad_geometry")
+    if server_geometry:
+        result['ai_raw']['geometry_locations']=server_geometry.get('geometry_locations',[])
+        result['ai_raw']['evidence_version']=EVIDENCE_VERSION
+        result['ai_raw']['evidence_hash']=sha256(content).hexdigest()
     result.setdefault("ai_raw", {}).setdefault("cad_geometry", {})["server_brep"] = {
         "available": bool(server_geometry),
         "parser": server_geometry.get("parser") if server_geometry else "browser_fallback",
@@ -5671,9 +5760,10 @@ async def analyze_cad_file(
 
     # Prefer the server's conservative exact-surface wall-thickness candidate.
     wall = server_geometry.get("wall_thickness") if server_geometry else None
-    if wall and float(wall.get("value_mm") or 0) > 0:
+    if req.part_count == 1 and wall and float(wall.get("value_mm") or 0) > 0:
         thickness = round(float(wall["value_mm"]), 4)
         result["ai_raw"]["thickness_mm"] = thickness
+        result["ai_raw"]["thickness_basis"] = str(wall.get("basis") or "Measured B-Rep wall section")
         result["ai_raw"].setdefault("confidence", {})["thickness"] = int(wall.get("confidence") or 70)
         result["ai_raw"].setdefault("evidence", []).append({
             "field": "Wall Thickness",
@@ -5749,9 +5839,13 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
     # fallback values (for example 100 mm thickness / predicted weight).  They
     # must not outrank newly visible title-block source data.  Future reviews
     # carry the pipeline version and can still be reused normally.
-    if memory and memory.get("pipeline_version") != EXTRACTION_PIPELINE_VERSION:
-        memory = None
+    if memory and memory.get('pipeline_version') != EXTRACTION_PIPELINE_VERSION:
+        reviewed_value=positive((memory.get('drawing') or {}).get('thickness_mm'))
+        # Old automatic fallback values are not authoritative; preserve actual
+        # reviewed values and all other existing saved data in History.
+        if reviewed_value==100: memory=None
     extraction_memory = None if (force_ai or memory) else latest_extraction_by_hash(file_hash)
+    if extraction_memory and extraction_memory.get('pipeline_version') != EXTRACTION_PIPELINE_VERSION: extraction_memory=None
     if extraction_memory and extraction_memory.get("pipeline_version") != EXTRACTION_PIPELINE_VERSION:
         extraction_memory = None
 
@@ -5786,10 +5880,8 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
         warnings = ["Exact drawing hash found. Previous extraction reused for faster analysis."]
 
     elif extension == ".pdf":
-        # Latency-first orchestration:
-        # 1) local PDF text/rules without OCR (normally tens/hundreds of ms),
-        # 2) Gemini fallback only when mandatory engineering data is incomplete,
-        # 3) local RapidOCR only if Gemini is not configured/unavailable.
+        # Native text first; explicit Analyze requests also read zoomed tiles.
+        # The optional external visual service is used only after local recovery.
         try:
             ai_raw, drawing, rows, warnings, text_preview = await run_in_threadpool(
                 _local_fastapi_engineering_extract, content, filename, False
@@ -5803,34 +5895,31 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
             rows = []
             source = "fastapi_local_failed"
 
-        if ai_raw is None or _mandatory_or_feature_incomplete(ai_raw, drawing, text_preview):
-            gemini_raw, gemini_reason = await run_in_threadpool(
-                _gemini_extract_engineering, content, filename, text_preview
-            )
-            if gemini_raw:
-                ai_raw = _merge_gemini_into_local(ai_raw or {}, gemini_raw, drawing)
-                drawing = ai_result_to_drawing(ai_raw)
-                rows = ai_result_to_rows(ai_raw, drawing) or rows
-                source = "fastapi_local+gemini_fallback"
-            elif gemini_reason and _gemini_api_key():
-                print(f"[GEMINI FALLBACK WARNING] {gemini_reason}")
-
-            # A partial Gemini response must not terminate recovery. If any
-            # mandatory field/expected feature is still incomplete, run the
-            # local OCR pass as well and merge its evidence into the result.
-            if (ai_raw is None or _mandatory_or_feature_incomplete(ai_raw, drawing, text_preview)) and _local_ocr_runtime_available():
-                try:
-                    ocr_raw, ocr_drawing, ocr_rows, ocr_warnings, ocr_text = await run_in_threadpool(
-                        _local_fastapi_engineering_extract, content, filename, True
-                    )
-                    ai_raw = _merge_engineering_candidate(ai_raw or {}, ocr_raw or {}, drawing, "rapidocr")
-                    drawing = ai_result_to_drawing(ai_raw)
-                    rows = ai_result_to_rows(ai_raw, drawing) or ocr_rows or rows
-                    text_preview = "\n".join(x for x in (text_preview, ocr_text) if x).strip()
-                    warnings = list(dict.fromkeys([*warnings, *ocr_warnings]))
-                    source = source + "+ocr" if "ocr" not in source else source
-                except Exception as exc:
-                    warnings.append(f"Local OCR fallback failed: {type(exc).__name__}: {exc}")
+        # Mixed PDFs can have valid title-block text on one page and raster
+        # dimensions on another. Never let the first page suppress optical reading.
+        try:
+            with fitz.open(stream=content, filetype="pdf") as doc:
+                visual_pages = any(len(p.get_text().strip()) < 40 or bool(p.get_images()) for p in doc)
+        except Exception:
+            visual_pages = True
+        needs_detail = force_ai or visual_pages or ai_raw is None or _mandatory_or_feature_incomplete(ai_raw, drawing, text_preview)
+        if needs_detail and _local_ocr_runtime_available():
+            try:
+                detailed, detail_drawing, detail_rows, detail_warnings, detail_preview = await run_in_threadpool(
+                    _local_fastapi_engineering_extract, content, filename, True
+                )
+                if detailed.get("optical_text_regions") or ai_raw is None:
+                    ai_raw, drawing, rows, text_preview = detailed, detail_drawing, detail_rows, detail_preview
+                    source = "fastapi_local+detail_ocr"
+                    warnings = detail_warnings
+                else:
+                    warnings = list(dict.fromkeys([*warnings, *detail_warnings]))
+            except Exception as exc:
+                warnings.append(f"Detailed local reading failed: {type(exc).__name__}")
+        elif needs_detail:
+            warnings.append("Detailed drawing reader unavailable. Install OCR dependencies and enable LOCAL_OCR_ENABLED.")
+        if ai_raw is None:
+            warnings.append("No verifiable local product callouts were recovered; review the drawing rather than using unverified title-block values.")
 
     elif extension in {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"}:
         if _local_ocr_runtime_available():
@@ -5847,26 +5936,12 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
                 text_preview = ""
                 source = "fastapi_local_ocr_failed"
         else:
-            ai_raw = None
-            drawing = Drawing(drawing_no="", revision="", description=clean_filename_description(filename), material="Not detected", thickness_mm=0.0, weight_kg=0.0, quantity=1, notes=[])
-            rows = []
-            warnings = []
-            text_preview = ""
-            source = "fastapi_visual"
+            ai_raw, drawing, rows, warnings, text_preview = await run_in_threadpool(_local_fastapi_engineering_extract, content, filename, False)
+            warnings.append("OCR runtime unavailable; product measurements remain editable and unverified.")
+            source = "fastapi_visual_review"
 
-        if ai_raw is None or _mandatory_or_feature_incomplete(ai_raw or {}, drawing, text_preview):
-            gemini_raw, gemini_reason = await run_in_threadpool(
-                _gemini_extract_engineering, content, filename, text_preview
-            )
-            if gemini_raw:
-                ai_raw = _merge_gemini_into_local(ai_raw or {}, gemini_raw, drawing)
-                drawing = ai_result_to_drawing(ai_raw)
-                rows = ai_result_to_rows(ai_raw, drawing) or rows
-                source = "fastapi_visual+gemini_fallback"
-            elif gemini_reason and _gemini_api_key():
-                warnings.append(f"Visual fallback unavailable: {gemini_reason}")
-            elif not _local_ocr_runtime_available():
-                warnings.append("Image/scanned drawing requires GEMINI_API_KEY in production or the optional local OCR package for desktop use.")
+        if ai_raw is None:
+            warnings.append("No verifiable optical product callouts were recovered; review the original drawing.")
     elif extension==".dxf":
         try:
             ai_raw,drawing,rows,warnings=analyze_dxf_geometry(content,filename)
@@ -5904,6 +5979,7 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
                 "drawing_no": drawing.drawing_no,
                 "revision": drawing.revision,
                 "description": drawing.description,
+                **({"product_region_policy":"positioned_product_only"} if extension in (".pdf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff") else {}),
                 "drawing_type": "part",
                 "material": {"family": drawing.material, "grade": "", "specification": ""},
                 "thickness_mm": drawing.thickness_mm or None,
@@ -5920,6 +5996,64 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
             source_format=extension.lstrip(".").upper(),
             rows=rows,
         )
+
+    # Recover thickness from an explicitly labelled extracted measurement only.
+    if drawing.thickness_mm <= 0 and "Thickness" not in (ai_raw.get("conflicting_fields") or []):
+        candidates = set()
+        for dim in ai_raw.get("dimensions") or []:
+            if not isinstance(dim, dict):
+                continue
+            if not re.search(r"\b(?:wall thickness|thickness|thk)\b", str(dim.get("label") or ""), re.I):
+                continue
+            try:
+                val = float(dim.get("value_mm") or 0)
+            except (ValueError, TypeError):
+                continue
+            if math.isfinite(val) and 0 < val <= 500:
+                candidates.add(val)
+        if len(candidates) == 1:
+            thickness = candidates.pop()
+            ai_raw["thickness_mm"] = thickness
+            drawing.thickness_mm = thickness
+            warnings = list(dict.fromkeys([*warnings, "Thickness estimated from extracted thickness measurement; verify before release."]))
+            rows = ai_result_to_rows(ai_raw, drawing) or rows
+
+    if extension == ".pdf" and "Thickness" not in (ai_raw.get("conflicting_fields") or []) and (drawing.thickness_mm <= 0 or not positive(ai_raw.get("thickness_mm"))):
+        try:
+            with fitz.open(stream=content, filetype="pdf") as doc:
+                printed = recover_printed_thickness(ai_raw, geometry_text(content, filename, ai_raw.get("optical_text_regions") or []))
+            if printed:
+                drawing.thickness_mm = printed
+                rows = ai_result_to_rows(ai_raw, drawing) or rows
+        except Exception as exc:
+            print(f"[THICKNESS WARNING] {exc}")
+    if positive(drawing.thickness_mm) and not positive(ai_raw.get('thickness_mm')):
+        ai_raw['thickness_mm'] = drawing.thickness_mm
+    if "Thickness" not in (ai_raw.get("conflicting_fields") or []) and (not positive(ai_raw.get("thickness_mm")) or not positive(drawing.thickness_mm)):
+        thickness = normalize_thickness(ai_raw)
+        if thickness:
+            drawing.thickness_mm = thickness
+            rows = ai_result_to_rows(ai_raw, drawing) or rows
+    wall = normalize_wall(ai_raw) if "Thickness" not in (ai_raw.get("conflicting_fields") or []) else None
+    if wall:
+        drawing.thickness_mm = wall
+        od, inner = pipe_dimensions(ai_raw)
+        length = float(ai_raw.get("length_mm") or 0)
+        if length <= 0:
+            length = next((float(d.get("value_mm") or 0) for d in ai_raw.get("dimensions", []) if str(d.get("label", "")).lower() in ("length", "overall length")), 0)
+        material_key = _internal_material_key(ai_raw, drawing)
+        if length > 0 and any(key in material_key for key in _INTERNAL_DENSITY_KG_PER_MM3) and not _ai_has_explicit_weight_evidence(ai_raw) and ai_raw.get("weight_source") != "cad_solid_volume":
+            drawing.weight_kg = math.pi * (od**2-inner**2)/4 * length * _internal_density(ai_raw, drawing)
+            ai_raw["weight_kg"] = drawing.weight_kg
+            ai_raw["weight_source"] = "geometry_prediction"
+            ai_raw.setdefault("mandatory_fields", {})["weight_kg"] = True
+        rows = ai_result_to_rows(ai_raw, drawing) or rows
+    if extension == ".pdf":
+        try:
+            with fitz.open(stream=content, filetype="pdf") as doc:
+                ai_raw["purchased_callouts"] = purchased_callouts(geometry_text(content, filename, ai_raw.get("optical_text_regions") or []))
+        except Exception:
+            pass
 
     # Final safety normalization: every supported upload must return an editable
     # engineering review even when OCR/AI/parser coverage is incomplete. Keep
@@ -5940,9 +6074,9 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
         predicted_dims = []
         if "length" not in dim_labels and "overall x" not in dim_labels:
             predicted_dims.append({"label": "Overall Length (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10})
-        if "width" not in dim_labels and "overall y" not in dim_labels:
+        if "width" not in dim_labels and "overall y" not in dim_labels and (ai_raw.get("field_applicability") or {}).get("width")!="not_applicable":
             predicted_dims.append({"label": "Overall Width (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10})
-        if float(ai_raw.get("thickness_mm") or drawing.thickness_mm or 0) <= 0 and "thickness" not in dim_labels and "overall z" not in dim_labels:
+        if float(ai_raw.get("thickness_mm") or drawing.thickness_mm or 0) <= 0 and "thickness" not in dim_labels and "overall z" not in dim_labels and (ai_raw.get("field_applicability") or {}).get("thickness")!="not_applicable":
             predicted_dims.append({"label": "Thickness (Predicted)", "value_mm": 0.0, "tolerance": "", "quantity": 1, "confidence": 10})
         if predicted_dims:
             ai_raw["dimensions"] = [*existing_dims, *predicted_dims]
@@ -5955,6 +6089,25 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
         rows = ai_result_to_rows(ai_raw, drawing) or rows
         if "predicted" not in source:
             source = f"{source}+predicted_review"
+
+    if extension in (".pdf", ".dxf", ".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff"):
+        try:
+            if extension == '.pdf':
+                await run_in_threadpool(attach_pdf_evidence, ai_raw, content)
+            elif extension == '.dxf':
+                await run_in_threadpool(attach_dxf_evidence, ai_raw, content)
+            else:
+                await run_in_threadpool(attach_image_evidence, ai_raw, content, None)
+            if not positive(drawing.thickness_mm) and positive(ai_raw.get('thickness_mm')):
+                drawing = ai_result_to_drawing(ai_raw)
+                rows = ai_result_to_rows(ai_raw,drawing) or rows
+            ai_raw['evidence_hash'] = file_hash
+            preview_image = ai_raw.get("evidence_preview") or make_drawing_preview(content, filename)
+        except Exception as exc:
+            print(f"[DRAWING EVIDENCE WARNING] {type(exc).__name__}: {exc}")
+
+    if not preview_image and extension in (".pdf", ".png", ".jpg", ".jpeg", ".webp"):
+        preview_image = make_drawing_preview(content, filename)
 
     # Never make database/settings availability part of the Analyze critical
     # path. Return the extraction first; persistence is best-effort background
@@ -6008,6 +6161,73 @@ async def analyze(background_tasks: BackgroundTasks, file: UploadFile = File(...
         "source_type": "drawing",
         "source_format": extension.lstrip(".").upper(),
     }
+
+
+@app.post("/api/drawing/page")
+async def drawing_evidence_page(file: UploadFile = File(...), page: int = Form(...), expected_hash: str = Form("")):
+    if Path(file.filename or '').suffix.lower() != '.pdf':
+        raise HTTPException(400, 'Only PDF drawings have navigable pages.')
+    content=await read_upload(file)
+    digest=sha256(content).hexdigest()
+    if expected_hash and re.fullmatch(r'[a-fA-F0-9]{64}',expected_hash) and digest.lower()!=expected_hash.lower():
+        raise HTTPException(409, 'The selected drawing does not match the analyzed source file.')
+    try:
+        image,count=await run_in_threadpool(render_pdf_evidence_page,content,page)
+    except IndexError as exc:
+        raise HTTPException(404,'Drawing page out of range.') from exc
+    except Exception as exc:
+        raise HTTPException(422,'Unable to render the requested drawing page.') from exc
+    return {'page':page,'image':image,'page_count':count,'evidence_hash':digest}
+
+
+@app.post("/api/drawing/evidence")
+async def recover_drawing_evidence(file: UploadFile = File(...), engineering: str = Form("{}"), expected_hash: str = Form("")):
+    ext=Path(file.filename or '').suffix.lower()
+    if ext not in {'.pdf','.dxf','.png','.jpg','.jpeg','.webp','.bmp','.tif','.tiff','.step','.stp','.iges','.igs'}:
+        raise HTTPException(400, "This file format does not expose supported drawing evidence.")
+    try:
+        data=json.loads(engineering)
+        if not isinstance(data,dict):raise ValueError('Invalid engineering data')
+        content=await read_upload(file)
+        digest=sha256(content).hexdigest()
+        if re.fullmatch(r'[a-fA-F0-9]{64}',expected_hash or '') and digest.lower()!=expected_hash.lower():
+            raise HTTPException(409,'The selected drawing does not match the analyzed source file.')
+        if ext=='.pdf':
+            with fitz.open(stream=content,filetype='pdf') as doc:
+                recover_printed_thickness(data, geometry_text(content, file.filename, data.get('optical_text_regions') or []))
+            normalize_thickness(data)
+            if _local_ocr_runtime_available() and not positive(data.get('thickness_mm')):
+                text, _ = await run_in_threadpool(_extract_local_ocr_text, content, file.filename)
+                data['optical_text_regions'] = cached_regions(content)
+                recover_printed_thickness(data, geometry_text(content, file.filename, data['optical_text_regions']))
+            normalize_thickness(data)
+            await run_in_threadpool(attach_pdf_evidence,data,content)
+        elif ext=='.dxf':
+            if not positive(data.get('thickness_mm')):
+                fresh,_,_,_=await run_in_threadpool(analyze_dxf_geometry,content,file.filename)
+                if positive(fresh.get('thickness_mm')):
+                    for key in ('thickness_mm','thickness_basis'):
+                        if fresh.get(key) is not None: data[key]=fresh[key]
+                    data['dimensions']=[d for d in data.get('dimensions',[]) if not (isinstance(d,dict) and re.search(r'thickness|thk',str(d.get('label') or ''),re.I) and not positive(d.get('value_mm')))]
+                    data['dimensions'].extend(d for d in fresh.get('dimensions',[]) if isinstance(d,dict) and re.search(r'thickness|thk',str(d.get('label') or ''),re.I) and d not in data['dimensions'])
+            await run_in_threadpool(attach_dxf_evidence,data,content)
+        elif ext in {'.step','.stp','.iges','.igs'}:
+            from app.cad_brep import analyze_step_brep
+            result=await run_in_threadpool(analyze_step_brep,content,file.filename)
+            recover_cad_thickness(data,result)
+            data['geometry_locations']=result.get('geometry_locations',[])
+            data['evidence_version']=EVIDENCE_VERSION
+        else:
+            if _local_ocr_runtime_available() and not data.get('optical_text_regions'):
+                text, _ = await run_in_threadpool(_extract_local_ocr_text, content, file.filename)
+                data['optical_text_regions'] = cached_regions(content)
+                recover_printed_thickness(data,normalize_length_units(text))
+            await run_in_threadpool(attach_image_evidence,data,content,None)
+        data['evidence_hash']=digest
+    except HTTPException: raise
+    except Exception as exc:
+        raise HTTPException(422, 'Unable to render original drawing evidence.') from exc
+    return {k:data[k] for k in ('evidence_preview','evidence_pages','evidence_page_count','drawing_locations','geometry_locations','evidence_version','evidence_hash','thickness_mm','thickness_basis','dimensions') if k in data}
 
 
 @app.put("/api/review/current")
@@ -6607,7 +6827,8 @@ def delete_quotation(quote_id: str):
 
 
 @app.post("/api/export/excel")
-def excel(value: ExportReq):
+def excel(value: DetailedExportReq):
+    import json
     wb = Workbook()
     ws = wb.active
     ws.title = "Cost Estimate"
@@ -6718,6 +6939,36 @@ def excel(value: ExportReq):
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
 
+    # Preserve the visible cost sheet and export the associated engineering/BOM records.
+    def safe_cell(v):
+        if isinstance(v,(dict,list)): v = json.dumps(v, ensure_ascii=False)
+        if isinstance(v,str):
+            v = v[:32760]
+            if v.startswith(("=", "+", "-", "@")): v = "'" + v
+        return v
+    def detail_tab(name, records):
+        if not records: return
+        tab = wb.create_sheet(name)
+        keys = list(dict.fromkeys(k for row in records for k in row))
+        tab.append(keys)
+        for row in records: tab.append([safe_cell(row.get(k)) for k in keys])
+        tab.freeze_panes = "A2"
+        tab.auto_filter.ref = tab.dimensions
+        for c in tab[1]:
+            c.font = Font(bold=True, color="FFFFFF")
+            c.fill = PatternFill("solid", fgColor=navy)
+            tab.column_dimensions[c.column_letter].width = 24
+    detail_tab("RFQ Details", [{"Customer":value.customer, "Drawing":value.drawing.drawing_no, "Category":value.engineering.get("manufacturing_category"), "Scope":value.engineering.get("quotation_scope")}])
+    for key, title in [("dimensions","Dimensions"),("holes","Holes"),("threads","Threads"),("bends","Bends"),("chamfers","Chamfers"),("assembly_parts","Assembly Parts"),("manufacturing_processes","Processes")]:
+        detail_tab(title, [r for r in value.engineering.get(key,[]) if isinstance(r,dict)])
+    detail_tab("BOM", value.bom)
+    detail_tab("Commercial Summary", [value.summary.model_dump()])
+    # Formula injection protection for user-supplied text in the legacy sheet.
+    for row in ws.iter_rows():
+        for cell in row:
+            if isinstance(cell.value,str) and cell.value.startswith(("=", "+", "-", "@")):
+                cell.value = "'" + cell.value
+    ws.freeze_panes = "C13"
     out = BytesIO()
     wb.save(out)
     out.seek(0)

@@ -100,6 +100,25 @@ export type CostTraceItem = {
 };
 
 export type AIExtraction = {
+  product_region_policy?: string;
+  conflicting_fields?: string[];
+  field_applicability?: Record<string, "not_applicable" | "review_required">;
+  manufacturing_category?: string;
+  quotation_scope?: string;
+  scope_base_rows?: CostRow[];
+  scope_applied?: string;
+  category_applied?: string;
+  drawing_locations?: { page?: number; label: string; value: string; x: number; y: number; w: number; h: number; kind?: string; callout?: string }[];
+  geometry_locations?: { label: string; value_mm: number; points: number[][]; kind: string; basis: string }[];
+  evidence_version?: number;
+  evidence_hash?: string;
+  evidence_preview?: string;
+  evidence_pages?: Record<string,string>;
+  evidence_page_count?: number;
+  thickness_basis?: string;
+  length_mm?: number | null;
+  width_mm?: number | null;
+  height_mm?: number | null;
   drawing_no?: string;
   revision?: string;
   description?: string;
@@ -120,11 +139,14 @@ export type AIExtraction = {
   };
   thickness_mm?: number | null;
   weight_kg?: number | null;
+  weight_source?: string;
+  drawing_stated_weight_kg?: number;
   weight_prediction?: {
     base_weight_kg: number;
     allowance_kg: number;
     total_weight_kg: number;
     basis: string;
+    source?: string;
   };
   product_quantity?: number;
   dimensions?: EngineeringFeature[];

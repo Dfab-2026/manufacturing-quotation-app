@@ -1,4 +1,1 @@
 -r requirements-render.txt
-numpy>=1.26,<3
-rapidocr>=3.10,<4
-onnxruntime>=1.18,<2

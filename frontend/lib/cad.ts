@@ -273,13 +273,13 @@ async function getDirectOcct() {
 
     try {
       return await window.occtimportjs({
-        locateFile(filename) {
+        locateFile(filename: string) {
           return String(filename).endsWith(".wasm") ? localWasmUrl : filename;
         }
       });
     } catch {
       return window.occtimportjs({
-        locateFile(filename) {
+        locateFile(filename: string) {
           return String(filename).endsWith(".wasm") ? OCCT_WASM_FALLBACK : filename;
         }
       });

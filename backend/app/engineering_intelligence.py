@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 import math
 import re
+from app.manufacturing_scope import manufacturing_category, scope_from_notes
 
 DOCUMENT_TYPES = [
     "Part Drawing",
@@ -513,4 +514,6 @@ def enrich_engineering_intelligence(
     data["process_route"] = process_route
     data["evidence"] = evidence
     data["engineering_intelligence"] = intelligence
+    data.setdefault("manufacturing_category", manufacturing_category(data, intelligence))
+    data.setdefault("quotation_scope", scope_from_notes(data))
     return data

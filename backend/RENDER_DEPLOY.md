@@ -17,7 +17,7 @@ Set these environment variables on the Render service:
 - `DATABASE_URL`: Supabase PostgreSQL Transaction Pooler connection string, preferably port `6543`, with `sslmode=require`. This is required for durable quotations, workspace metadata, and original uploaded STEP/PDF/image files.
 - `FRONTEND_ORIGIN`: optional comma-separated frontend origins. Vercel `*.vercel.app` origins and localhost development origins are already allowed by the API.
 - `MAX_UPLOAD_MB=100`
-- `LOCAL_OCR_ENABLED=false` (the production build installs the required core parsers and OpenCascade; optional local OCR packages are not required for STEP/PDF core routes).
+- `LOCAL_OCR_ENABLED=true` (required for high-resolution reading of scanned or tiny drawing callouts). The production requirements now include RapidOCR and ONNX Runtime. Set `DETAIL_OCR_DPI=400`, `DETAIL_OCR_SECONDS=100`, `DETAIL_OCR_MAX_PAGES=30`, and `DETAIL_OCR_MAX_TILES=160` if overriding defaults. Render must have adequate RAM/CPU for ONNX and CAD processing.
 
 After deployment, open `https://ai-quotation-api.onrender.com/api/health`.
 Confirm that the JSON contains:

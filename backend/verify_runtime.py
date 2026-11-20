@@ -1,14 +1,11 @@
-"""Verify the slim Vercel production runtime.
-
-RapidOCR/ONNX are intentionally optional in production. They remain available
-through requirements-local-ocr.txt for local/desktop use.
-"""
+"""Verify the backend production drawing extraction runtime."""
 from __future__ import annotations
 
 import importlib
 import importlib.util
 import os
 import sys
+import shutil
 
 REQUIRED = {
     "fastapi": "FastAPI",
@@ -43,8 +40,17 @@ if raw_db.startswith(("postgresql://", "postgres://", "postgresql+psycopg://")):
 else:
     print("[OPTIONAL] psycopg: required when PostgreSQL DATABASE_URL is configured")
 
-for module, label in (("rapidocr", "RapidOCR"), ("onnxruntime", "ONNX Runtime")):
-    print(f"[OPTIONAL] {label}: {'installed' if importlib.util.find_spec(module) else 'not bundled in slim production'}")
+if os.getenv("LOCAL_OCR_ENABLED", "true").lower() in {"true", "1", "yes", "on"}:
+    if shutil.which("tesseract"):
+        print("[OK] Tesseract optical reader")
+    else:
+        for module, label in (("rapidocr", "RapidOCR"), ("onnxruntime", "ONNX Runtime")):
+            try:
+                importlib.import_module(module)
+                print(f"[OK] {label}")
+            except Exception as exc:
+                failed.append((label,str(exc)))
+                print(f"[FAIL] {label}: {exc}")
 
 print(f"[OPTIONAL] Gemini visual fallback: {'configured' if os.getenv('GEMINI_API_KEY') else 'not configured'}")
 

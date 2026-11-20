@@ -3,6 +3,11 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AgGridReact } from "ag-grid-react";
 import ModelViewer from "@/components/ModelViewer";
+import { categories, scopes, scopedRows, categoryOf } from "@/lib/manufacturing";
+import DrawingEvidence, { DrawingEvidenceDisclosure } from "@/components/DrawingEvidence";
+import { estimateStock } from "@/lib/stockEstimate";
+import BomThumbnail from "@/components/BomThumbnail";
+import { dimensionApplicability } from "@/lib/drawingApplicability";
 import {
   inspectCadFile,
   isVisualCadFormat
@@ -23,7 +28,6 @@ import type {
   QuoteSummary,
   RateCatalog,
   RateItem,
-  RevisionComparison,
   RevisionRecord,
   Settings,
   PremiumEstimate
@@ -67,7 +71,7 @@ const emptySummary: QuoteSummary = {
   selling_price: 0,
   material_wastage_pct: 10,
   overhead_pct: 20,
-  markup_pct: 30,
+  markup_pct: 40,
   material_wastage_critical: 0,
   overhead_critical: 0,
   markup_critical: 0
@@ -295,6 +299,10 @@ type MaterialCalculatorState = {
   allowanceKg: number;
   predictedTotalWeightKg: number;
   predictionBasis: string;
+  purchaseStock: boolean;
+  stockLengthMm: number;
+  stockWidthMm: number;
+  cuttingGapMm: number;
 };
 
 const EMPTY_MATERIAL_CALCULATOR: MaterialCalculatorState = {
@@ -316,7 +324,8 @@ const EMPTY_MATERIAL_CALCULATOR: MaterialCalculatorState = {
   predictedBaseWeightKg: 0,
   allowanceKg: 1,
   predictedTotalWeightKg: 0,
-  predictionBasis: ""
+  predictionBasis: "",
+  purchaseStock: false, stockLengthMm: 0, stockWidthMm: 0, cuttingGapMm: 3
 };
 
 function inferMaterialDensity(material: string) {
@@ -324,8 +333,9 @@ function inferMaterialDensity(material: string) {
 }
 
 function inferMaterialShape(data: AIExtraction | null | undefined): MaterialShape {
-  const hint = `${data?.part_form || ""} ${data?.cad_geometry?.shape_hint || ""}`.toLowerCase();
-  if (hint.includes("pipe") || hint.includes("tube") || hint.includes("hollow")) return "pipe";
+  const hint = `${data?.manufacturing_category || ""} ${data?.part_form || ""} ${data?.cad_geometry?.shape_hint || ""} ${data?.description || ""}`.toLowerCase();
+  if (/rectangular|square|\brhs\b|\bshs\b/.test(hint) && /tube|pipe|rhs|shs/.test(hint)) return "rect_tube";
+  if (hint.includes("piping") || hint.includes("pipe") || hint.includes("tube") || hint.includes("hollow")) return "pipe";
   if (hint.includes("round") || hint.includes("cylinder") || hint.includes("rod") || hint.includes("bar")) return "round_bar";
   if (hint.includes("angle")) return "angle";
   return "plate";
@@ -397,7 +407,6 @@ function parseDrawingLengthMm(token: string, unitToken = "mm") {
 function thicknessFromEngineeringText(data: AIExtraction) {
   const sources = [
     ...(data.notes || []),
-    ...(data.missing_or_uncertain || []),
     ...(data.evidence || []).flatMap((row) => [row.field, row.value, row.basis])
   ].map((item) => String(item || ""));
 
@@ -425,6 +434,9 @@ function predictedThickness(data: AIExtraction | null | undefined, drawing: Draw
 
   const explicit = Number(data.thickness_mm || drawing.thickness_mm || 0);
   if (explicit > 0) return { value: explicit, basis: "Drawing thickness callout" };
+  // Source-filtered analyses are resolved by the backend; never turn administrative
+  // notes, local feature sizes or a conflicting candidate into thickness.
+  if (data.product_region_policy) return null;
 
   const dimensions = ((data.dimensions || []) as Record<string, unknown>[])
     .map((row) => ({
@@ -438,6 +450,12 @@ function predictedThickness(data: AIExtraction | null | undefined, drawing: Draw
   );
   if (labelled?.value) return { value: labelled.value, basis: "Thickness-labelled drawing dimension" };
 
+  if (/pipe|piping|tube|hollow/i.test(`${data.manufacturing_category || ""} ${data.part_form || ""} ${data.engineering_intelligence?.part_form || ""} ${data.description || ""}`) && !/rectangular|square|rhs|shs/i.test(`${data.part_form || ""} ${data.description || ""}`)) {
+    const unique = (pattern: RegExp) => { const values = [...new Set(dimensions.filter(row=>pattern.test(row.label)).map(row=>row.value))]; return values.length===1 ? values[0] : 0; };
+    const od = unique(/^(?:overall |primary )?(?:outer dia(?:meter)?|outside dia(?:meter)?|external diameter|od|o\.d\.?)$/);
+    const id = unique(/^(?:overall |primary )?(?:inner dia(?:meter)?|inside dia(?:meter)?|internal diameter|id|i\.d\.?)$/);
+    if (od > id && id > 0) return { value: (od - id) / 2, basis: "Wall thickness from (OD − ID) / 2" };
+  }
   const textPrediction = thicknessFromEngineeringText(data);
   if (textPrediction) return textPrediction;
 
@@ -453,7 +471,7 @@ function predictedThickness(data: AIExtraction | null | undefined, drawing: Draw
   const axes = [Number(geometry.x || 0), Number(geometry.y || 0), Number(geometry.z || 0)]
     .filter((value) => Number.isFinite(value) && value > 0)
     .sort((a, b) => a - b);
-  const form = `${data.part_form || ""} ${data.cad_geometry?.shape_hint || ""} ${data.drawing_type || ""}`.toLowerCase();
+  const form = `${data.manufacturing_category || ""} ${data.part_form || ""} ${data.engineering_intelligence?.part_form || ""} ${data.cad_geometry?.shape_hint || ""} ${data.drawing_type || ""}`.toLowerCase();
   const plateLike = /plate|sheet|bracket|cover|panel|enclosure|flat|strip|sheet_metal/.test(form);
 
   if (axes.length === 3 && plateLike) {
@@ -464,7 +482,7 @@ function predictedThickness(data: AIExtraction | null | undefined, drawing: Draw
   }
 
   if (plateLike) {
-    const values = Array.from(new Set(dimensions.map((row) => Number(row.value.toFixed(3)))))
+    const values = Array.from(new Set(dimensions.filter(row => /^(overall )?(length|width|height|depth)$/.test(row.label)).map((row) => Number(row.value.toFixed(3)))))
       .filter((value) => value > 0)
       .sort((a, b) => a - b);
 
@@ -481,6 +499,10 @@ function predictedThickness(data: AIExtraction | null | undefined, drawing: Draw
 }
 
 function parsedEngineeringEnvelopeMm(data: AIExtraction) {
+  if (data.product_region_policy) {
+    const length = Number(data.length_mm || 0), width = Number(data.width_mm || 0);
+    return length > 0 && width > 0 ? { widthMm: length, heightMm: width, basis: "Source-verified overall length × width" } : null;
+  }
   const labelled: { label: string; value: number }[] = [];
   const push = (label: unknown, raw: unknown) => {
     const value = Number(raw || 0);
@@ -585,6 +607,14 @@ function predictedPartWeight(data: AIExtraction | null | undefined, drawing: Dra
     };
   }
 
+  if (data.product_region_policy) {
+    const unitWeight = Number(data.weight_kg || 0);
+    if (unitWeight > 0) {
+      const base = unitWeight * quantity;
+      return { baseWeightKg: base, totalWeightKg: base + 1, basis: "Backend engineering weight × quantity + 1 kg costing allowance", source: "geometry_prediction" as const };
+    }
+    return null;
+  }
   const storedPrediction = data.weight_prediction;
   // Never reuse a historical geometry prediction as source truth. Older drafts
   // can contain values calculated before the current extraction rules. Only a
@@ -758,6 +788,7 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
   const thicknessPrediction = predictedThickness({ ...raw, material }, result.drawing);
   if (!(Number(raw.thickness_mm || 0) > 0) && thicknessPrediction) {
     raw.thickness_mm = Number(thicknessPrediction.value.toFixed(3));
+    raw.thickness_basis = thicknessPrediction.basis;
     const thicknessNote = thicknessPrediction.isFallback
       ? `Default thickness: ${Number(thicknessPrediction.value.toFixed(3))} mm (${thicknessPrediction.basis}).`
       : `Predicted thickness: ${Number(thicknessPrediction.value.toFixed(3))} mm (${thicknessPrediction.basis}).`;
@@ -770,7 +801,7 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
   // Normalize the main overall measurements into the editable Dimensions table as well.
   // This keeps Drawing Review, Part Summary, Material Calculator and quotation views
   // on one source of truth instead of showing calculated values in only one screen.
-  const normalizedDimensions = [...((raw.dimensions || []) as Record<string, unknown>[])];
+  const normalizedDimensions = [...((raw.dimensions || []) as Record<string, unknown>[])].filter(row => !(Number(raw.thickness_mm || 0)>0 && /thickness|thk/i.test(String(row.label || "")) && !(normalizedDimensionMm(row)>0)));
   const hasDimensionLabel = (pattern: RegExp) => normalizedDimensions.some((row) =>
     pattern.test(String(row.label || row.type || row.description || "").toLowerCase())
     && normalizedDimensionMm(row) > 0
@@ -805,7 +836,7 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
   // CAD/STEP already has an authoritative X/Y/Z envelope. Do not add the same
   // measurements again as Width/Height/Length — that creates duplicate quotation
   // inputs such as Overall Y=1318.5 and Overall Width=1318.5.
-  if (!hasCadAxisDimensions) {
+  if (!hasCadAxisDimensions && !raw.product_region_policy) {
     if (!hasDimensionLabel(/(^|\b)(width|overall\s*width|w)(\b|$)/i)) {
       addDerivedDimension("Overall Width", normalizedWidth, envelope?.basis || "CAD/drawing envelope");
     }
@@ -814,7 +845,7 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
     }
   }
   if (!hasDimensionLabel(/thickness|thick|thk|plate\s*t|sheet\s*t|wall|gauge/i) && Number(raw.thickness_mm || 0) > 0) {
-    addDerivedDimension("Thickness", Number(raw.thickness_mm), thicknessPrediction?.basis || "Normalized product thickness");
+    addDerivedDimension("Thickness", Number(raw.thickness_mm), raw.thickness_basis || thicknessPrediction?.basis || "Normalized product thickness");
   }
 
   const cadAxisValues = hasCadAxisDimensions
@@ -870,14 +901,14 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
   const missing = (raw.missing_or_uncertain || []).map((item) => String(item));
   raw.missing_or_uncertain = missing.filter((item) => {
     const lower = item.toLowerCase();
-    if (hasThickness && /thick|thk|sheet gauge/.test(lower)) return false;
+    if ((hasThickness || !dimensionApplicability(raw, "Thickness")) && /thick|thk|sheet gauge/.test(lower) && !/conflict|verify|confirm/.test(lower)) return false;
     if (hasWeight && /weight|mass|kg/.test(lower)) return false;
     if (hasMaterial && /material/.test(lower)) return false;
     return true;
   });
 
   if (!hasMaterial) raw.missing_or_uncertain.push("Material family/grade is required to calculate product weight accurately.");
-  if (!hasThickness) raw.missing_or_uncertain.push("Thickness could not be derived from the drawing; confirm the section/stock thickness.");
+  if (!hasThickness && dimensionApplicability(raw, "Thickness")) raw.missing_or_uncertain.push("Thickness could not be derived from the drawing; confirm the section/stock thickness.");
   if (!hasWeight) raw.missing_or_uncertain.push("Weight could not be calculated until usable geometry, thickness and material density are available.");
   raw.missing_or_uncertain = Array.from(new Set(raw.missing_or_uncertain));
 
@@ -890,7 +921,7 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
   if (raw.engineering_intelligence?.completeness) {
     const reviewRequired = (raw.engineering_intelligence.completeness.review_required || []).filter((item) => {
       const lower = String(item).toLowerCase();
-      if (hasThickness && /thick|thk|sheet gauge/.test(lower)) return false;
+      if ((hasThickness || !dimensionApplicability(raw, "Thickness")) && /thick|thk|sheet gauge/.test(lower) && !/conflict|verify|confirm/.test(lower)) return false;
       if (hasWeight && /weight|mass|kg/.test(lower)) return false;
       if (hasMaterial && /material/.test(lower)) return false;
       return true;
@@ -937,7 +968,7 @@ function enrichPartSummary(result: AnalysisResponse): AnalysisResponse {
     };
   });
 
-  if (!materialApplied && costingWeightKg > 0) {
+  if (!materialApplied && costingWeightKg > 0 && !["Welding only", "Customer-supplied raw material", "Customer-supplied components"].includes(raw.quotation_scope || "") && raw.manufacturing_category !== "Standard Components") {
     nextRows = [{
       id: `auto-material-${result.file_hash || Date.now()}`,
       category: "MATERIAL",
@@ -1420,7 +1451,7 @@ export default function Page() {
     overhead: null,
     markup: null
   });
-  const [customer, setCustomer] = useState("Sample Customer");
+  const [customer, setCustomer] = useState("");
   const [dfmReports, setDfmReports] = useState<DfmReport[]>([]);
   const [bomReports, setBomReports] = useState<BomReport[]>([]);
   const [dfmJobs, setDfmJobs] = useState<Record<string, ArtifactJobState>>({});
@@ -1460,7 +1491,6 @@ export default function Page() {
   const costSheetSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fileUrl, setFileUrl] = useState("");
   const [fileUrlSourceFile, setFileUrlSourceFile] = useState<File | null>(null);
-  const [revisionComparison, setRevisionComparison] = useState<RevisionComparison | null>(null);
   const [premiumEstimate, setPremiumEstimate] = useState<PremiumEstimate | null>(null);
   const [premiumBusy, setPremiumBusy] = useState(false);
   const [premiumKpis, setPremiumKpis] = useState<{ quotes: number; total_value: number; won: number; win_rate: number; actual_samples: number; approval_events: number } | null>(null);
@@ -1522,6 +1552,7 @@ export default function Page() {
 
   const [rateTab, setRateTab] = useState<RateTab>("MATERIAL");
   const [rateSearch, setRateSearch] = useState("");
+  const [datasetSearch,setDatasetSearch]=useState("");
   const [showAddRate, setShowAddRate] = useState(false);
   const [draftRate, setDraftRate] = useState<RateItem>(blankRate());
   const [customGrade, setCustomGrade] = useState("");
@@ -1717,7 +1748,7 @@ export default function Page() {
             ...loadedSettings,
             material_wastage_pct: Number(loadedSettings.material_wastage_pct || 10),
             overhead_pct: 20,
-            markup_pct: 30
+            markup_pct: Number(loadedSettings.markup_pct ?? 40)
           };
           localStorage.setItem(COMMERCIAL_DEFAULTS_MIGRATION_KEY, "1");
           void api.saveSettings(nextSettings).catch(() => {
@@ -1855,7 +1886,7 @@ export default function Page() {
         markup: null
       }
     );
-    setCustomer(saved.customer || "Sample Customer");
+    setCustomer(saved.customer || "");
     setModelFile(isBrowserFile(saved.modelFile) ? saved.modelFile : null);
 
     const cachedSourceFiles = (saved.sourceFiles || []).filter(isBrowserFile);
@@ -2091,7 +2122,6 @@ export default function Page() {
     });
     setWorkspaceDatasetId(createWorkspaceDatasetId());
     setWorkspaceDatasetName("Untitled Quotation Dataset");
-    setRevisionComparison(null);
     setRevisionSourceQuoteId("");
     setMsg(message);
   };
@@ -2209,7 +2239,7 @@ export default function Page() {
       summary: payload.summary || batchItems[0]?.summary || emptySummary,
       finalPriceOverride: payload.finalPriceOverride ?? null,
       commercialAmountOverrides: payload.commercialAmountOverrides || { material_wastage: null, overhead: null, markup: null },
-      customer: String(payload.customer || "Sample Customer"),
+      customer: String(payload.customer || ""),
       modelFile,
       sourceFiles,
       activeSourceKey: String(payload.activeSourceKey || primaryKey || fileKey(primaryFile)),
@@ -2804,7 +2834,6 @@ export default function Page() {
     setRows(target.rows);
     setSummary(target.summary);
     setFinalPriceOverride(null);
-    setRevisionComparison(null);
     setMsg(`Showing drawing ${target.drawing.drawing_no || target.file.name}.`);
   };
 
@@ -3210,7 +3239,7 @@ export default function Page() {
     const inferredOd = dimensionByLabel(["outer diameter", "outside dia", "od"]) || inferredDiameter;
     const hasDrawingWeight = String((ai as (AIExtraction & { weight_source?: string }) | undefined)?.weight_source || "") === "drawing_stated"
       && Number((ai as (AIExtraction & { drawing_stated_weight_kg?: number }) | undefined)?.drawing_stated_weight_kg || 0) > 0;
-    const predictedThicknessMm = Number(thicknessPrediction?.value || 0);
+    const predictedThicknessMm = Number(drawing?.thickness_mm || ai?.thickness_mm || thicknessPrediction?.value || 0);
     const inferredIdRaw = dimensionByLabel(["inner diameter", "inside dia", "id"]);
     const inferredId = inferredIdRaw > 0
       ? inferredIdRaw
@@ -3265,7 +3294,9 @@ export default function Page() {
     const predictedBaseWeightKg = materialCalculator.predictedBaseWeightKg > 0
       ? materialCalculator.predictedBaseWeightKg
       : (materialCalculator.predictedTotalWeightKg > 0 ? Math.max(0, materialCalculator.predictedTotalWeightKg - 1) : 0);
-    const totalWeightKg = predictedBaseWeightKg > 0
+    const stock = estimateStock({...materialCalculator,unitVolumeMm3:volumeMm3});
+    if (materialCalculator.purchaseStock && !stock) { setMaterialCalculatorMissing(["Valid supplier stock size and cutting gap"]); return; }
+    const totalWeightKg = materialCalculator.purchaseStock && stock ? stock.purchasedKg : predictedBaseWeightKg > 0
       ? predictedBaseWeightKg + Math.max(0, materialCalculator.allowanceKg)
       : (geometricTotalWeightKg > 0 ? geometricTotalWeightKg + Math.max(0, materialCalculator.allowanceKg) : 0);
 
@@ -3284,7 +3315,7 @@ export default function Page() {
     };
 
     const allowanceText = `${Math.max(0, materialCalculator.allowanceKg).toFixed(3)} kg allowance`;
-    const basis = predictedBaseWeightKg > 0
+    const basis = materialCalculator.purchaseStock && stock ? `${stock.units} stock unit(s) · ${stock.capacity} parts/stock · ${stock.remainingKg.toFixed(3)} kg remaining including kerf` : predictedBaseWeightKg > 0
       ? `Auto drawing prediction · ${predictedBaseWeightKg.toFixed(3)} kg + ${allowanceText}`
       : `${materialCalculator.quantity} × ${shapeLabel[materialCalculator.shape]} · ${unitWeightKg.toFixed(3)} kg/pc + ${allowanceText}`;
     const existing = rows.find((row) => row.id === materialCalculator.rowId);
@@ -3850,49 +3881,48 @@ export default function Page() {
     setEstimatorAnswer(answer);
   }, [estimatorQuestion, premiumEstimate]);
 
-  const comparePreviousRevision = async () => {
-    if (!drawing || !analysis) return;
-
-    try {
-      setBusy(true);
-      const result = await api.compareCurrentRevision({
-        drawing,
-        summary,
-        rows,
-        ai_raw: analysis.ai_raw || {},
-        note: "Current comparison"
-      });
-      setRevisionComparison(result);
-      setMsg(result.available
-        ? `Compared with revision ${result.baseline_revision || "previous"}.`
-        : "No previous revision snapshot found for this drawing.");
-    } catch (error) {
-      setMsg(error instanceof Error ? error.message : "Revision comparison failed.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const saveReview = async () => {
     if (!analysis || !drawing || busy) return;
 
     // Capture the exact reviewed values first. Step 3 must never be blocked by
     // database latency, a history write, or a temporary backend persistence fault.
-    snapshotActiveBatch();
+    const raw = { ...analysis.ai_raw, thickness_mm: drawing.thickness_mm || null, weight_kg: drawing.weight_kg || null };
+    const scope = raw.quotation_scope || scopes[0];
+    const category = categoryOf(raw);
+    const scopeChanged = scope !== (raw.scope_applied || scopes[0]);
+    const categoryChanged = category !== (raw.category_applied || "");
+    const wasStandard = raw.category_applied === "Standard Components";
+    const baseRows = raw.scope_base_rows || rows;
+    const reviewRows = category === "Standard Components" && scope === scopes[0]
+      ? rows.filter(row => row.id.startsWith("bom-purchase-"))
+      : scopeChanged || wasStandard && categoryChanged ? scopedRows(baseRows, scope) : rows;
+    const reviewRaw = { ...raw, scope_applied: scope, category_applied: category,
+      ...(scopeChanged || category === "Standard Components" ? {scope_base_rows: baseRows} : {}) };
+    setAnalysis({ ...analysis, ai_raw: reviewRaw });
+    if (reviewRows !== rows) void recalc(reviewRows);
+    if (activeBatchId) replaceBatchItems(batchItemsRef.current.map(item => item.id === activeBatchId ? {...item, analysis: {...analysis, ai_raw: reviewRaw}, drawing, rows: reviewRows, summary: calculateSummaryLocal(reviewRows)} : item));
+    if (scopeChanged || categoryChanged && category === "Standard Components") {
+      const lifecycle = artifactLifecycleRef.current;
+      void api.generateBom({fileHash: analysis.file_hash, filename: file?.name || drawing.drawing_no, drawing, rows: reviewRows, aiRaw: reviewRaw}).then(report => {
+        if (artifactLifecycleRef.current !== lifecycle) return;
+        setBomReports(current => [...current.filter(item => item.file_hash !== report.file_hash), report]);
+        setSelectedBomId(report.id);
+      }).catch(() => setMsg("BOM refresh failed. Review the current BOM before quoting."));
+    }
 
     const reviewPayload = {
       extraction_id: analysis.extraction_id,
       file_hash: analysis.file_hash,
       drawing,
-      rows,
-      ai_raw: analysis.ai_raw || {}
+      rows: reviewRows,
+      ai_raw: reviewRaw
     };
 
     const revisionPayload = {
       drawing,
-      summary,
-      rows,
-      ai_raw: analysis.ai_raw || {},
+      summary: calculateSummaryLocal(reviewRows),
+      rows: reviewRows,
+      ai_raw: reviewRaw,
       note: "Reviewed extraction saved"
     };
 
@@ -4357,7 +4387,7 @@ export default function Page() {
     setDrawing(quote.drawing);
     setRows(quote.rows);
     setSummary(quote.summary);
-    setCustomer(quote.customer || "Sample Customer");
+    setCustomer(quote.customer || "");
     setFinalPriceOverride(null);
     setCommercialAmountOverrides({ material_wastage: null, overhead: null, markup: null });
     setRevisionSourceQuoteId(isDraft ? "" : quote.id);
@@ -4552,6 +4582,18 @@ export default function Page() {
     }
   };
 
+  const applyWorkbookRates = async () => {
+    setBusy(true);
+    try {
+      const updated = await api.applyWorkbookRates();
+      setRates(updated);
+      setCatalog(await api.getRateCatalog());
+      setMsg("Workbook unit rates saved to Rate Master. Unrelated custom rates retained.");
+    } catch (error) {
+      setMsg(error instanceof Error ? error.message : "Workbook rates could not be saved.");
+    } finally { setBusy(false); }
+  };
+
   const filteredRates = rates.filter((rate) => {
     const tabOk = rateTab === "ALL" || rate.category === rateTab;
     const q = rateSearch.trim().toLowerCase();
@@ -4611,7 +4653,7 @@ export default function Page() {
 
   const processUnitOptions = Array.from(new Set([
     draftRate.category === "PROCESS" ? draftRate.unit : "",
-    "sec", "min", "hr"
+    "sec", "min", "hr", "job", "bend", "operation", "kg", "m·mm", "inch", "m", "hole", "stud"
   ].filter(Boolean)));
 
   const labourUnitOptions = Array.from(new Set([
@@ -4641,7 +4683,7 @@ export default function Page() {
       ...(rate.category === "MATERIAL"
         ? ["kg", "g", "ton", "sheet", "piece"]
         : rate.category === "PROCESS"
-          ? ["sec", "min", "hr"]
+          ? ["sec", "min", "hr", "job", "bend", "operation", "kg", "m·mm", "inch", "m", "hole", "stud"]
           : rate.category === "LABOUR"
             ? ["sec", "min", "hr", "day", "shift", "part-time", "overtime"]
             : rate.category === "COMMERCIAL"
@@ -4993,6 +5035,20 @@ export default function Page() {
       || ["png", "jpg", "jpeg", "webp", "bmp", "tif", "tiff"].includes(previewExtension))
   );
 
+  const applyRecoveredEvidence = (evidence: AIExtraction) => {
+                  if(!analysis || !drawing || (evidence.evidence_hash && /^[a-f0-9]{64}$/i.test(analysis.file_hash) && evidence.evidence_hash.toLowerCase()!==analysis.file_hash.toLowerCase())) return;
+                  const {evidence_preview,evidence_pages,evidence_page_count,drawing_locations,geometry_locations,evidence_version,evidence_hash}=evidence;
+                  const nextRaw:AIExtraction={...analysis.ai_raw,evidence_preview,evidence_pages,evidence_page_count,drawing_locations,geometry_locations,evidence_version,evidence_hash};
+                  const recoveredThickness=Number(evidence.thickness_mm||0);
+                  if(recoveredThickness>0 && !(Number(drawing.thickness_mm||0)>0)) {
+                    nextRaw.thickness_mm=recoveredThickness;nextRaw.thickness_basis=evidence.thickness_basis;
+                    nextRaw.dimensions=[...(nextRaw.dimensions||[]).filter(d=>!(/thickness|thk/i.test(String(d.label||"")) && !(Number(d.value_mm||0)>0))),...(evidence.dimensions||[]).filter(d=>!(nextRaw.dimensions||[]).some(old=>old.label===d.label && Number(old.value_mm)===Number(d.value_mm)))];
+                    const normalized=enrichPartSummary({...analysis,preview_image:evidence_preview||analysis.preview_image,drawing:{...drawing,thickness_mm:recoveredThickness},rows,ai_raw:nextRaw});
+                    setAnalysis(normalized);setDrawing(normalized.drawing);setRows(normalized.rows);void api.calculateQuote(normalized.rows).then(setSummary).catch(()=>undefined);
+                  } else {setAnalysis(current=>current?.file_hash===analysis.file_hash?{...current,preview_image:evidence_preview||current.preview_image,ai_raw:{...current.ai_raw,evidence_preview,evidence_pages,evidence_page_count,drawing_locations,geometry_locations,evidence_version,evidence_hash}}:current);}
+                
+  };
+
   const selectedDfm = dfmReports.find((item) => item.id === selectedDfmId) || dfmReports.at(-1) || null;
   const selectedBom = bomReports.find((item) => item.id === selectedBomId) || bomReports.at(-1) || null;
 
@@ -5003,6 +5059,9 @@ export default function Page() {
       )
     : null;
 
+  const selectedBomWorkspace = selectedBom ? batchItems.find(item=>item.analysis.file_hash===selectedBom.file_hash) : null;
+  const dfmEvidenceAnalysis = selectedDfmWorkspace?.analysis || (analysis?.file_hash===selectedDfm?.file_hash ? analysis : null);
+  const bomEvidenceAnalysis = selectedBomWorkspace?.analysis || (analysis?.file_hash===selectedBom?.file_hash ? analysis : null);
   const selectedDfmSourceFile = selectedDfmWorkspace?.file || null;
   const selectedDfmHas3D =
     Boolean(selectedDfmSourceFile && isModelSource(selectedDfmSourceFile));
@@ -5044,6 +5103,17 @@ export default function Page() {
 
   const updateBom = (next: BomReport) => {
     setBomReports((current) => current.map((item) => item.id === next.id ? next : item));
+  };
+
+  const applyBomPurchaseCosts = (report: BomReport) => {
+    if (!analysis || report.file_hash !== analysis.file_hash) return;
+    const scope = analysis.ai_raw?.quotation_scope || scopes[0];
+    if (![scopes[0], scopes[1]].includes(scope)) { setMsg("Purchased components are excluded by the current quotation scope."); return; }
+    const purchases: CostRow[] = report.items.filter(item => ["Standard Part", "Purchased Part"].includes(item.category)).map((item, index) => ({
+      id: `bom-purchase-${index}`, category: "OTHER", item: item.description, drawingQty: String(item.quantity), costingQty: Math.max(0, Number(item.quantity || 0)), unit: item.unit, rate: Math.max(0, Number(item.unit_cost || 0)), cost: Math.max(0, Number(item.quantity || 0)) * Math.max(0, Number(item.unit_cost || 0)), confidence: "Estimated", rateSource: "BOM supplier rate", criticalScore: Number(item.unit_cost) > 0 ? 50 : 100
+    }));
+    void recalc([...rows.filter(row => !row.id.startsWith("bom-purchase-")), ...purchases]);
+    setMsg("BOM purchase costs applied to the active quotation. Review any missing supplier rates.");
   };
 
   const renameDfm = (report: DfmReport) => {
@@ -5110,7 +5180,8 @@ export default function Page() {
   const materialCalcPredictedBaseWeight = materialCalculator.predictedBaseWeightKg > 0
     ? materialCalculator.predictedBaseWeightKg
     : (materialCalculator.predictedTotalWeightKg > 0 ? Math.max(0, materialCalculator.predictedTotalWeightKg - 1) : 0);
-  const materialCalcTotalWeight = materialCalcPredictedBaseWeight > 0
+  const stockEstimate = estimateStock({...materialCalculator,unitVolumeMm3:materialCalcVolume});
+  const materialCalcTotalWeight = materialCalculator.purchaseStock ? (stockEstimate?.purchasedKg || 0) : materialCalcPredictedBaseWeight > 0
     ? materialCalcPredictedBaseWeight + Math.max(0, materialCalculator.allowanceKg)
     : (materialCalcGeometricWeight > 0 ? materialCalcGeometricWeight + Math.max(0, materialCalculator.allowanceKg) : 0);
   const materialCalcAmount = materialCalcTotalWeight * Math.max(0, materialCalculator.pricePerKg);
@@ -5722,14 +5793,11 @@ export default function Page() {
                 <div className="heading row">
                   <div><p className="eyebrow">STEP 2</p><h2>Drawing Snapshot & Basic Details</h2><p>Confirm the drawing identity and key values. Full engineering details stay in the Excel sheet.</p></div>
                   <div className="actions compact">
-                    <button className="btn secondary" disabled={busy || !drawing.drawing_no} onClick={() => void comparePreviousRevision()}>Compare Previous</button>
-                    <button className="btn primary" disabled={busy} onClick={saveReview}>Save Review & Continue</button>
+
                   </div>
                 </div>
                 <div className="extraction-status">
-                  <span className={`source-badge ${["fastapi_local", "cad_geometry", "reviewed_memory", "dxf_geometry"].includes(analysis?.learning_source || "") ? "good" : "warn"}`}>
-                    Source: {analysis?.learning_source || "unknown"}
-                  </span>
+
                   {analysis?.extraction_warnings?.map((warning, i) => (
                     <span className="extract-warning" key={i}>⚠ {warning}</span>
                   ))}
@@ -5764,34 +5832,12 @@ export default function Page() {
                   );
                 })()}
 
-                {revisionComparison && (
-                  <div className={`revision-compare-panel ${revisionComparison.available ? "available" : "empty"}`}>
-                    <div>
-                      <span>REVISION COMPARISON</span>
-                      <b>{revisionComparison.available
-                        ? `${revisionComparison.baseline_revision || "Previous"} → ${revisionComparison.current_revision || "Current"}`
-                        : "No previous revision"}</b>
-                    </div>
-                    {revisionComparison.available && (
-                      <>
-                        <strong>{revisionComparison.changes.length} change{revisionComparison.changes.length === 1 ? "" : "s"}</strong>
-                        <em className={revisionComparison.cost_delta > 0 ? "increase" : revisionComparison.cost_delta < 0 ? "decrease" : "same"}>
-                          Cost Δ {money(revisionComparison.cost_delta)}
-                        </em>
-                        <div className="revision-change-list">
-                          {revisionComparison.changes.slice(0, 6).map((change, index) => (
-                            <span key={`${change.field}-${index}`}>
-                              <b>{change.field}</b>
-                              <small>{String(change.previous ?? "—")} → {String(change.current ?? "—")}</small>
-                            </span>
-                          ))}
-                        </div>
-                      </>
-                    )}
-                  </div>
-                )}
+                <div className="basic-review-form manufacturing-review-card">
+                    <label><span>Manufacturing category</span><select value={categoryOf(analysis?.ai_raw)} onChange={(e) => setAnalysis(current => current ? {...current, ai_raw: {...(current.ai_raw || {}), manufacturing_category: e.target.value}} : current)}>{categories.map(item => <option key={item}>{item}</option>)}</select></label>
+                    <label><span>Quotation scope</span><select value={analysis?.ai_raw?.quotation_scope || scopes[0]} onChange={(e) => setAnalysis(current => current ? {...current, ai_raw: {...(current.ai_raw || {}), quotation_scope: e.target.value}} : current)}>{scopes.map(item => <option key={item}>{item}</option>)}</select></label>
+                </div>
 
-                <div className="review">
+                <div className="review aligned-drawing-review">
                   <div className="paperbox">
                     <div className="drawing-snapshot">
                       {drawingPreviewSource && isVisualCadFormat(drawingPreviewSource)
@@ -5838,12 +5884,13 @@ export default function Page() {
                   </div>
 
                   <div className="basic-review-form">
+                    <label><span>Customer / Project Name</span><input value={customer} placeholder="Enter customer or project name" onChange={(e)=>setCustomer(e.target.value)}/></label>
                     <label><span>Drawing No.</span><input value={drawing.drawing_no} onChange={(e) => setDrawing({ ...drawing, drawing_no: e.target.value })}/></label>
                     <label><span>Revision</span><input value={drawing.revision} onChange={(e) => setDrawing({ ...drawing, revision: e.target.value })}/></label>
                     <label><span>Description</span><input value={drawing.description} onChange={(e) => setDrawing({ ...drawing, description: e.target.value })}/></label>
                     <label><span>Material</span><input value={drawing.material} onChange={(e) => setDrawing({ ...drawing, material: e.target.value })}/></label>
                     <label><span>Thickness</span><div className="value-with-unit"><input type="number" step=".1" value={drawing.thickness_mm || ""} onChange={(e) => setDrawing({ ...drawing, thickness_mm: +e.target.value || 0 })}/><em>mm</em></div></label>
-                    <label><span>Weight</span><div className="value-with-unit"><input type="number" step=".001" value={drawing.weight_kg} onChange={(e) => setDrawing({ ...drawing, weight_kg: +e.target.value })}/><em>kg</em></div></label>
+                    <label><span>Weight</span><div className="value-with-unit"><input type="number" step=".001" value={drawing.weight_kg || ""} onChange={(e) => setDrawing({ ...drawing, weight_kg: +e.target.value || 0 })}/><em>kg</em></div></label>
                     <label><span>Product Qty</span><input type="number" min="1" value={drawing.quantity} onChange={(e) => setDrawing({ ...drawing, quantity: +e.target.value })}/></label>
 
                     <div className="analysis-one-line">
@@ -5854,7 +5901,8 @@ export default function Page() {
                     </div>
                   </div>
                 </div>
-
+                {step === 2 && <DrawingEvidenceDisclosure key={analysis?.file_hash} data={reviewedEngineeringData} source={drawingPreviewSource} previewUrl={currentPreviewUrl} fallbackImage={analysis?.preview_image} sourceHash={analysis?.file_hash} onEvidenceRecovered={applyRecoveredEvidence}/>}
+                <div className="review-bottom-actions"><button className="btn primary" disabled={busy} onClick={saveReview}>Save Review & Continue</button></div>
               </section>
             )}
 
@@ -5863,11 +5911,9 @@ export default function Page() {
                 <div className="heading row">
                   <div><p className="eyebrow">STEP 3</p><h2>Engineering & Cost Sheet</h2><p>Edit each extracted table directly. Tables are arranged one-by-one in a single vertical sheet.</p></div>
                   <div className="actions compact">
-                    <span className={`cost-sheet-save-state ${costSheetSaveState}`}>
-                      {costSheetSaveState === "saving" ? "Saving…" : costSheetSaveState === "saved" ? "✓ Saved to database" : costSheetSaveState === "deferred" ? "⚠ Save pending" : ""}
-                    </span>
-                    <button className="btn secondary" disabled={busy} onClick={refreshCostRates}>↻ Refresh Saved Rates</button>
-                    <button className="btn secondary" onClick={() => api.exportExcel(drawing, rows, liveCostSummary)}>Export Excel</button>
+                    {costSheetSaveState === "saved" && <span className="cost-sheet-save-state saved" role="status">✓ Saved</span>}
+                    {costSheetSaveState === "deferred" && <span className="cost-sheet-save-state" role="status">Save not confirmed · retrying on next edit</span>}
+                    <button className="btn secondary" onClick={() => void api.exportExcel(drawing, rows, liveCostSummary, customer, reviewedEngineeringData, bomReports.find(report=>report.file_hash===analysis?.file_hash)?.items || []).catch(error=>setMsg(error instanceof Error ? error.message : "Excel export failed"))}>Export Excel</button>
                     <button
                       className="btn primary"
                       disabled={batchFailures.length > 0}
@@ -5916,13 +5962,14 @@ export default function Page() {
                 <div className="cost-input-overview" aria-label="Reviewed costing inputs">
                   <div><span>Drawing No.</span><b>{drawing.drawing_no || "—"}</b></div>
                   <div><span>Material</span><b>{drawing.material || "—"}</b></div>
-                  <div><span>Thickness</span><b>{Number(drawing.thickness_mm || 0) > 0 ? `${Number(drawing.thickness_mm).toFixed(3)} mm` : "—"}</b></div>
+                  <div><span>Thickness</span><b>{Number(drawing.thickness_mm || 0) > 0 ? `${Number(drawing.thickness_mm).toFixed(3)} mm` : "Confirm thickness"}</b></div>
                   <div><span>Weight / Piece</span><b>{Number(drawing.weight_kg || 0) > 0 ? `${Number(drawing.weight_kg).toFixed(3)} kg` : "—"}</b></div>
                   <div className="cost-input-edit"><span>Weight Allowance (kg)</span><input type="number" min="0" step="0.1" value={analysis?.ai_raw?.weight_prediction?.allowance_kg ?? 1} onChange={(e) => void updateWeightAllowance(e.target.value)}/></div>
                   <div><span>Product Qty</span><b>{drawing.quantity || 1}</b></div>
                   <div><span>Primary Process</span><b>{reviewedEngineeringData?.engineering_intelligence?.primary_manufacturing_type || reviewedEngineeringData?.primary_manufacturing_type || "—"}</b></div>
                 </div>
 
+                <DrawingEvidence key={analysis?.file_hash} data={reviewedEngineeringData} source={drawingPreviewSource} previewUrl={currentPreviewUrl} fallbackImage={analysis?.preview_image} sourceHash={analysis?.file_hash} onEvidenceRecovered={applyRecoveredEvidence}/>
                 <EngineeringDetails data={reviewedEngineeringData} onChange={updateEngineeringData}/>
 
                 <div className="charge-cards clean-charge-cards">
@@ -6086,10 +6133,19 @@ export default function Page() {
                         </div>
                       </div>
 
+                      <div className="sheet-section" style={{marginTop:12}}>
+                        <h3>Supplier stock & cutting plan</h3>
+                        <label><input type="checkbox" checked={materialCalculator.purchaseStock} onChange={e=>setMaterialCalculator(v=>({...v,purchaseStock:e.target.checked}))}/> Cost full purchased stock instead of weight allowance</label>
+                        {materialCalculator.purchaseStock && <><div className="material-result-grid">
+                          <label>Stock / cut-piece length (mm)<input type="number" min="0" list="rfq-stock-length" value={materialCalculator.stockLengthMm || ""} onChange={e=>setMaterialCalculator(v=>({...v,stockLengthMm:Number(e.target.value)}))}/></label>
+                          {materialCalculator.shape==='plate' && <label>Stock / cut-piece width (mm)<input type="number" min="0" list="rfq-stock-width" value={materialCalculator.stockWidthMm || ""} onChange={e=>setMaterialCalculator(v=>({...v,stockWidthMm:Number(e.target.value)}))}/></label>}
+                          <label>Cutting gap / kerf (mm)<input type="number" min="0" value={materialCalculator.cuttingGapMm} onChange={e=>setMaterialCalculator(v=>({...v,cuttingGapMm:Number(e.target.value)}))}/></label>
+                        </div>{stockEstimate ? <div className="material-result-grid"><div>Parts / stock <b>{stockEstimate.capacity}</b></div><div>Stock units <b>{stockEstimate.units}</b></div><div>Purchased <b>{stockEstimate.purchasedKg.toFixed(3)} kg</b></div><div>Remaining incl. kerf <b>{stockEstimate.remainingKg.toFixed(3)} kg</b></div><div>Blank utilization <b>{stockEstimate.utilization.toFixed(1)}%</b></div></div> : <p>Enter supplier-confirmed stock dimensions that fit the blank.</p>}<datalist id="rfq-stock-length">{[2000,2440,2500,3000,6000].map(n=><option key={n} value={n}/>)}</datalist><datalist id="rfq-stock-width">{[1000,1220,1250,1500].map(n=><option key={n} value={n}/>)}</datalist><small>Stock-size suggestions are examples, not confirmed supplier availability. Rectangular grid or linear cut estimate. Confirm developed blank dimensions, supplier availability and reusable offcuts; no extra weight allowance is added in stock mode.</small></>}
+                      </div>
                       <div className="material-result-grid">
                         <div><span>Volume / piece</span><b>{materialCalcVolume > 0 ? `${(materialCalcVolume / 1_000_000).toFixed(3)} cm³` : "—"}</b></div>
                         <div><span>Weight / piece</span><b>{materialCalcUnitWeight > 0 ? `${materialCalcUnitWeight.toFixed(3)} kg` : "—"}</b></div>
-                        <div className="material-result-primary"><span>Costing Weight (+{Math.max(0, materialCalculator.allowanceKg).toFixed(1)} kg)</span><b>{materialCalcTotalWeight > 0 ? `${materialCalcTotalWeight.toFixed(3)} kg` : "—"}</b></div>
+                        <div className="material-result-primary"><span>{materialCalculator.purchaseStock ? "Purchased stock weight" : `Costing Weight (+${Math.max(0, materialCalculator.allowanceKg).toFixed(1)} kg)`}</span><b>{materialCalcTotalWeight > 0 ? `${materialCalcTotalWeight.toFixed(3)} kg` : "—"}</b></div>
                         <div className="material-result-cost"><span>Material Amount</span><b>{materialCalcAmount > 0 ? money(materialCalcAmount) : "—"}</b></div>
                       </div>
 
@@ -6135,6 +6191,8 @@ export default function Page() {
                     </button>
                   </div>
                 </div>
+
+                <DrawingEvidenceDisclosure key={analysis?.file_hash} data={reviewedEngineeringData} source={drawingPreviewSource} previewUrl={currentPreviewUrl} fallbackImage={analysis?.preview_image} sourceHash={analysis?.file_hash}/>
 
                 {premiumEstimate && (
                   <div className="premium-release-bar">
@@ -6340,6 +6398,7 @@ export default function Page() {
             <div className="heading row">
               <div><p className="eyebrow">ADMIN · COST CONTROL</p><h2>Rate Master</h2><p>Select material + grade or any process/labour item, edit its rate, and set its criticality.</p></div>
               <div className="rate-heading-actions">
+                <button className="btn secondary" disabled={busy} onClick={() => void applyWorkbookRates()} title="Replace only workbook-mapped rates with the supplied Excel values">Apply Excel Rates</button>
                 <button className="btn secondary" disabled={busy} onClick={() => void restoreStarterRates()}>
                   Restore Starter Defaults
                 </button>
@@ -6361,7 +6420,8 @@ export default function Page() {
                   <button key={tab} className={rateTab === tab ? "active" : ""} onClick={() => setRateTab(tab)}>{tab === "MATERIAL" ? "Materials" : tab === "PROCESS" ? "Processes" : tab === "LABOUR" ? "Labour" : tab === "COMMERCIAL" ? "Commercial" : tab === "OTHER" ? "Other" : "All"}</button>
                 ))}
               </div>
-              <input className="search" placeholder="Search material, grade or process..." value={rateSearch} onChange={(e) => setRateSearch(e.target.value)}/>
+              <input className="search" type="search" aria-label="Search rate masters" placeholder="Search material, grade or process..." value={rateSearch} onChange={(e) => setRateSearch(e.target.value)}/>
+              <span className="rate-result-count" role="status">{filteredRates.length} of {rates.length} rates</span>
             </div>
 
             <div className="critical-legend rate-legend">
@@ -6867,6 +6927,8 @@ export default function Page() {
                         <button className="btn danger" onClick={() => deleteDfm(selectedDfm)}>Delete</button>
                       </div>
 
+                      {dfmEvidenceAnalysis && <DrawingEvidenceDisclosure key={dfmEvidenceAnalysis.file_hash} data={dfmEvidenceAnalysis.ai_raw || null} source={selectedDfmWorkspace?.file || (analysis?.file_hash===dfmEvidenceAnalysis.file_hash ? drawingPreviewSource : null)} fallbackImage={dfmEvidenceAnalysis.preview_image} sourceHash={dfmEvidenceAnalysis.file_hash}/>}
+
                       <div className="artifact-kpi-grid dfm-kpis">
                         <div className={selectedDfm.drawing_no ? "" : "needs-attention"}>
                           <span>Drawing</span>
@@ -7213,6 +7275,8 @@ export default function Page() {
                         <button className="btn danger" onClick={() => deleteBom(selectedBom)}>Delete</button>
                       </div>
 
+                      {bomEvidenceAnalysis && <DrawingEvidenceDisclosure key={bomEvidenceAnalysis.file_hash} data={bomEvidenceAnalysis.ai_raw || null} source={selectedBomWorkspace?.file || (analysis?.file_hash===bomEvidenceAnalysis.file_hash ? drawingPreviewSource : null)} fallbackImage={bomEvidenceAnalysis.preview_image} sourceHash={bomEvidenceAnalysis.file_hash}/>}
+
                       <div className="artifact-kpi-grid bom-kpis">
                         <div className={selectedBom.drawing_no ? "" : "needs-attention"}>
                           <span>Drawing</span>
@@ -7264,6 +7328,7 @@ export default function Page() {
                       <div className="artifact-section">
                         <div className="artifact-subhead">
                           <div><b>Editable BOM Table</b><span>Raw material + detected standard/purchased parts</span></div>
+                          <button className="btn secondary" disabled={selectedBom.file_hash !== analysis?.file_hash} onClick={() => applyBomPurchaseCosts(selectedBom)}>Apply Purchase Costs to Quotation</button>
                           <button className="btn secondary" onClick={() => updateBom({
                             ...selectedBom,
                             items: [...selectedBom.items, {
@@ -7307,10 +7372,10 @@ export default function Page() {
                                   }}/></td>
                                   <td><select value={item.category} onChange={(e) => {
                                     const items = [...selectedBom.items]; items[index] = { ...items[index], category: e.target.value }; updateBom({ ...selectedBom, items });
-                                  }}><option>Raw Material</option><option>Standard Part</option><option>Manufactured Part</option><option>Purchased Part</option></select></td>
-                                  <td><input value={item.description} onChange={(e) => {
+                                  }}><option>Raw Material</option><option>Standard Part</option><option>Manufactured Part</option><option>Manufactured Component</option><option>Purchased Part</option><option>Customer Supplied</option></select></td>
+                                  <td><div style={{display:"flex",alignItems:"center",gap:8}}><BomThumbnail description={item.description} category={item.category}/><input value={item.description} onChange={(e) => {
                                     const items = [...selectedBom.items]; items[index] = { ...items[index], description: e.target.value }; updateBom({ ...selectedBom, items });
-                                  }}/></td>
+                                  }}/></div></td>
                                   <td><input value={item.material} onChange={(e) => {
                                     const items = [...selectedBom.items]; items[index] = { ...items[index], material: e.target.value }; updateBom({ ...selectedBom, items });
                                   }}/></td>
@@ -7432,8 +7497,9 @@ export default function Page() {
                 <button className="btn secondary" onClick={() => void refreshWorkspaceDatasets()}>Refresh Folders</button>
               </div>
 
+              <div className="page-list-filter"><label>Find workspace<input type="search" value={datasetSearch} onChange={e=>setDatasetSearch(e.target.value)} placeholder="Dataset or drawing number"/></label><span role="status">{workspaceDatasets.filter(item=>`${item.datasetName} ${item.drawingNo || ""}`.toLowerCase().includes(datasetSearch.trim().toLowerCase())).length} of {workspaceDatasets.length} workspaces</span></div>
               <div className="workspace-dataset-list">
-                {workspaceDatasets.map((item) => (
+                {workspaceDatasets.filter(item=>`${item.datasetName} ${item.drawingNo || ""}`.toLowerCase().includes(datasetSearch.trim().toLowerCase())).map((item) => (
                   <article key={item.datasetId}>
                     <div className="workspace-dataset-icon">DATA</div>
                     <div className="workspace-dataset-main">
@@ -7454,9 +7520,9 @@ export default function Page() {
                   </article>
                 ))}
 
-                {!workspaceDatasets.length && (
+                {!workspaceDatasets.some(item=>`${item.datasetName} ${item.drawingNo || ""}`.toLowerCase().includes(datasetSearch.trim().toLowerCase())) && (
                   <div className="empty">
-                    No workspace dataset folder yet. Upload a drawing and the first folder will be created automatically.
+                    {workspaceDatasets.length ? "No matching workspace folders." : "No workspace dataset folder yet. Upload a drawing and the first folder will be created automatically."}
                   </div>
                 )}
               </div>
@@ -7469,6 +7535,7 @@ export default function Page() {
           </section>
         )}
 
+        {view === "settings" && !settings && <section className="panel"><div className="heading"><h2>Settings</h2><p>Settings are not loaded. Check the backend connection and retry.</p></div><button className="btn secondary" onClick={()=>void refresh()}>Retry loading settings</button></section>}
         {view === "settings" && settings && (
           <SettingsEditor
             value={settings}
@@ -7614,6 +7681,7 @@ function EditableFeatureTable({
     } else if (column.kind === "number") {
       const text = String(raw);
       current[column.key] = text.trim() === "" ? null : Number(text);
+      if (column.key === "value_mm") { current.original_value = current[column.key]; current.original_unit = "mm"; }
     } else {
       current[column.key] = String(raw);
     }
@@ -7874,7 +7942,18 @@ function EngineeringDetails({
   }
 
   const setFeature = (key: keyof AIExtraction, value: unknown) => {
-    onChange({ ...data, [key]: value } as AIExtraction);
+    const next = { ...data, [key]: value } as AIExtraction;
+    if (key === "dimensions" && data.product_region_policy && Array.isArray(value)) {
+      // Only resolved, explicitly named axes can update the overall scalars.
+      // A manually resolved value must not be silently replaced by a local feature.
+      const fields = [["length_mm", "length"], ["width_mm", "width"], ["height_mm", "height"], ["thickness_mm", "thickness"]] as const;
+      for (const [field, label] of fields) {
+        const matches = value.filter(row => String(row?.label || "").toLowerCase().replace(/^overall /, "").replace(/ \(review required\)$/, "") === label);
+        const candidates = Array.from(new Set(matches.map(row => Number(row.value_mm)).filter(n => Number.isFinite(n) && n > 0)));
+        if (matches.length) next[field] = candidates.length === 1 ? candidates[0] : null;
+      }
+    }
+    onChange(next);
   };
 
   const setMaterial = (key: "family" | "grade" | "specification", value: string) => {
@@ -7944,8 +8023,12 @@ function EngineeringDetails({
   ) => {
     const nextValue = value.trim() === "" ? null : Number(value);
 
+    const applicability = { ...data.field_applicability };
+    if (Number(nextValue || 0) > 0 && key === "thickness_mm") delete applicability.thickness;
+    if (Number(nextValue || 0) > 0 && key === "weight_kg") delete applicability.weight;
     onChange({
       ...data,
+      field_applicability: applicability,
       [key]: key === "product_quantity"
         ? (nextValue == null ? undefined : Math.max(1, Number(nextValue)))
         : nextValue
@@ -8116,11 +8199,11 @@ function EngineeringDetails({
               </tr>
               <tr id="sheet-summary-material"><td>Material Family</td><td><input className="sheet-cell-input" value={data.material?.family || ""} onChange={(e) => setMaterial("family", e.target.value)}/></td></tr>
               <tr id="sheet-summary-grade"><td>Grade</td><td><input className="sheet-cell-input" value={data.material?.grade || ""} onChange={(e) => setMaterial("grade", e.target.value)}/></td></tr>
-              <tr id="sheet-summary-thickness"><td>Thickness (mm)</td><td><input className="sheet-cell-input" type="number" step="any" value={Number(data.thickness_mm ?? 0) > 0 ? Number(data.thickness_mm ?? 0) : ""} onChange={(e) => setSummaryNumber("thickness_mm", e.target.value)}/>{(data.notes || []).some((note) => String(note).startsWith("Predicted thickness:")) && <small className="summary-derived-note">Auto-predicted from drawing geometry</small>}</td></tr>
+              <tr id="sheet-summary-thickness"><td>Thickness (mm)</td><td><input className="sheet-cell-input" type="number" step="any" value={Number(data.thickness_mm ?? 0) > 0 ? Number(data.thickness_mm ?? 0) : ""} placeholder={dimensionApplicability(data,"Thickness") ? "Review required" : "N/A"} onChange={(e) => setSummaryNumber("thickness_mm", e.target.value)}/>{(data.notes || []).some((note) => String(note).startsWith("Predicted thickness:")) && <small className="summary-derived-note">Auto-predicted from drawing geometry</small>}</td></tr>
               <tr id="sheet-summary-weight">
                 <td>Weight (kg)</td>
                 <td>
-                  <input className="sheet-cell-input" type="number" step="any" value={data.weight_kg ?? ""} onChange={(e) => setSummaryNumber("weight_kg", e.target.value)}/>
+                  <input className="sheet-cell-input" type="number" step="any" value={Number(data.weight_kg || 0) > 0 ? Number(data.weight_kg) : ""} placeholder={dimensionApplicability(data,"Weight") ? "Review required" : "N/A"} onChange={(e) => setSummaryNumber("weight_kg", e.target.value)}/>
                   {data.weight_prediction && (
                     <small className="summary-derived-note" title={data.weight_prediction.basis}>
                       Predicted {Number(data.weight_prediction.base_weight_kg || 0).toFixed(3)} kg + 1 kg allowance
@@ -8448,8 +8531,12 @@ function Recent({
   onEdit: (quote: QuoteRecord) => void;
   onDelete: (quote: QuoteRecord) => void;
 }) {
+  const [search,setSearch]=useState("");
+  const [status,setStatus]=useState("all");
+  const filtered=quotes.filter(q=>[q.name,q.id,q.drawing_no,q.customer,q.description,q.revision].some(v=>String(v||"").toLowerCase().includes(search.trim().toLowerCase())) && (status==="all" || String(q.status||"Completed").toLowerCase().includes(status)));
   return (
     <div className="quote-history-wrap">
+      <div className="page-list-filter"><label>Search quotations<input type="search" value={search} onChange={e=>setSearch(e.target.value)} placeholder="Customer, drawing or quotation"/></label><label>Status<select value={status} onChange={e=>setStatus(e.target.value)}><option value="all">All statuses</option>{Array.from(new Set(quotes.map(q=>String(q.status||"Completed").toLowerCase()))).sort().map(v=><option key={v} value={v}>{v}</option>)}</select></label><span role="status">{filtered.length} of {quotes.length} quotations</span></div>
       <div className="quote-history-table">
         <div className="qh-row qh-head">
           <span>Name</span>
@@ -8461,7 +8548,7 @@ function Recent({
           <span>Actions</span>
         </div>
 
-        {quotes.length ? quotes.slice().sort((a, b) => {
+        {filtered.length ? filtered.slice().sort((a, b) => {
           const aTime = new Date(a.updated_at || a.created_at || 0).getTime();
           const bTime = new Date(b.updated_at || b.created_at || 0).getTime();
           return bTime - aTime;
@@ -8492,7 +8579,7 @@ function Recent({
             </span>
           </div>
         )) : (
-          <div className="empty">No saved quotations yet.</div>
+          <div className="empty">{quotes.length ? "No matching quotations." : "No saved quotations yet."}</div>
         )}
       </div>
     </div>

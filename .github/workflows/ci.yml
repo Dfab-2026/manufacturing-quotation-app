@@ -15,11 +15,28 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm install
-      - run: npm run lint
-      - run: npm run typecheck
-      - run: npm run test -w @mq/core
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+        working-directory: frontend
+      - run: npm run test:locator
+        working-directory: frontend
       - run: npm run build
+        working-directory: frontend
+      - run: npx tsc --noEmit
+        working-directory: frontend
+      - run: npm audit --audit-level=high
+        working-directory: frontend
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
+      - run: pip install -r backend/requirements-render.txt pytest httpx
+      - run: python -m pytest -q tests
+        working-directory: backend
   extractor:
     runs-on: ubuntu-latest
     steps:

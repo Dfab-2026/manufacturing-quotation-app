@@ -8,12 +8,18 @@ import {
 
 export default function ModelViewer({
   file,
-  issueCount = 0
+  issueCount = 0, highlightPoints = [], highlightPulse = 0
 }: {
   file: File | null;
   issueCount?: number;
+  highlightPoints?: number[][];
+  highlightPulse?: number;
 }) {
+  const highlightRef = useRef<(points:number[][])=>void>(()=>{});
+  const latestPoints = useRef(highlightPoints);
+  useEffect(()=>{latestPoints.current=highlightPoints;highlightRef.current(highlightPoints)},[highlightPoints,highlightPulse]);
   const cadHostRef = useRef<HTMLDivElement | null>(null);
+  const cadCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const [modelViewerReady, setModelViewerReady] = useState(false);
   const [cadMessage, setCadMessage] = useState("");
   const [cadReady, setCadReady] = useState(false);
@@ -68,16 +74,16 @@ export default function ModelViewer({
   useEffect(() => {
     const host = cadHostRef.current;
 
-    if (!file || !kernelCad || !host) return;
+    const canvas = cadCanvasRef.current;
+    if (!file || !kernelCad || !host || !canvas) return;
 
     let disposed = false;
     let cleanup = () => {};
 
     void (async () => {
       try {
-        // Clear the previous source immediately. Otherwise a newly selected or
-        // restored STEP file can briefly show the old model while parsing.
-        host.replaceChildren();
+        // Three.js owns only the descendants of this dedicated empty mount;
+        // the React-managed wrapper and its overlays are never mutated.
         setCadReady(false);
         setCadMessage("Loading STEP 3D model…");
 
@@ -88,8 +94,6 @@ export default function ModelViewer({
           throw new Error("STEP parser returned no renderable geometry.");
         }
 
-        host.innerHTML = "";
-
         const scene = new THREE.Scene();
         scene.background = new THREE.Color(0xf5f8fb);
 
@@ -97,13 +101,14 @@ export default function ModelViewer({
         camera.up.set(0, 0, 1);
 
         const renderer = new THREE.WebGLRenderer({
+          canvas,
           antialias: true,
           alpha: false,
           powerPreference: "high-performance"
         });
         renderer.outputColorSpace = THREE.SRGBColorSpace;
         renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-        host.appendChild(renderer.domElement);
+        cleanup = () => renderer.dispose();
 
         scene.add(new THREE.HemisphereLight(0xffffff, 0x596a7b, 1.7));
 
@@ -173,7 +178,9 @@ export default function ModelViewer({
           throw new Error("STEP geometry was read but no drawable mesh was produced.");
         }
 
-        scene.add(group);
+        const pivot = new THREE.Group();
+        scene.add(pivot);
+        pivot.add(group);
 
         const box = new THREE.Box3().setFromObject(group);
         const center = box.getCenter(new THREE.Vector3());
@@ -181,8 +188,8 @@ export default function ModelViewer({
         const maxDimension = Math.max(size.x, size.y, size.z, 1);
 
         group.position.sub(center);
-        group.rotation.x = 0.55;
-        group.rotation.z = -0.45;
+        pivot.rotation.x = 0.55;
+        pivot.rotation.z = -0.45;
 
         let zoom = 1;
         const fitCamera = () => {
@@ -198,6 +205,44 @@ export default function ModelViewer({
           if (!disposed) renderer.render(scene, camera);
         };
 
+        const markerGroup = new THREE.Group();
+        group.add(markerGroup);
+        let timer: ReturnType<typeof setInterval> | undefined;
+        const clearMarkers = () => {
+          if(timer) clearInterval(timer);
+          timer=undefined;
+          markerGroup.traverse((child:any)=>{ child.geometry?.dispose?.(); child.material?.map?.dispose?.(); child.material?.dispose?.(); });
+          markerGroup.clear();
+        };
+        highlightRef.current = (points) => {
+          clearMarkers();
+          if (!points.length) { render(); return; }
+          // Camera-facing markers remain readable regardless of part size,
+          // rotation or zoom. Depth testing is intentionally disabled for review.
+          const pin=document.createElement('canvas'); pin.width=96; pin.height=96;
+          const ctx=pin.getContext('2d');
+          if(!ctx) return;
+          ctx.lineWidth=7;ctx.strokeStyle='#ffffff';ctx.beginPath();ctx.arc(48,48,30,0,Math.PI*2);ctx.stroke();
+          ctx.lineWidth=3;ctx.strokeStyle='#dc2626';ctx.beginPath();ctx.arc(48,48,30,0,Math.PI*2);ctx.stroke();
+          ctx.fillStyle='#dc2626';ctx.beginPath();ctx.arc(48,48,7,0,Math.PI*2);ctx.fill();
+          ctx.lineWidth=4;ctx.beginPath();for(const [x,y,xx,yy] of [[48,4,48,15],[48,81,48,92],[4,48,15,48],[81,48,92,48]]){ctx.moveTo(x,y);ctx.lineTo(xx,yy);}ctx.stroke();
+          const reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          for(const p of points.slice(0,64)) {
+            if(p.length!==3 || !p.every(Number.isFinite)) continue;
+            const texture=new THREE.CanvasTexture(pin);
+            const material=new THREE.SpriteMaterial({map:texture,depthTest:false,depthWrite:false,sizeAttenuation:false,transparent:true});
+            const marker=new THREE.Sprite(material);
+            marker.scale.set(.025,.025,1);marker.position.set(p[0],p[1],p[2]);marker.renderOrder=1000;markerGroup.add(marker);
+          }
+          markerGroup.visible=true; render();
+          let ticks=0;
+          if(markerGroup.children.length && !reduced) timer=setInterval(()=>{
+            const opacity=++ticks%2 ? .55 : 1;
+            markerGroup.children.forEach((marker:any)=>{marker.material.opacity=opacity;});
+            if(ticks>=10){clearInterval(timer);timer=undefined;markerGroup.children.forEach((marker:any)=>{marker.material.opacity=1;});} render();
+          },450);
+        };
+        highlightRef.current(latestPoints.current);
         const resize = () => {
           const width = Math.max(320, host.clientWidth || 0);
           const height = Math.max(280, host.clientHeight || 0);
@@ -232,8 +277,8 @@ export default function ModelViewer({
           previousX = event.clientX;
           previousY = event.clientY;
 
-          group.rotation.z += dx * 0.008;
-          group.rotation.x += dy * 0.008;
+          pivot.rotation.z += dx * 0.008;
+          pivot.rotation.x += dy * 0.008;
           render();
         };
 
@@ -263,6 +308,7 @@ export default function ModelViewer({
 
         cleanup = () => {
           observer.disconnect();
+          clearMarkers(); highlightRef.current=()=>{};
 
           renderer.domElement.removeEventListener("pointerdown", pointerDown);
           renderer.domElement.removeEventListener("pointermove", pointerMove);
@@ -282,11 +328,14 @@ export default function ModelViewer({
 
           renderer.dispose();
 
-          if (renderer.domElement.parentElement === host) {
-            host.removeChild(renderer.domElement);
-          }
+          // Use the node's own remove() method. This is safe if an external
+          // viewer teardown has already detached the canvas.
+          // React owns the canvas and removes it when needed.
         };
       } catch (error) {
+        // If setup failed after the WebGL canvas was mounted, release it too.
+        cleanup();
+        if (disposed) return;
         setCadReady(false);
         setCadMessage(
           error instanceof Error
@@ -312,6 +361,7 @@ export default function ModelViewer({
 
       {file && kernelCad && (
         <div ref={cadHostRef} className="dfm-cad-canvas">
+          <canvas ref={cadCanvasRef} className="dfm-cad-renderer-mount" aria-label="3D CAD model" />
           {cadMessage && (
             <div className="dfm-model-message cad-runtime-message">
               <b>{cadMessage}</b>

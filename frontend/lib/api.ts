@@ -1,5 +1,7 @@
 import type {
   AnalysisResponse,
+  AIExtraction,
+  BomItem,
   BatchQuoteItem,
   BatchQuoteMode,
   BomReport,
@@ -242,7 +244,10 @@ export async function analyzeDrawing(file: File, forceAI = false) {
   // Production critical path: call Render directly first. Do not route the
   // multipart drawing through Next.js/Vercel unless the direct API is genuinely
   // unreachable. This keeps one click -> one FastAPI POST.
-  const targets = [DIRECT_FASTAPI, API].filter(
+  const localFastApi = typeof window !== "undefined"
+    && ["localhost", "127.0.0.1"].includes(window.location.hostname)
+      ? "http://127.0.0.1:8000" : "";
+  const targets = [localFastApi, DIRECT_FASTAPI, API].filter(
     (value, index, values) => Boolean(value) && values.indexOf(value) === index
   );
 
@@ -328,6 +333,7 @@ export async function restoreDefaultRates() {
     method: "POST"
   });
 }
+export async function applyWorkbookRates() { return j<RateItem[]>("/api/rates/apply-workbook", { method: "POST" }); }
 export async function getRateCatalog() { return j<RateCatalog>("/api/rate-catalog"); }
 export async function addRate(value: RateItem) {
   return j<RateItem>("/api/rates", {
@@ -543,12 +549,59 @@ async function dl(response: Response, fallback: string) {
   URL.revokeObjectURL(url);
 }
 
-export async function exportExcel(drawing: DrawingDetails, rows: CostRow[], summary: QuoteSummary) {
+export async function exportExcel(drawing: DrawingDetails, rows: CostRow[], summary: QuoteSummary, customer = "", engineering: AIExtraction | null = null, bom: BomItem[] = []) {
   await dl(await request("/api/export/excel", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ drawing, rows, summary })
+    body: JSON.stringify({ drawing, rows, summary, customer, engineering: engineering || {}, bom })
   }), "costing.xlsx");
+}
+
+export async function recoverDrawingEvidence(file: File, data: AIExtraction | null, signal: AbortSignal, sourceHash?: string): Promise<AIExtraction> {
+  const form = new FormData();
+  form.append("file", file);
+  const { evidence_preview, evidence_pages, drawing_locations, ...engineering } = data || {};
+  form.append("engineering", JSON.stringify(engineering));
+  if (sourceHash && /^[a-f0-9]{64}$/i.test(sourceHash)) form.append("expected_hash", sourceHash);
+  const local = typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(window.location.hostname) ? "http://127.0.0.1:8000" : "";
+  const targets = [local, DIRECT_FASTAPI, API].filter((target,index,all)=>Boolean(target) && all.indexOf(target)===index);
+  let lastError: unknown;
+  for (const target of targets) {
+    if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener("abort",abort,{once:true});
+    const timeout = globalThis.setTimeout(abort, 240000);
+    try {
+      const response = await fetch(`${target}/api/drawing/evidence`, {method:"POST",body:form,signal:controller.signal});
+      if (!response.ok) throw await parseErrorResponse(response);
+      return await response.json() as AIExtraction;
+    } catch(error) { lastError = error; }
+    finally {globalThis.clearTimeout(timeout);signal.removeEventListener("abort",abort);}
+  }
+  throw lastError instanceof Error ? lastError : new Error("Unable to recover drawing evidence.");
+}
+
+export async function fetchDrawingPage(file: File, page: number, signal: AbortSignal, sourceHash?: string): Promise<{page:number;image:string;page_count:number;evidence_hash:string}> {
+  const form = new FormData();
+  form.append("file",file); form.append("page",String(page));
+  if(sourceHash && /^[a-f0-9]{64}$/i.test(sourceHash)) form.append("expected_hash",sourceHash);
+  const local = typeof window !== "undefined" && ["localhost","127.0.0.1"].includes(window.location.hostname) ? "http://127.0.0.1:8000" : "";
+  const targets = [local,DIRECT_FASTAPI,API].filter((target,index,all)=>Boolean(target) && all.indexOf(target)===index);
+  let lastError: unknown;
+  for(const target of targets) {
+    if(signal.aborted) throw new DOMException("Aborted","AbortError");
+    const controller=new AbortController(), abort=()=>controller.abort();
+    signal.addEventListener("abort",abort,{once:true});
+    const timer=globalThis.setTimeout(abort,60000);
+    try {
+      const response=await fetch(`${target}/api/drawing/page`,{method:"POST",body:form,signal:controller.signal});
+      if(!response.ok) throw await parseErrorResponse(response);
+      return await response.json();
+    } catch(error) {lastError=error;}
+    finally {globalThis.clearTimeout(timer);signal.removeEventListener("abort",abort);}
+  }
+  throw lastError instanceof Error ? lastError : new Error("Unable to render page.");
 }
 
 export async function exportPdf(drawing: DrawingDetails, rows: CostRow[], summary: QuoteSummary, customer: string) {

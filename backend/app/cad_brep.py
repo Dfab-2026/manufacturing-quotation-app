@@ -174,6 +174,29 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
         cylinder_radii: list[float] = []
         cylinder_axes: list[dict[str, Any]] = []
         torus_pairs: list[tuple[float, float]] = []
+        torus_points = []
+        geometry_locations = []
+        bounds_min=[xmin,ymin,zmin]; bounds_max=[xmax,ymax,zmax]
+        midpoint=[(a+b)/2 for a,b in zip(bounds_min,bounds_max)]
+        for i,(label,val) in enumerate(zip(('Overall X','Overall Y','Overall Z'),(dx,dy,dz))):
+            if val<=0:continue
+            p0=midpoint.copy();p1=midpoint.copy();p0[i]=bounds_min[i];p1[i]=bounds_max[i]
+            geometry_locations.append({'label':label,'value_mm':round(val,4),'points':[p0,p1],'kind':'extent','basis':'Exact B-Rep bounding extent (not a printed dimension)'})
+        def surface_point(adaptor):
+            try:
+                u=(adaptor.FirstUParameter()+adaptor.LastUParameter())/2
+                v=(adaptor.FirstVParameter()+adaptor.LastVParameter())/2
+                xyz=[float(x) for x in adaptor.Value(u,v).Coord()]
+                return xyz if all(math.isfinite(x) for x in xyz) else None
+            except Exception:return None
+        def add_location(label,value,points,kind='geometry',basis='Exact OCCT geometric source'):
+            clean=[]
+            for point in points:
+                if point and len(point)==3 and all(math.isfinite(float(x)) for x in point):
+                    rounded=[round(float(x),6) for x in point]
+                    if rounded not in clean:clean.append(rounded)
+            if clean and value>0 and math.isfinite(value):
+                geometry_locations.append({'label':label,'value_mm':round(value,4),'points':clean[:32],'kind':kind,'basis':basis})
         cones: list[dict[str, float]] = []
         sphere_radii: list[float] = []
 
@@ -210,6 +233,7 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                         "diameter_mm": radius * 2.0,
                         "direction": direction,
                         "axis_point_mm": closest,
+                        "surface_point_mm": surface_point(adaptor),
                         # Internal cylindrical faces (holes/bores) are normally
                         # reversed relative to the owning solid. This prevents
                         # exterior rounds/bosses from being counted as holes.
@@ -221,6 +245,7 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                 face_counts["toroidal_surfaces"] += 1
                 torus = adaptor.Torus()
                 torus_pairs.append((float(torus.MajorRadius()), float(torus.MinorRadius())))
+                torus_points.append((float(torus.MajorRadius()),float(torus.MinorRadius()),surface_point(adaptor)))
             elif surface_type == GeomAbs_Cone:
                 face_counts["conical_surfaces"] += 1
                 cone = adaptor.Cone()
@@ -243,7 +268,12 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
             edge = _call_static(TopoDS, "Edge", edge_explorer.Current())
             curve = BRepAdaptor_Curve(edge)
             if curve.GetType() == GeomAbs_Circle:
-                circle_radii.append(float(curve.Circle().Radius()))
+                radius=float(curve.Circle().Radius())
+                circle_radii.append(radius)
+                try:
+                    point=list(curve.Value((curve.FirstParameter()+curve.LastParameter())/2).Coord())
+                    add_location(f'Circular Edge Ø{radius*2:g}',radius*2,[point],basis='Measured circular B-Rep edge')
+                except Exception:pass
             edge_explorer.Next()
 
 
@@ -292,8 +322,10 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                 "direction": direction,
                 "axis_point_mm": axis_point,
                 "diameters": [],
+                "points": [],
             })
             group["diameters"].append(diameter)
+            if row.get('surface_point_mm'):group['points'].append((diameter,row['surface_point_mm']))
 
         # One row per physical axis. Group identical primary diameters afterwards
         # so two real Ø10 holes become quantity=2, not 4/8 face occurrences.
@@ -307,6 +339,7 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                 "secondary_diameters_mm": diameters[1:],
                 "direction": group["direction"],
                 "axis_point_mm": group["axis_point_mm"],
+                "points": [point for dia,point in group['points'] if abs(dia-min(diameters))<.005],
             })
 
         grouped_holes: dict[float, list[dict[str, Any]]] = {}
@@ -330,6 +363,10 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                 "basis": "Distinct internal OCCT cylindrical axes; split faces and circular edges deduplicated",
             })
 
+        for dia,rows_for_dia in sorted(grouped_holes.items()):
+            points=[pt for row in rows_for_dia for pt in row['points']]
+            add_location(f'Hole Ø{dia:g}',dia,points,basis='Measured internal cylindrical hole face(s)')
+            add_location('Hole diameter',dia,points,basis='Measured internal cylindrical hole face(s)')
         # Identify semantic primary OD/ID only for elongated rotational parts.
         primary_outer_diameters: list[float] = []
         primary_inner_diameters: list[float] = []
@@ -421,7 +458,37 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                 },
             ])
 
-        wall_thickness = _infer_wall_thickness(cylinder_radii, torus_pairs)
+        for label,diameters,internal in [('Primary Outside Diameter',outer_values,False),('Primary Inside Diameter',inner_values,True)]:
+            if not diameters or primary is None:continue
+            value=max(diameters)
+            if internal and outer_values:
+                eligible=[v for v in diameters if v<max(outer_values)]
+                if eligible:value=max(eligible)
+            pts=[row.get('surface_point_mm') for row in cylinder_axes if row.get('internal')==internal and abs(row['diameter_mm']-value)<.005 and abs(sum(row['direction'][i]*primary[i] for i in range(3)))>=.94]
+            add_location(label,value,pts,basis='Dominant-axis measured cylindrical face(s)')
+        for major,minor,point in torus_points:
+            add_location('Bend / Torus Major Radius',major,[point],basis='Measured toroidal surface')
+            add_location('Bend / Torus Minor Radius',minor,[point],basis='Measured toroidal surface')
+        # Measured concentric internal/external cylinders, not two arbitrary radii.
+        coaxial_pairs=[]
+        for outer in cylinder_axes:
+            if outer['internal']:continue
+            for inner in cylinder_axes:
+                if not inner['internal']:continue
+                if abs(sum(a*b for a,b in zip(outer['direction'],inner['direction'])))<.999:continue
+                if math.dist(outer['axis_point_mm'],inner['axis_point_mm'])>.05:continue
+                thickness=(outer['diameter_mm']-inner['diameter_mm'])/2
+                if thickness>0 and thickness<=outer['diameter_mm']/2:coaxial_pairs.append((thickness,outer,inner))
+        distinct={round(row[0],4) for row in coaxial_pairs}
+        wall_thickness = _infer_wall_thickness([],torus_pairs)
+        if len(distinct)==1:
+            thickness,outer,inner=coaxial_pairs[0]
+            wall_thickness={'value_mm':round(thickness,4),'basis':'paired_coaxial_internal_external_faces','evidence':{'outer_diameter_mm':outer['diameter_mm'],'inner_diameter_mm':inner['diameter_mm']},'confidence':90}
+            add_location('Thickness',thickness,[outer.get('surface_point_mm'),inner.get('surface_point_mm')],kind='calculation',basis='Concentric internal/external cylindrical faces: (OD − ID)/2')
+        elif wall_thickness and wall_thickness.get('basis')=='paired_toroidal_surfaces':
+            evidence=wall_thickness['evidence']
+            pts=[pt for maj,mi,pt in torus_points if abs(maj-evidence['bend_radius_mm'])<.1 and any(abs(mi-evidence[k])<.01 for k in ('outer_minor_radius_mm','inner_minor_radius_mm'))]
+            add_location('Thickness',wall_thickness['value_mm'],pts,kind='calculation',basis='Paired toroidal surface radii; estimated wall section')
         solid_count = _count_explorer(shape, TopAbs_SOLID, TopExp_Explorer)
         face_count = _count_explorer(shape, TopAbs_FACE, TopExp_Explorer)
         edge_count = _count_explorer(shape, TopAbs_EDGE, TopExp_Explorer)
@@ -436,6 +503,11 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
         else:
             shape_hint = "unknown"
 
+        if shape_hint == 'plate_like' and solid_count<=1:
+            smallest=min((dx,dy,dz))
+            if smallest>0:
+                extent=next((r for r in geometry_locations if r['kind']=='extent' and abs(r['value_mm']-smallest)<.005),None)
+                if extent:geometry_locations.append({**extent,'label':'Thickness','kind':'calculation','basis':'Estimated thickness from minimum flat-plate bounding dimension'})
         return {
             "parser": "python_ocp",
             "parser_status": "parsed",
@@ -447,6 +519,7 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
             "edge_count": edge_count,
             "shape_hint": shape_hint,
             "geometry_dimensions": dimensions,
+            "geometry_locations": geometry_locations[:500],
             "cylindrical_diameters_mm": cylinder_diameters,
             "circle_diameters_mm": circle_diameters,
             "primary_outer_diameters_mm": _unique_numbers(primary_outer_diameters),

@@ -1,0 +1,9 @@
+# V73 — targeted RFQ engineering update
+Base: V72. No navigation or database schema redesign.
+
+- Backend normalizes round-pipe wall thickness from unique OD/ID values; conflicts remain reviewable. Weight is recomputed for known-density straight pipe when no drawing-stated or CAD solid mass exists; costing rows are regenerated. Ambiguous dimensions are not guessed.
+- PDF drawing evidence searches text lines across pages, retains page coordinates, and renders source-page images (up to 12 distinct pages). Unique standalone radius/diameter and numerical callouts can be located. Numeric-only anchors are text matches, not proof of exact feature geometry.
+- BOM adds explicit quantity purchase callouts in PDF text and retains assembly extraction; excludes obvious bolt-hole references. Illustrative local SVG component thumbnails are not supplier photos. Supplier prices remain editable.
+- Material Calculator offers opt-in purchased-stock mode: enter supplier stock or cut-piece dimensions and kerf, then apply to Cost Sheet. Rectangular grid (two orientations) / linear stock packing; remaining stock includes kerf and reusable offcut. Standard size suggestions are illustrative. This is not irregular nesting or automatic developed-blank extraction. Existing quotation wastage settings still apply; review them to avoid double-counting purchased-stock allowance.
+
+Validation: 26 backend tests pass, Python compilation passes, changed TS/TSX syntax passes via TypeScript transpileModule, stock calculation smoke test passes. Full Next production build unavailable because local node_modules/Next is absent; browser regression testing not performed. Exact STEP/DXF source geometry selection, scanned PDF source detection, general multi-component feature association and supplier image/availability integration remain incomplete. No new dependency required.

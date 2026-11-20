@@ -3358,6 +3358,16 @@ body,
   position: relative;
 }
 
+/* Dedicated imperative mount for Three.js; React owns the surrounding UI. */
+.dfm-cad-renderer-mount {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  min-height: 320px;
+  overflow: hidden;
+}
+
 .drawing-snapshot > .dfm-model-shell {
   width: 100%;
   height: 100%;
@@ -5096,3 +5106,98 @@ body,
   font-size: 13px;
   text-align: center;
 }
+
+/* V71: scoped Drawing Review sizing. */
+.manufacturing-review-card { margin: 12px 0; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; }
+.manufacturing-review-card > label { border: 0; grid-template-columns: 145px minmax(0,1fr); }
+.manufacturing-review-card select { min-width: 0; width:100%; min-height:38px; border:1px solid #ccd7e2; border-radius:8px; padding:8px; background:#fff; color:var(--ink); }
+.aligned-drawing-review { align-items: stretch; }
+.aligned-drawing-review > .paperbox { display:flex; flex-direction:column; min-width:0; }
+.aligned-drawing-review .drawing-snapshot { flex:1; height:0; min-height:320px; }
+@media(max-width: 850px) { .manufacturing-review-card { grid-template-columns:1fr; } .aligned-drawing-review .drawing-snapshot { flex:none; height:360px; } }
+
+.drawing-evidence-preview{position:relative;width:100%;max-width:900px;margin:12px auto;background:#fff;overflow:hidden;border:1px solid #dbe3eb;border-radius:8px}
+.drawing-evidence-marker{position:absolute;transform:translate(-50%,-50%);border:3px solid #e88916;border-radius:50%;background:#e8891620;pointer-events:none;animation:drawing-source-pulse .65s ease-in-out 6;box-shadow:0 0 0 4px #e8891633}
+@keyframes drawing-source-pulse{50%{opacity:.35;box-shadow:0 0 0 10px #e8891622}}
+@media(prefers-reduced-motion:reduce){.drawing-evidence-marker{animation:none}}
+
+.review-bottom-actions{display:flex;justify-content:flex-end;position:sticky;bottom:0;padding:12px 0;background:var(--panel,#fff);z-index:2;border-top:1px solid #dbe3ec}
+
+/* Quotation presentation only: retain existing editable controls and grid. */
+.quote > .quote-head,.batch-quote > .batch-quote-head{padding:20px;border-radius:12px;background:#f1f5f9;border:1px solid #d9e3ed;margin-bottom:16px}
+.quote > .quote-info{grid-template-columns:repeat(auto-fit,minmax(160px,1fr));align-items:stretch;gap:12px}
+.quote > .quote-info > div,.quote > .quote-info > label{padding:12px;border:1px solid #dbe3ec;border-radius:10px;background:#fff}
+
+.drawing-evidence-review{margin-block:20px;}
+.drawing-evidence-pages{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;}
+.drawing-evidence-review + *{margin-top:20px;}
+
+/* V77 source locator: visible centre dot and ring, including after pulse ends. */
+.drawing-evidence-marker{z-index:3;min-width:22px;min-height:22px;border-color:#f97316;animation:drawing-source-pulse .65s ease-in-out 8;}
+.drawing-evidence-marker::after{content:"";position:absolute;left:50%;top:50%;width:8px;height:8px;border:2px solid white;background:#ef4444;border-radius:50%;transform:translate(-50%,-50%);box-shadow:0 0 0 2px #ef4444;}
+@media(prefers-reduced-motion:reduce){.drawing-evidence-marker{animation:none}}
+
+/* V79: source indications are tied to the image's intrinsic display rectangle. */
+.drawing-evidence-review { padding: 16px; }
+.drawing-locator-status { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; padding:12px 14px; border:1px solid #dce5ef; border-radius:10px; background:#f6f9fc; }
+.drawing-locator-status p { margin:4px 0 0; font-size:12px; color:#475569; }
+.drawing-locator-image-stage { position:relative; isolation:isolate; width:100%; line-height:0; }
+.drawing-locator-image-stage > img { display:block; width:100%; height:auto; max-height:none; object-fit:initial; margin:0; padding:0; border:0; }
+.drawing-locator-overlay { position:absolute; inset:0; z-index:10; pointer-events:none; }
+.drawing-locator-anchor { position:absolute; transform:translate(-50%,-50%); min-width:8px; min-height:8px; outline:2px solid #dc2626; background:#ef444420; border-radius:3px; }
+.drawing-locator-pin { position:absolute; width:36px; height:36px; border:3px solid #dc2626; border-radius:50%; left:50%; top:50%; transform:translate(-50%,-50%); box-shadow:0 0 0 2px #fff,0 2px 9px #0005; }
+.drawing-locator-dot { position:absolute; width:10px; height:10px; background:#dc2626; border:2px solid #fff; border-radius:50%; left:50%; top:50%; transform:translate(-50%,-50%); box-shadow:0 0 0 1px #dc2626; }
+.drawing-locator-pulse { position:absolute; inset:-3px; border:3px solid #ef4444; border-radius:50%; animation:locator-ring-v79 1.1s ease-out 6; opacity:0; }
+.drawing-locator-crosshair { position:absolute; inset:-7px; background:linear-gradient(#dc2626,#dc2626) center top/2px 6px no-repeat,linear-gradient(#dc2626,#dc2626) center bottom/2px 6px no-repeat,linear-gradient(#dc2626,#dc2626) left center/6px 2px no-repeat,linear-gradient(#dc2626,#dc2626) right center/6px 2px no-repeat; }
+@keyframes locator-ring-v79 { 0%{transform:scale(1);opacity:1} 100%{transform:scale(1.8);opacity:0} }
+@media(prefers-reduced-motion:reduce){.drawing-locator-pulse{animation:none}}
+.drawing-locator-selected td { background:#fff1f2!important; }
+.drawing-locator-selected td:first-child { box-shadow:inset 3px 0 #dc2626; }
+.drawing-locator-selected button[aria-pressed="true"], .drawing-evidence-pages button[aria-pressed="true"] { border-color:#dc2626; color:#991b1b; background:#fff1f2; }
+.drawing-locator-fallback { min-height:160px; display:flex; flex-direction:column; gap:12px; justify-content:center; align-items:center; padding:12px; text-align:center; }
+.drawing-locator-fallback img { max-width:100%; height:auto; display:block; }
+.drawing-locator-callouts { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin:12px 0; font-size:12px; }
+.drawing-locator-callouts span { background:#fff1f2; color:#991b1b; padding:5px 8px; border-radius:6px; overflow-wrap:anywhere; }
+.drawing-locator-actions { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+
+/* V81: non-obscuring precise source indication and bounded drawing viewport. */
+.drawing-locator-anchor { min-width:0; min-height:0; outline:none; background:transparent; border:1px solid #dc2626; border-radius:2px; }
+.drawing-locator-pin { width:10px; height:10px; border:1px solid #dc2626; box-shadow:0 0 0 1px white; left:calc(100% + 9px); top:50%; }
+.drawing-locator-dot { width:5px; height:5px; border:0; box-shadow:none; }
+.drawing-locator-pin::before { content:""; position:absolute; right:100%; top:50%; width:5px; height:1px; background:#dc2626; }
+.drawing-locator-anchor[data-side="left"] .drawing-locator-pin { left:-9px; }
+.drawing-locator-anchor[data-side="left"] .drawing-locator-pin::before { left:100%; right:auto; }
+.drawing-locator-anchor[data-side="top"] .drawing-locator-pin { top:-9px; left:50%; }
+.drawing-locator-anchor[data-side="top"] .drawing-locator-pin::before { top:100%; left:50%; width:1px; height:5px; }
+.drawing-locator-anchor[data-side="bottom"] .drawing-locator-pin { top:calc(100% + 9px); left:50%; }
+.drawing-locator-anchor[data-side="bottom"] .drawing-locator-pin::before { top:auto; bottom:100%; left:50%; width:1px; height:5px; }
+.drawing-locator-pulse { inset:-2px; border:1px solid #dc2626; animation:locator-ring-v81 1.2s ease-out 5; }
+@keyframes locator-ring-v81 { from {transform:scale(1);opacity:.9} to {transform:scale(1.5);opacity:0} }
+@media(prefers-reduced-motion:reduce){.drawing-locator-pulse{animation:none}}
+.drawing-locator-toolbar { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin:12px auto 0; max-width:900px; }
+.drawing-locator-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-size:12px; }
+.drawing-locator-controls .btn,.drawing-evidence-review td .btn { min-height:32px; padding:5px 10px; border-radius:6px; font-size:12px; }
+.drawing-locator-controls select { padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:white; max-width:140px; }
+.drawing-locator-scroll { max-height:min(70vh,760px); overflow:auto; overscroll-behavior:contain; }
+.drawing-locator-scroll .drawing-locator-image-stage { max-width:none; }
+.drawing-locator-scroll .drawing-locator-image-stage > img { max-width:none; }
+.drawing-evidence-review .editable-table-scroll { max-height:360px; overflow:auto; }
+.drawing-evidence-review th { position:sticky; top:0; z-index:1; background:#f4f7fb; }
+.drawing-evidence-disclosure { margin-block:16px; border:1px solid var(--line); border-radius:10px; background:#fff; min-width:0; }
+.drawing-evidence-disclosure > summary { padding:12px 16px; cursor:pointer; font-weight:750; color:var(--navy); }
+.drawing-evidence-disclosure .drawing-evidence-review { margin:0; border:0; }
+.drawing-evidence-disclosure > summary:focus-visible { outline:2px solid var(--navy2); outline-offset:2px; }
+/* Keep existing layouts, only fix mobile wrapping/overflow in page headers. */
+.content .heading.row > div,.content .artifact-editor,.content .artifact-section { min-width:0; }
+@media(max-width:760px){
+  .content .heading.row {flex-wrap:wrap;align-items:flex-start;gap:12px;}
+  .content .heading.row .actions,.content .rate-heading-actions,.content .artifact-header-actions {max-width:100%;flex-wrap:wrap;}
+  .drawing-evidence-review {padding:10px;}
+  .drawing-locator-toolbar {justify-content:flex-start;}
+}
+.page-list-filter { display:flex; flex-wrap:wrap; align-items:flex-end; gap:12px; padding:10px 0 14px; }
+.page-list-filter label { display:grid; gap:5px; color:var(--muted); font-size:12px; font-weight:650; min-width:0; }
+.page-list-filter input,.page-list-filter select { padding:8px 10px; border:1px solid var(--line); border-radius:7px; background:#fff; color:var(--ink); max-width:100%; min-height:36px; }
+.page-list-filter > span { color:var(--muted); font-size:12px; align-self:center; margin-left:auto; }
+
+.rate-result-count { color:var(--muted); font-size:12px; white-space:nowrap; }

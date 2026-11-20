@@ -13,7 +13,7 @@ services:
       - key: DATABASE_URL
         sync: false
       - key: LOCAL_OCR_ENABLED
-        value: false
+        value: "true"
       - key: MAX_UPLOAD_MB
         value: 100
       - key: DB_POOL_SIZE

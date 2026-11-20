@@ -56,3 +56,8 @@ coverage/
 .idea/
 .DS_Store
 Thumbs.db
+# Confidential company historical quotation records (local only)
+backend/private_reference/
+
+# Local quotation database
+backend/data/*.sqlite3*

@@ -31,13 +31,19 @@ load_dotenv()
 RAW_DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DATABASE_CONFIGURED = bool(RAW_DATABASE_URL)
 DATABASE_ENGINE_FALLBACK = False
+LOCAL_DATABASE = not DATABASE_CONFIGURED and not (os.getenv("VERCEL") or os.getenv("RENDER") or os.getenv("SERVERLESS") == "1")
 
 # Keep extraction/analyze available even before a production database is
 # configured. Persistence calls will fail safely and the API layer falls back
 # to in-process defaults; once DATABASE_URL is supplied, normal PostgreSQL
 # persistence is used without any code change.
 if not RAW_DATABASE_URL:
-    RAW_DATABASE_URL = "sqlite+pysqlite:///:memory:"
+    if LOCAL_DATABASE:
+        db_path = Path(os.getenv("LOCAL_DATABASE_PATH") or (Path(__file__).resolve().parents[1] / "data" / "rfq-local.sqlite3")).resolve()
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        RAW_DATABASE_URL = "sqlite+pysqlite:///" + db_path.as_posix()
+    else:
+        RAW_DATABASE_URL = "sqlite+pysqlite:///:memory:"
 
 if RAW_DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = RAW_DATABASE_URL.replace(
@@ -277,8 +283,8 @@ else:
     # empty in-memory database and background saves report "no such table".
     engine = create_engine(
         DATABASE_URL,
-        connect_args={"check_same_thread": False},
-        poolclass=StaticPool,
+        connect_args={"check_same_thread": False, "timeout": 15},
+        **({} if LOCAL_DATABASE else {"poolclass": StaticPool}),
     )
 
 SessionLocal = sessionmaker(
@@ -387,7 +393,7 @@ def _upsert_drawing(
     # JSONB needs an explicit cast when using a textual statement.
     if "payload" in usable:
         bind_names = ", ".join(
-            "CAST(:payload AS JSONB)" if name == "payload" else f':{name}'
+            "CAST(:payload AS JSONB)" if name == "payload" and connection.dialect.name == "postgresql" else f':{name}'
             for name in insert_columns
         )
         usable["payload"] = json.dumps(drawing)
@@ -434,7 +440,7 @@ def _replace_cost_rows(
         )
 
 
-SYSTEM_STATE_STORES = {"actuals", "approvals", "audit"}
+SYSTEM_STATE_STORES = {"actuals", "approvals", "audit", "workbook_rate_import_v76"}
 
 
 def load_store(name: str, default: Any):
@@ -1143,7 +1149,7 @@ def database_stats() -> dict:
 
 
 def db_ping() -> bool:
-    if not DATABASE_CONFIGURED or DATABASE_ENGINE_FALLBACK:
+    if (not DATABASE_CONFIGURED and not LOCAL_DATABASE) or DATABASE_ENGINE_FALLBACK:
         return False
     try:
         with engine.connect() as connection:
