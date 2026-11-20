@@ -18,6 +18,7 @@ REQUIRED = {
     "openpyxl": "OpenPyXL",
     "reportlab": "ReportLab",
     "cv2": "OpenCV drawing-region filter",
+    "OCP": "OpenCascade STEP geometry runtime",
 }
 
 failed = []

@@ -19,6 +19,8 @@ Set these environment variables on the Render service:
 - `MAX_UPLOAD_MB=100`
 - `LOCAL_OCR_ENABLED=true` (required for high-resolution reading of scanned or tiny drawing callouts). The production requirements now include RapidOCR and ONNX Runtime. Set `DETAIL_OCR_DPI=400`, `DETAIL_OCR_SECONDS=100`, `DETAIL_OCR_MAX_PAGES=30`, and `DETAIL_OCR_MAX_TILES=160` if overriding defaults. Render must have adequate RAM/CPU for ONNX and CAD processing.
 
+Use **Manual Deploy → Clear build cache & deploy** when moving from V87. V88 installs only headless OpenCV, avoiding the GUI/libGL dependency conflict with RapidOCR. The build smoke test also checks the installed OpenCascade runtime.
+
 After deployment, open `https://ai-quotation-api.onrender.com/api/health`.
 Confirm that the JSON contains:
 
@@ -35,7 +37,7 @@ If `database_configured` is false, the service is running without a durable data
 
 ## Vercel frontend settings
 
-Set the Vercel project Root Directory to `frontend`, Framework Preset to Next.js, and configure:
+Set the Vercel project Root Directory to `frontend`, Framework Preset to Next.js and Node.js to 22.x. Install Command: `npm run release:install`. Build Command: `npm run release:check`. These commands are also in `frontend/vercel.json`. Configure:
 
 - `NEXT_PUBLIC_API_BASE_URL=https://ai-quotation-api.onrender.com`
 - `NEXT_PUBLIC_FASTAPI_URL=https://ai-quotation-api.onrender.com`

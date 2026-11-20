@@ -21,4 +21,4 @@ rapidocr>=3.10,<4
 onnxruntime>=1.18,<2
 
 # Detect ruled content boxes on native and scanned drawing pages.
-opencv-python>=4.8,<5
+opencv-python-headless>=4.8,<5

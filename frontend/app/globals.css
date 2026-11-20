@@ -5206,3 +5206,45 @@ body,
 .drawing-measurement-status { display:inline-block; font-size:11px; font-weight:600; padding:3px 7px; border-radius:5px; background:#f1f5f9; color:#475569; white-space:nowrap; }
 .drawing-measurement-status[data-status="Predicted"], .drawing-measurement-status[data-status="Review required"] { background:#fff7e6; color:#92400e; }
 .drawing-measurement-status[data-status="Verified"] { background:#ecfdf5; color:#166534; }
+
+
+/* V88 — release UI alignment. Keep the existing theme, navigation, and data flow. */
+.header-quotation-actions, .cost-grid-actions, .artifact-header-actions, .rate-heading-actions {
+  min-width: 0; max-width: 100%; flex-wrap: wrap; align-items: center;
+}
+.content > header, .cost-grid-title { min-width: 0; flex-wrap: wrap; row-gap: 10px; }
+.cost-grid-title > div, .drawing-locator-status > div, .drawing-locator-toolbar > div { min-width: 0; }
+.cost-grid-title > div:first-child { flex: 1 1 180px; }
+.cost-grid-title > .cost-grid-actions { display: flex; flex: 0 1 auto; flex-wrap: wrap; gap: 8px; }
+.cost-grid-title b, .cost-grid-title small { white-space: normal; overflow-wrap: anywhere; }
+.drawing-evidence-review, .drawing-evidence-disclosure, .artifact-table-wrap, .editable-table-scroll { min-width: 0; max-width: 100%; }
+.drawing-locator-status > div:first-child { flex: 1 1 240px; overflow-wrap: anywhere; }
+.drawing-locator-status p { line-height: 1.5; }
+.drawing-locator-actions { gap: 6px; }
+.drawing-locator-controls label { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 5px; }
+.drawing-evidence-review h3 { margin: 0 0 12px; line-height: 1.35; }
+.drawing-evidence-review .editable-table-scroll { border-radius: 8px; }
+.drawing-evidence-review td:first-child { overflow-wrap: anywhere; }
+.drawing-measurement-status[data-status="Verified"] { background:#edf7ef; color:#21633b; }
+.drawing-measurement-status[data-status="Predicted"] { background:#fff5e6; color:#855b14; }
+.drawing-measurement-status[data-status="Review required"] { background:#fff1f2; color:#9f1239; }
+/* The desktop fixed upload workspace and internal table scrolling are unchanged. */
+@media (max-width: 720px) {
+  .header-quotation-actions, .cost-grid-actions { justify-content: flex-start; }
+  .cost-grid-title > div:first-child { flex: 0 1 auto; }
+  .cost-grid-title > .cost-grid-actions { align-items: flex-start; }
+  .content > header { align-items: flex-start; }
+  .drawing-locator-toolbar, .drawing-locator-status { align-items: flex-start; }
+  .drawing-locator-status > div:first-child { flex-basis: 100%; }
+  .drawing-locator-controls select { max-width: 100%; }
+  .drawing-evidence-review .editable-table-scroll { overflow-x: auto; }
+  .drawing-evidence-review .editable-table-scroll table { min-width: 0; width: 100%; table-layout: fixed; }
+  .drawing-evidence-review th, .drawing-evidence-review td { white-space: normal; overflow-wrap: anywhere; padding: 6px 5px; font-size: 12px; }
+  .drawing-evidence-review th:first-child { width: 30%; }
+  .drawing-evidence-review th:nth-child(2) { width: 20%; }
+  .drawing-evidence-review th:nth-child(3) { width: 26%; }
+  .drawing-evidence-review th:nth-child(4) { width: 24%; }
+  .drawing-evidence-review td .btn { min-width: 0; max-width: 100%; padding-inline: 6px; }
+  .drawing-evidence-review .drawing-measurement-status { white-space: normal; overflow-wrap: anywhere; padding: 3px 5px; }
+  .drawing-locator-controls label { min-width: 0; }
+}

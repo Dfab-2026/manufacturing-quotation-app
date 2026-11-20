@@ -4,13 +4,15 @@
   "private": true,
   "scripts": {
     "dev": "next dev -p 3000",
-    "build": "next build",
+    "build": "npm run release:check",
     "start": "next start -p 3000",
     "postinstall": "node scripts/copy-cad-runtime.mjs",
     "test:locator": "node --experimental-strip-types --test tests/drawingLocator.test.mjs",
     "test:routing": "node --experimental-strip-types --test tests/apiRouting.test.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
-    "release:check": "node scripts/check-release.mjs && npm run test:locator && npm run test:routing && npm run build && tsc --noEmit && npm audit --audit-level=high"
+    "release:check": "node scripts/install-release.mjs --if-needed && node scripts/check-release.mjs && npm run test:release && npm run test:locator && npm run test:routing && next build && tsc --noEmit && npm audit --audit-level=high",
+    "release:install": "node scripts/install-release.mjs",
+    "test:release": "node --test tests/releasePolicy.test.mjs"
   },
   "dependencies": {
     "ag-grid-community": "^32.3.3",
