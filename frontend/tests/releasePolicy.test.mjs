@@ -4,10 +4,10 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, rmSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { CHECKED_PACKAGES, TARGET_RUNTIME, migrationManifest, supportedNext, supportedReact, releaseLockReady, nodeSupported } from '../scripts/release-policy.mjs';
+import { CHECKED_PACKAGES, TARGET_RUNTIME, TARGET_OVERRIDES, migrationManifest, supportedNext, supportedReact, releaseLockReady, nodeSupported } from '../scripts/release-policy.mjs';
 const sourceManifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
 const seedManifest={...sourceManifest,dependencies:{...sourceManifest.dependencies,next:'^14.2.35',react:'^18.3.1','react-dom':'^18.3.1'},devDependencies:{...sourceManifest.devDependencies,'@types/react':'^18.3.12','@types/react-dom':'^18.3.1'}};
-const versions={'next':'15.5.29','react':'19.3.1','react-dom':'19.3.1','@types/react':'19.2.0','@types/react-dom':'19.2.0','typescript':'5.9.3','occt-import-js':'0.0.23','three':'0.185.1','ag-grid-community':'32.3.9','ag-grid-react':'32.3.9'};
+const versions={'next':'15.5.29','react':'19.3.1','react-dom':'19.3.1','@types/react':'19.2.0','@types/react-dom':'19.2.0','typescript':'5.9.3','occt-import-js':'0.0.23','three':'0.185.1','ag-grid-community':'32.3.9','ag-grid-react':'32.3.9','postcss':'8.5.33','sharp':'0.35.5'};
 const makeLock=(manifest, overrides={})=>({lockfileVersion:3, packages:{'':{dependencies:manifest.dependencies,devDependencies:manifest.devDependencies},...Object.fromEntries(Object.entries({...versions,...overrides}).map(([k,v])=>[`node_modules/${k}`,{version:v}]))}});
 test('deployment rejects the original unsupported release and invalid/prerelease versions',()=>{
   for (const version of ['14.2.35','15.5.28','16.4.4','15.5.29-canary.0','garbage','']) assert.equal(supportedNext(version),false,version);
@@ -81,7 +81,10 @@ test('Vercel and ordinary builds use the installer and keep real build and audit
   const config=JSON.parse(readFileSync(new URL('../vercel.json',import.meta.url),'utf8'));
   assert.equal(config.installCommand,'npm run release:install');assert.equal(config.buildCommand,'npm run release:check');
   assert.equal(sourceManifest.scripts.build,'npm run release:check');
-  for(const check of ['install-release.mjs --if-needed','check-release.mjs','next build','tsc --noEmit','npm audit --audit-level=high']) assert.ok(sourceManifest.scripts['release:check'].includes(check),check);
+  assert.equal(sourceManifest.scripts['release:check'],'node scripts/run-release-check.mjs');
+  const runner=readFileSync(new URL('../scripts/run-release-check.mjs',import.meta.url),'utf8');
+  for(const check of ['install-release.mjs','--if-needed','check-release.mjs','node_modules/next/dist/bin/next','node_modules/typescript/bin/tsc','--noEmit','--audit-level=high']) assert.ok(runner.includes(check),check);
+  assert.equal(sourceManifest.type,'module');
 });
 
 test('Vercel runtime is pinned in both manifests and both lockfile roots',()=>{
@@ -99,3 +102,31 @@ test('installer distinguishes missing npm lifecycle from a Node version failure'
   assert.match(run.stderr,/npm_execpath missing/);
   assert.equal(readFileSync(f.manifestPath,'utf8'),f.manifestBytes);
 }));
+
+
+test('release rejects outdated transitive CSS and image processing packages, including nested copies',()=>{
+  const manifest=migrationManifest(seedManifest);
+  assert.deepEqual(manifest.overrides,TARGET_OVERRIDES);
+  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'postcss':'8.4.31'})),false);
+  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'sharp':'0.34.5'})),false);
+  const lock=makeLock(manifest);
+  lock.packages['node_modules/next/node_modules/postcss']={version:'8.5.18'};
+  assert.equal(releaseLockReady(manifest,lock),false);
+  assert.equal(releaseLockReady({...manifest,overrides:{}},makeLock(manifest)),false);
+});
+
+test('release runner identifies the failing command and never reports a false pass',()=>{
+  const dir=mkdtempSync(join(tmpdir(),'mq-release-runner-'));
+  try {
+    mkdirSync(join(dir,'scripts'));
+    for(const name of ['run-release-check.mjs','release-policy.mjs']) copyFileSync(new URL('../scripts/'+name,import.meta.url),join(dir,'scripts',name));
+    const stub="import {appendFileSync} from 'node:fs'; const args=process.argv.slice(2); appendFileSync('calls.log',args.join(' ')+'\\n'); if(process.env.BAD_STAGE && args.includes(process.env.BAD_STAGE)) process.exit(17);";
+    for(const name of ['install-release','check-release']) writeFileSync(join(dir,'scripts',name+'.mjs'),stub);
+    for(const name of ['next/dist/bin/next','typescript/bin/tsc']) {const path=join(dir,'node_modules',name);mkdirSync(join(path,'..'),{recursive:true});writeFileSync(path,stub);}
+    const npm=join(dir,'npm.mjs');writeFileSync(npm,stub);
+    const run=bad=>spawnSync(process.execPath,[join(dir,'scripts','run-release-check.mjs')],{cwd:dir,env:{...process.env,npm_execpath:npm,BAD_STAGE:bad},encoding:'utf8'});
+    const failed=run('audit');assert.equal(failed.status,17);assert.match(failed.stderr,/FAILED 6\/8.*vulnerability audit/i);assert.doesNotMatch(failed.stdout,/All release checks passed/);
+    const buildFailed=run('build');assert.equal(buildFailed.status,17);assert.match(buildFailed.stderr,/FAILED 7\/8.*production build/i);
+    const passed=run('');assert.equal(passed.status,0,passed.stderr);assert.match(passed.stdout,/All release checks passed/);
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});

@@ -10,7 +10,7 @@
     "test:locator": "node --experimental-strip-types --test tests/drawingLocator.test.mjs",
     "test:routing": "node --experimental-strip-types --test tests/apiRouting.test.mjs",
     "release:prepare": "node scripts/prepare-release.mjs",
-    "release:check": "node scripts/install-release.mjs --if-needed && node scripts/check-release.mjs && npm run test:release && npm run test:locator && npm run test:routing && next build && tsc --noEmit && npm audit --audit-level=high",
+    "release:check": "node scripts/run-release-check.mjs",
     "release:install": "node scripts/install-release.mjs",
     "test:release": "node --test tests/releasePolicy.test.mjs"
   },
@@ -31,5 +31,10 @@
   },
   "engines": {
     "node": "22.x"
+  },
+  "type": "module",
+  "overrides": {
+    "postcss": "^8.5.23",
+    "sharp": "^0.35.5"
   }
 }
