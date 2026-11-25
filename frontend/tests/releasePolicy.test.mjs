@@ -76,6 +76,20 @@ test('a fresh deployment rejects the stale committed lock without modifying any 
   assert.equal(readFileSync(f.lockPath,'utf8'),f.lockBytes);
   assert.equal(f.existsCalls(),false, 'installer must not contact npm or attempt migration');
 }));
+test('Vercel repairs a stale lock in its temporary build workspace, validates it, then installs with npm ci',()=>withFixture(f=>{
+  const secure=migrationManifest(seedManifest);
+  writeFileSync(f.manifestPath,JSON.stringify(secure,null,2)+'\n');
+  const beforeManifest=readFileSync(f.manifestPath,'utf8');
+  const run=f.run('install-release.mjs',[],{VERCEL_ENV:'production'});
+  assert.equal(run.status,0,run.stderr);
+  assert.deepEqual(f.calls().map(v=>v.split(' ')[0]),['install','ci']);
+  assert.match(f.calls()[0],/^install .*--package-lock-only/);
+  assert.match(f.calls()[1],/^ci /);
+  assert.equal(readFileSync(f.manifestPath,'utf8'),beforeManifest,'Vercel recovery must not rewrite package.json');
+  const repaired=JSON.parse(readFileSync(f.lockPath,'utf8'));
+  assert.equal(releaseLockReady(secure,repaired),true);
+  assert.match(run.stderr,/Vercel lockfile recovery succeeded/);
+}));
 test('explicit local preparation resolves the graph, validates it, and makes later deployments npm-ci-only',()=>withFixture(f=>{
   const prepared=f.run('prepare-release.mjs');assert.equal(prepared.status,0,prepared.stderr);
   assert.deepEqual(f.calls().map(v=>v.split(' ')[0]),['install','run','ci']);
