@@ -2168,6 +2168,101 @@ def _mandatory_measurements_complete(values: dict[str, float]) -> bool:
     return all(float(values.get(key) or 0) > 0 for key in ("length_mm", "width_mm", "thickness_mm"))
 
 
+def _resolve_overall_axes_from_dimensions(
+    dimensions: list[dict],
+    named_values: dict[str, float],
+    conflicting_fields: set[str],
+    source_text: str,
+) -> tuple[float | None, float | None, list[str]]:
+    """Resolve overall X/Y only from explicit extracted callouts.
+
+    This is a conservative fallback for drawings that do not literally print
+    ``LENGTH`` / ``WIDTH`` labels.  It never scans arbitrary numbers: only
+    structured dimension rows already accepted by the engineering parser are
+    considered.  Rotational flange/ring parts may use a single explicit outer
+    diameter as both X and Y envelope.
+    """
+    notes: list[str] = []
+    length = None if "Length" in conflicting_fields else (
+        named_values.get("Length")
+        or next((float(d.get("value_mm") or 0) for d in dimensions if d.get("label") == "Length" and float(d.get("value_mm") or 0) > 0), None)
+    )
+    width = None if "Width" in conflicting_fields else (
+        named_values.get("Width")
+        or next((float(d.get("value_mm") or 0) for d in dimensions if d.get("label") == "Width" and float(d.get("value_mm") or 0) > 0), None)
+    )
+
+    upper = str(source_text or "").upper()
+    rotational = bool(re.search(r"\b(?:FLANGE|RING|WASHER)\b", upper))
+
+    # A flange/ring drawing often prints only an outer diameter, not LENGTH /
+    # WIDTH.  A single-part OD is an exact planar envelope for this form.
+    if rotational and (length is None or width is None):
+        diameter_candidates: list[float] = []
+        for dim in dimensions:
+            if not isinstance(dim, dict):
+                continue
+            label = _norm(str(dim.get("label") or ""))
+            callout = str(dim.get("callout") or "")
+            try:
+                value = float(dim.get("value_mm") or 0)
+                qty = int(dim.get("quantity") or 1)
+                confidence = int(dim.get("confidence") or 0)
+            except (TypeError, ValueError):
+                continue
+            if value <= 0 or qty != 1 or confidence < 75:
+                continue
+            if label not in {"DIAMETER", "OUTERDIAMETER", "OD"} and not re.search(r"(?:Ø|⌀|DIA(?:METER)?\.?|\bOD\b)", callout, re.I):
+                continue
+            if re.search(r"\b(?:HOLE|THRU|THROUGH|PCD|BCD|PITCH|CBORE|COUNTERBORE|CSK|COUNTERSINK)\b", callout, re.I):
+                continue
+            diameter_candidates.append(value)
+        if diameter_candidates:
+            od = max(diameter_candidates)
+            if length is None:
+                length = od
+            if width is None:
+                width = od
+            notes.append(f"Overall X/Y derived from explicit flange outer diameter Ø{od:g} mm; engineer confirmation recommended.")
+
+    # For ordinary prismatic drawings, two strong generic linear callouts can
+    # provide the envelope when the title block omits LENGTH/WIDTH labels.  Do
+    # not use feature dimensions, low-confidence OCR, or duplicated values.
+    if length is None or width is None:
+        candidates: list[float] = []
+        for dim in dimensions:
+            if not isinstance(dim, dict) or str(dim.get("label") or "") != "Linear Dimension":
+                continue
+            try:
+                value = float(dim.get("value_mm") or 0)
+                qty = int(dim.get("quantity") or 1)
+                confidence = int(dim.get("confidence") or 0)
+            except (TypeError, ValueError):
+                continue
+            callout = str(dim.get("callout") or "")
+            if value <= 0 or qty != 1 or confidence < 85:
+                continue
+            if re.search(r"\b(?:HOLE|THRU|THREAD|CHAMFER|CHMF|RADIUS|R\s*\d|PCD|BCD|PITCH|SLOT|DEPTH|DEEP)\b", callout, re.I):
+                continue
+            candidates.append(value)
+        unique = sorted({round(v, 6) for v in candidates}, reverse=True)
+        if length is None and width is None and len(unique) >= 2:
+            length, width = unique[0], unique[1]
+            notes.append(
+                f"Overall length/width derived from the two largest high-confidence linear callouts ({length:g} × {width:g} mm); confirm orientation before release."
+            )
+        elif length is None and unique:
+            length = unique[0]
+            notes.append(f"Overall length derived from a high-confidence linear callout ({length:g} mm); confirm before release.")
+        elif width is None:
+            remaining = [v for v in unique if length is None or abs(v - float(length)) > 1e-6]
+            if remaining:
+                width = remaining[0]
+                notes.append(f"Overall width derived from a high-confidence linear callout ({width:g} mm); confirm before release.")
+
+    return length, width, notes
+
+
 def _local_fastapi_engineering_extract(content: bytes, filename: str, include_ocr: bool = True) -> tuple[dict, Drawing, list[Row], list[str], str]:
     """Free/local engineering extraction used by FastAPI.
 
@@ -2643,8 +2738,11 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     # Resolve the primary overall L/W values from the structured dimension
     # rows. Named Length/Width callouts win; otherwise the two largest usable
     # non-feature linear dimensions are used as the drawing envelope.
-    primary_length_mm = (named_values.get("Length") or next((d["value_mm"] for d in dimensions if d["label"] == "Length"), None)) if "Length" not in conflicting_fields else None
-    primary_width_mm = (named_values.get("Width") or next((d["value_mm"] for d in dimensions if d["label"] == "Width"), None)) if "Width" not in conflicting_fields else None
+    primary_length_mm, primary_width_mm, envelope_notes = _resolve_overall_axes_from_dimensions(
+        dimensions, named_values, conflicting_fields, hay
+    )
+    if envelope_notes:
+        drawing.notes = list(dict.fromkeys([*drawing.notes, *envelope_notes]))
     if "Thickness" in conflicting_fields: drawing.thickness_mm=0
 
     ai_raw = {
@@ -2714,25 +2812,39 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     # the Cost Sheet instead of remaining at zero.
     # A filename-suggested alloy grade is not a safe density for automatic
     # costing: wait for a confirmed drawing grade or engineer input.
-    derived_weight, weight_basis, weight_confidence = (
-        (0.0, "", 0) if material_from_filename
-        else _derive_local_geometry_weight(ai_raw, drawing, hay)
-    )
+    derived_weight, weight_basis, weight_confidence = _derive_local_geometry_weight(ai_raw, drawing, hay)
     if explicit_weight <= 0 and derived_weight > 0:
-        drawing.weight_kg = derived_weight
-        ai_raw["weight_kg"] = derived_weight
-        ai_raw["calculated_weight_kg"] = derived_weight
-        ai_raw["weight_source"] = "calculated_geometry"
-        ai_raw["confidence"]["weight"] = weight_confidence
-        ai_raw.setdefault("evidence", []).append({
-            "field": "Calculated Weight",
-            "basis": weight_basis,
-            "value": f"{derived_weight:g} kg",
-            "confidence": weight_confidence,
-        })
-        ai_raw.setdefault("notes", []).append(
-            f"Weight calculated locally from drawing geometry: {derived_weight:g} kg ({weight_basis})."
-        )
+        if material_from_filename:
+            # Keep the reviewed engineering weight unresolved until the grade is
+            # confirmed, but retain a clearly provisional quantity so the Cost
+            # Sheet can still be prepared instead of returning an empty quote.
+            ai_raw["provisional_weight_kg"] = derived_weight
+            ai_raw["provisional_weight_basis"] = weight_basis
+            ai_raw["confidence"]["weight"] = min(weight_confidence, 55)
+            ai_raw.setdefault("evidence", []).append({
+                "field": "Provisional Weight",
+                "basis": f"{weight_basis}; filename-inferred material",
+                "value": f"{derived_weight:g} kg",
+                "confidence": min(weight_confidence, 55),
+            })
+            ai_raw.setdefault("notes", []).append(
+                f"Provisional costing weight from drawing geometry and filename-inferred material: {derived_weight:g} kg ({weight_basis}); confirm material grade before quotation release."
+            )
+        else:
+            drawing.weight_kg = derived_weight
+            ai_raw["weight_kg"] = derived_weight
+            ai_raw["calculated_weight_kg"] = derived_weight
+            ai_raw["weight_source"] = "calculated_geometry"
+            ai_raw["confidence"]["weight"] = weight_confidence
+            ai_raw.setdefault("evidence", []).append({
+                "field": "Calculated Weight",
+                "basis": weight_basis,
+                "value": f"{derived_weight:g} kg",
+                "confidence": weight_confidence,
+            })
+            ai_raw.setdefault("notes", []).append(
+                f"Weight calculated locally from drawing geometry: {derived_weight:g} kg ({weight_basis})."
+            )
 
     ai_raw["field_applicability"] = field_applicability(ai_raw, raw_text)
     mandatory_status = {
@@ -2786,6 +2898,11 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         rows=local_rows,
     )
 
+    if local_rows:
+        warnings = [
+            warning for warning in warnings
+            if "No reliable costing rows were detected" not in str(warning)
+        ]
     local_warnings = list(dict.fromkeys([
         *warnings,
         *[str(x) for x in ai_raw.get("missing_or_uncertain") or []],
@@ -4001,6 +4118,10 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
             str(ai_data.get("weight_source") or "") == "cad_solid_volume"
             and drawing.weight_kg > 0
         )
+        try:
+            provisional_weight = float(ai_data.get("provisional_weight_kg") or 0)
+        except (TypeError, ValueError):
+            provisional_weight = 0.0
 
         # Drawing-stated mass and exact STEP solid-volume mass are stronger than
         # a stock-envelope estimate. Keep the existing blank logic for ordinary
@@ -4021,12 +4142,16 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
                 f"STEP solid-volume weight {drawing.weight_kg:g} kg/piece × {max(1, drawing.quantity)} part(s)"
                 if has_cad_solid_weight
                 else (
-                    f"{max(1, drawing.quantity)} part(s) · "
-                    f"costing blank {internal_material_basis[1]:g} × "
-                    f"{internal_material_basis[2]:g} mm each "
-                    f"(drawing envelope + {_MATERIAL_BLANK_MARGIN_MM:g} mm)"
-                    if internal_material_basis
-                    else f"{max(1, drawing.quantity)} part(s)"
+                    f"PROVISIONAL: {provisional_weight:g} kg/piece × {max(1, drawing.quantity)} part(s), based on filename-inferred material; confirm grade before release"
+                    if provisional_weight > 0
+                    else (
+                        f"{max(1, drawing.quantity)} part(s) · "
+                        f"costing blank {internal_material_basis[1]:g} × "
+                        f"{internal_material_basis[2]:g} mm each "
+                        f"(drawing envelope + {_MATERIAL_BLANK_MARGIN_MM:g} mm)"
+                        if internal_material_basis
+                        else f"{max(1, drawing.quantity)} part(s)"
+                    )
                 )
             )
         )
@@ -4045,9 +4170,13 @@ def ai_result_to_rows(ai_data: dict, drawing: Drawing) -> list[Row]:
                 drawing.weight_kg * max(1, drawing.quantity)
                 if has_cad_solid_weight
                 else (
-                    internal_material_qty
-                    if internal_material_qty is not None
-                    else (drawing.weight_kg * max(1, drawing.quantity) if drawing.weight_kg > 0 else 0)
+                    provisional_weight * max(1, drawing.quantity)
+                    if provisional_weight > 0
+                    else (
+                        internal_material_qty
+                        if internal_material_qty is not None
+                        else (drawing.weight_kg * max(1, drawing.quantity) if drawing.weight_kg > 0 else 0)
+                    )
                 )
             )
         )
