@@ -69,7 +69,7 @@ if(cmd==='install') {
   } finally{rmSync(dir,{recursive:true,force:true});}
 }
 test('a fresh deployment rejects the stale committed lock without modifying any manifest',()=>withFixture(f=>{
-  const run=f.run('install-release.mjs');
+  const run=f.run('install-release.mjs',[],{VERCEL:'',VERCEL_ENV:''});
   assert.equal(run.status,1);
   assert.match(run.stderr,/committed package.json and package-lock.json/);
   assert.equal(readFileSync(f.manifestPath,'utf8'),f.manifestBytes);
