@@ -389,7 +389,7 @@ else:
         _HOT_CACHE.setdefault("quotations", [])
         _HOT_CACHE.setdefault("actuals", [])
 
-EXTRACTION_PIPELINE_VERSION = "fastapi-product-regions-v23-metadata-reliability"
+EXTRACTION_PIPELINE_VERSION = "fastapi-product-regions-v24-native-pdf-callouts"
 MAX_UPLOAD_BYTES = max(1, int(os.getenv("MAX_UPLOAD_MB", "100"))) * 1024 * 1024
 
 
@@ -1383,6 +1383,77 @@ def _extract_pdf_text_parallel(content: bytes) -> tuple[str, dict[str, float]]:
     return _merge_text_sources(pypdf_text, mupdf_text), timings
 
 
+def _extract_pdf_native_callout_text(content: bytes) -> str:
+    """Recover split engineering callouts from approved native PDF regions.
+
+    The existing product-region partition is the authority for what belongs to
+    the manufactured part. This helper only rejoins neighbouring fragments in
+    those already-approved regions (for example ``LENGTH`` in one cell and
+    ``188 mm`` in the next). It therefore improves CAD-PDF extraction without
+    reintroducing title-block, revision-table or note-box numbers.
+    """
+    try:
+        from app.extraction.product_regions import native_regions, partition
+        product, _metadata, _excluded = partition(native_regions(content))
+    except Exception:
+        return ""
+
+    pages: dict[int, list[dict]] = {}
+    for row in product:
+        if not isinstance(row, dict) or not row.get("text") or len(row.get("box", [])) != 4:
+            continue
+        pages.setdefault(int(row.get("page", 0)), []).append(row)
+
+    recovered: list[str] = []
+    for rows in pages.values():
+        rows.sort(key=lambda r: (((float(r["box"][1]) + float(r["box"][3])) / 2), float(r["box"][0])))
+        grouped: list[list[dict]] = []
+        centers: list[float] = []
+        for row in rows:
+            x0, y0, x1, y1 = (float(v) for v in row["box"])
+            center = (y0 + y1) / 2
+            height = max(.003, y1 - y0)
+            best = None
+            best_delta = 1e9
+            for index, existing_center in enumerate(centers):
+                delta = abs(center - existing_center)
+                if delta <= max(.005, height * .65) and delta < best_delta:
+                    best = index
+                    best_delta = delta
+            if best is None:
+                grouped.append([row])
+                centers.append(center)
+            else:
+                grouped[best].append(row)
+                centers[best] = (centers[best] * (len(grouped[best]) - 1) + center) / len(grouped[best])
+
+        for group in grouped:
+            group.sort(key=lambda r: float(r["box"][0]))
+            line = " ".join(" ".join(str(r.get("text") or "").split()) for r in group).strip()
+            line = " ".join(line.split()).strip()
+            if not line or len(line) > 260:
+                continue
+            # A bare R2.01/R3 etc. is overwhelmingly a revision identifier,
+            # not a radius. Keep real radius callouts such as "R 2.0 mm".
+            if re.fullmatch(r"R\d+(?:[.,]\d+)?", line, re.I):
+                continue
+            strong_geometry = bool(re.search(
+                r"\b(?:overall(?:\s+size)?|length|len|width|wid|height|thickness|thk|thick|"
+                r"od|id|pcd|bcd|pitch\s+circle|diameter|dia|radius|slot|holes?|thru|through|"
+                r"thread|tap|counterbore|countersink|chamfer|bend|weld|surface\s+finish|roughness|ra)\b",
+                line, re.I
+            ))
+            numeric_callout = bool(re.search(
+                r"(?:[Ø⌀∅]\s*\d|(?:^|\s)R\s*\d|\bM\d+(?:[.,]\d+)?(?:\s*[X×x]\s*\d+(?:[.,]\d+)?)?|"
+                r"\d+\s*[X×]\s*[Ø⌀∅]|\d+(?:[.,]\d+)?\s*(?:mm|cm|m|inches|inch|in|ft|[\"']))",
+                line, re.I
+            ))
+            if strong_geometry or numeric_callout:
+                recovered.append(line)
+
+    return _merge_text_sources("\n".join(recovered))
+
+
 def first_match(patterns: list[str], text: str, flags=re.I | re.M):
     for pattern in patterns:
         match = re.search(pattern, text, flags)
@@ -2276,8 +2347,11 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     if suffix == ".pdf":
         vector_text, pdf_timings = _extract_pdf_text_parallel(content)
         stage_timings.update(pdf_timings)
+        native_callout_text = _extract_pdf_native_callout_text(content)
+        stage_timings["native_callout_rows"] = len(native_callout_text.splitlines())
     else:
         vector_text = ""
+        native_callout_text = ""
 
     ocr_text = ""
     ocr_warnings: list[str] = []
@@ -2288,7 +2362,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     raw_text, metadata_text, full_text, excluded_count = source_text(content, filename, cached_regions(content) if include_ocr else [])
     # No filename or title-block values in dimensional regex input. Keep
     # document identifiers and separately stated material/weight as metadata.
-    combined = _merge_text_sources(raw_text, metadata_text)
+    combined = _merge_text_sources(raw_text, metadata_text, native_callout_text)
     drawing, base_rows, _source, warnings, text_preview = extract_drawing_fields(
         content, "drawing" + suffix, supplemental_text=raw_text if suffix != ".pdf" else "", primary_text=raw_text if suffix == ".pdf" else None
     )
@@ -2345,7 +2419,10 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     elif material_from_secondary_text:
         warnings.append("Material recovered from secondary PDF text; verify the title-block grade.")
     warnings = [*ocr_warnings, *warnings]
-    hay = normalize_length_units(raw_text)
+    # Native positioned rows recover split CAD callouts (for example
+    # ``LENGTH | 188 mm``) without requiring OCR. Product-region text remains
+    # first so the existing anti-title-block safeguards still have priority.
+    hay = normalize_length_units(_merge_text_sources(raw_text, native_callout_text))
     upper = hay.upper()
 
     dimensions: list[dict] = []
@@ -2846,7 +2923,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
                 f"Weight calculated locally from drawing geometry: {derived_weight:g} kg ({weight_basis})."
             )
 
-    ai_raw["field_applicability"] = field_applicability(ai_raw, raw_text)
+    ai_raw["field_applicability"] = field_applicability(ai_raw, hay)
     mandatory_status = {
         "length_mm": float(ai_raw.get("length_mm") or 0) > 0,
         "width_mm": float(ai_raw.get("width_mm") or 0) > 0 or ai_raw["field_applicability"].get("width")=="not_applicable",
@@ -2927,7 +3004,7 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         "surface_finish": len(surface_finish),
         "processes": len(processes),
     }
-    return ai_raw, drawing, local_rows, local_warnings, raw_text[:1500]
+    return ai_raw, drawing, local_rows, local_warnings, hay[:1500]
 
 def _gemini_api_key() -> str:
     return str(os.getenv("GEMINI_API_KEY") or "").strip()

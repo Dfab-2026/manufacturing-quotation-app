@@ -1069,22 +1069,57 @@ type WorkspaceDatasetSummary = {
   hasBom: boolean;
 };
 
+function ensureDraftDatabaseStores(db: IDBDatabase) {
+  if (!db.objectStoreNames.contains(ACTIVE_DRAFT_STORE)) {
+    db.createObjectStore(ACTIVE_DRAFT_STORE);
+  }
+  if (!db.objectStoreNames.contains(WORKSPACE_DATASET_STORE)) {
+    db.createObjectStore(WORKSPACE_DATASET_STORE);
+  }
+}
+
 function openDraftDatabase(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(ACTIVE_DRAFT_DB, 2);
+    // Open the current database version first. Supplying a hard-coded lower
+    // version here throws VersionError when a browser already has a newer
+    // schema (for example v3 from an earlier release).
+    const request = indexedDB.open(ACTIVE_DRAFT_DB);
 
     request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(ACTIVE_DRAFT_STORE)) {
-        db.createObjectStore(ACTIVE_DRAFT_STORE);
-      }
-      if (!db.objectStoreNames.contains(WORKSPACE_DATASET_STORE)) {
-        db.createObjectStore(WORKSPACE_DATASET_STORE);
-      }
+      ensureDraftDatabaseStores(request.result);
     };
 
-    request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error("Draft database open was blocked by another tab."));
+
+    request.onsuccess = () => {
+      const db = request.result;
+      const hasActiveDraftStore = db.objectStoreNames.contains(ACTIVE_DRAFT_STORE);
+      const hasWorkspaceStore = db.objectStoreNames.contains(WORKSPACE_DATASET_STORE);
+
+      if (hasActiveDraftStore && hasWorkspaceStore) {
+        db.onversionchange = () => db.close();
+        resolve(db);
+        return;
+      }
+
+      // A store is missing. Upgrade only forward from the browser's current
+      // version; never request an older fixed version and never delete data.
+      const nextVersion = Math.max(db.version + 1, 2);
+      db.close();
+
+      const upgradeRequest = indexedDB.open(ACTIVE_DRAFT_DB, nextVersion);
+      upgradeRequest.onupgradeneeded = () => {
+        ensureDraftDatabaseStores(upgradeRequest.result);
+      };
+      upgradeRequest.onerror = () => reject(upgradeRequest.error);
+      upgradeRequest.onblocked = () => reject(new Error("Draft database upgrade was blocked by another tab."));
+      upgradeRequest.onsuccess = () => {
+        const upgradedDb = upgradeRequest.result;
+        upgradedDb.onversionchange = () => upgradedDb.close();
+        resolve(upgradedDb);
+      };
+    };
   });
 }
 
