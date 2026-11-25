@@ -15,7 +15,7 @@ import time
 from collections import OrderedDict
 from hashlib import sha256
 
-import fitz
+import pymupdf as fitz
 from PIL import Image, ImageOps
 
 _lock = threading.Lock()

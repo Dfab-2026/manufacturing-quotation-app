@@ -151,7 +151,10 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
             raise ValueError("OpenCascade produced an empty CAD shape.")
 
         bbox = Bnd_Box()
-        _call_static(BRepBndLib, "Add", shape, bbox)
+        # Add() may bound the *supporting* infinite/extended analytic surface
+        # rather than its trimmed STEP face (e.g. Ø165 flange measured as
+        # 182 mm). AddOptimal() computes the actual trimmed-shape limits.
+        _call_static(BRepBndLib, "AddOptimal", shape, bbox, False, False)
         # Do not use Bnd_Box.Get()/Limits() here. Some OCP wheels expose
         # Limits() with a return-value binding that pybind cannot convert,
         # which raises at runtime even though the box itself is valid.
@@ -363,6 +366,41 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                 "basis": "Distinct internal OCCT cylindrical axes; split faces and circular edges deduplicated",
             })
 
+        # Bolt PCD is an arrangement of actual cylindrical axes, not a count
+        # of circular faces. A symmetric >=4-hole pattern has parallel axes
+        # and equal radial distance from their centroid in the normal plane.
+        bolt_circle_patterns: list[dict[str, Any]] = []
+        for hole_dia, hole_axes in sorted(grouped_holes.items()):
+            if len(hole_axes) < 4:
+                continue
+            axis = hole_axes[0]["direction"]
+            if any(abs(sum(a*b for a,b in zip(axis, row["direction"]))) < .998
+                   for row in hole_axes):
+                continue
+            centers = [row["axis_point_mm"] for row in hole_axes]
+            centroid = [sum(row[i] for row in centers)/len(centers) for i in range(3)]
+            radii = []
+            for location in centers:
+                disp = [location[i]-centroid[i] for i in range(3)]
+                along = sum(disp[i]*axis[i] for i in range(3))
+                radii.append(math.sqrt(sum((disp[i]-along*axis[i])**2 for i in range(3))))
+            if min(radii) <= .1:
+                continue
+            mean_radius = sum(radii)/len(radii)
+            if max(abs(radius-mean_radius) for radius in radii) > max(.08, mean_radius*.005):
+                continue
+            pcd = round(mean_radius*2, 4)
+            bolt_circle_patterns.append({
+                "diameter_mm": round(hole_dia, 4),
+                "quantity": len(hole_axes),
+                "pcd_mm": pcd,
+                "confidence": 90,
+                "review_required": True,
+                "basis": "Parallel internal hole axes equidistant from a common centroid",
+            })
+            add_location(f"Bolt PCD Ø{pcd:g}", pcd, centers,
+                         kind="calculation", basis="Symmetric internal cylinder axis pattern; review required")
+
         for dia,rows_for_dia in sorted(grouped_holes.items()):
             points=[pt for row in rows_for_dia for pt in row['points']]
             add_location(f'Hole Ø{dia:g}',dia,points,basis='Measured internal cylindrical hole face(s)')
@@ -400,6 +438,17 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
                     "review_required": False,
                     "basis": "Exact OCCT B-Rep bounding box",
                 })
+
+        for pattern in bolt_circle_patterns:
+            dimensions.append({
+                "label": f"Bolt PCD Ø{pattern['pcd_mm']:g} ({pattern['quantity']} x Ø{pattern['diameter_mm']:g})",
+                "value_mm": pattern["pcd_mm"],
+                "quantity": 1,
+                "kind": "bolt_pattern_pcd",
+                "confidence": pattern["confidence"],
+                "review_required": True,
+                "basis": pattern["basis"],
+            })
 
         outer_values = _unique_numbers(primary_outer_diameters)
         inner_values = _unique_numbers(primary_inner_diameters)
@@ -489,6 +538,26 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
             evidence=wall_thickness['evidence']
             pts=[pt for maj,mi,pt in torus_points if abs(maj-evidence['bend_radius_mm'])<.1 and any(abs(mi-evidence[k])<.01 for k in ('outer_minor_radius_mm','inner_minor_radius_mm'))]
             add_location('Thickness',wall_thickness['value_mm'],pts,kind='calculation',basis='Paired toroidal surface radii; estimated wall section')
+        # An assembly needs one verifiable BOM placeholder per physical solid.
+        # The STEP file does not necessarily provide part names or material for
+        # each solid; keep those unknown instead of creating fabricated labels.
+        solid_components: list[dict[str, Any]] = []
+        solids = TopExp_Explorer(shape, TopAbs_SOLID)
+        while solids.More() and len(solid_components) < 100:
+            solid = _call_static(TopoDS, "Solid", solids.Current())
+            solid_bbox = Bnd_Box()
+            _call_static(BRepBndLib, "AddOptimal", solid, solid_bbox, False, False)
+            smin = solid_bbox.CornerMin().Coord()
+            smax = solid_bbox.CornerMax().Coord()
+            mass_properties = GProp_GProps()
+            _call_static(BRepGProp, "VolumeProperties", solid, mass_properties)
+            solid_components.append({
+                "solid_index": len(solid_components) + 1,
+                "volume_mm3": _rounded(max(0.0, float(mass_properties.Mass())), 6),
+                "dimensions_mm": {axis: _rounded(max(0.0, b-a), 4)
+                                  for axis, a, b in zip(("x", "y", "z"), smin, smax)},
+            })
+            solids.Next()
         solid_count = _count_explorer(shape, TopAbs_SOLID, TopExp_Explorer)
         face_count = _count_explorer(shape, TopAbs_FACE, TopExp_Explorer)
         edge_count = _count_explorer(shape, TopAbs_EDGE, TopExp_Explorer)
@@ -515,6 +584,7 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
             "volume_mm3": _rounded(volume, 6),
             "surface_area_mm2": _rounded(surface_area, 6),
             "solid_count": max(1, solid_count),
+            "solid_components": solid_components,
             "face_count": face_count,
             "edge_count": edge_count,
             "shape_hint": shape_hint,
@@ -533,6 +603,7 @@ def analyze_step_brep(content: bytes, filename: str) -> dict[str, Any]:
             "entity_counts": dict(face_counts),
             "wall_thickness": wall_thickness,
             "hole_features": hole_features,
+            "bolt_circle_patterns": bolt_circle_patterns,
         }
     finally:
         try:

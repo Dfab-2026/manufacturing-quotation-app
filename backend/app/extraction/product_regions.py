@@ -5,14 +5,27 @@ of a drawing: real views can occupy it. Detect administrative rows/regions from
 labels, and use explicit metadata only for its matching field.
 """
 from __future__ import annotations
+import json
 import re
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
+from hashlib import sha256
+from threading import Lock
 from typing import Iterable
 
 ADMIN = re.compile(r'\b(?:rev(?:ision)?\b|drawing\s*(?:no\.?|number|size)|dwg\s*(?:no\.?|number)|sheet\s*(?:no\.?|number|size)|scale\b|drawn(?:\s+by)?\b|checked(?:\s+by)?\b|approved(?:\s+by)?\b|designed(?:\s+by)?\b|date\b|issue\s+date|projection\b|paper\s+size|document\s*(?:no|number)|page\s*\d+\s*(?:of|/)|revision\s+history|change\s+description)\b', re.I)
 MATERIAL = re.compile(r'\b(?:material(?:\s+grade)?|matl\.?|grade)\s*[:= ]', re.I)
 WEIGHT = re.compile(r'\b(?:net\s+weight|unit\s+weight|weight|mass|wt\.?)\s*[:= ]', re.I)
 PAPER = re.compile(r'\b(?:ISO\s*216|A[0-5]\s+(?:sheet|paper)|(?:sheet|paper)\s+A[0-5]|(?:paper|sheet|drawing|border|frame)\s+(?:width|height|length|dimensions?))\b', re.I)
+
+# Cache only compact extracted strings, never uploaded PDF bytes or page images.
+# A single analysis revisits the identical title block during thickness recovery,
+# evidence attachment and costing; re-rendering the page on every pass can stall
+# Render, particularly with multi-page CAD sheets.
+_SOURCE_TEXT_LOCK = Lock()
+_SOURCE_TEXT_CACHE: OrderedDict[str, tuple[str, str, str, int]] = OrderedDict()
+_SOURCE_TEXT_CACHE_SIZE = 3
+_SOURCE_TEXT_CACHE_MAX_CHARS = 160_000
+
 
 
 NON_GEOMETRY = re.compile(r"^\s*(?:(?:general|standard|unspecified|default)\s+tolerances?\b|unless\s+otherwise\s+(?:specified|stated|noted)\b|do\s+not\s+scale\b|all\s+dimensions\s+(?:are\s+)?in\b|(?:sheet|page)\s+\d+\s*(?:of|/)\s*\d+|(?:drawing|document|part)\s+(?:no\.?|number|id)\b|(?:copyright|confidential|proprietary)\b|(?:note|notes)\s*[:.]?\s*(?:general|all\s+dimensions|unless\s+otherwise))", re.I)
@@ -24,7 +37,7 @@ def administrative(text):
 
 def _page_grid(page):
     """Long horizontal table rules, not visual page size or drawing dimensions."""
-    import fitz
+    import pymupdf as fitz
     r=page.rect; rules=[]
     try: drawings=page.get_drawings()
     except Exception: return rules
@@ -80,7 +93,7 @@ def _image_content_boxes(image):
 
 def _page_content_boxes(page):
     from PIL import Image
-    import fitz
+    import pymupdf as fitz
     scale=1600/max(page.rect.width,page.rect.height,1)
     pix=page.get_pixmap(matrix=fitz.Matrix(scale,scale),colorspace=fitz.csGRAY,alpha=False)
     return _image_content_boxes(Image.frombytes('L',(pix.width,pix.height),pix.samples))
@@ -100,7 +113,7 @@ def _boxed_text(row, rows, boxes):
     return False
 
 def native_regions(content):
-    import fitz
+    import pymupdf as fitz
     from app.drawing_evidence import _pdf_lines
     regions=[]
     with fitz.open(stream=content,filetype='pdf') as doc:
@@ -170,6 +183,19 @@ def partition(regions):
 
 
 def source_text(content, filename, optical=()):
+    optical = list(optical)
+    cache_key = None
+    if len(content) <= 25 * 1024 * 1024 and len(optical) <= 1200:
+        try:
+            fingerprint = sha256(json.dumps(optical, sort_keys=True, default=str).encode('utf-8')).hexdigest()
+            cache_key = f"{filename.lower().endswith('.pdf')}:{sha256(content).hexdigest()}:{fingerprint}"
+            with _SOURCE_TEXT_LOCK:
+                cached = _SOURCE_TEXT_CACHE.get(cache_key)
+                if cached is not None:
+                    _SOURCE_TEXT_CACHE.move_to_end(cache_key)
+                    return cached
+        except (TypeError, ValueError):
+            cache_key = None
     native=native_regions(content) if filename.lower().endswith('.pdf') else []
     # Preserve native and OCR locations. Deduplicate only matching text in the
     # same page region, not equal callouts in different views.
@@ -183,7 +209,7 @@ def source_text(content, filename, optical=()):
         if not any(same(n) for n in native): all_regions.append(r)
     # Optical-only rows must inherit the same page geometry as native rows.
     if filename.lower().endswith('.pdf'):
-        import fitz
+        import pymupdf as fitz
         page_boxes={r['page']:r.get('content_boxes',[]) for r in native}
         with fitz.open(stream=content,filetype='pdf') as doc:
             for i in {r.get('page',0) for r in all_regions}:
@@ -213,7 +239,52 @@ def source_text(content, filename, optical=()):
                     # width or arbitrary table cell into the material parser.
                     tail=re.split(r'\b(?:width|height|length|thickness|size|qty|quantity)\b',tail,maxsplit=1,flags=re.I)[0]
                 typed.append(m.group(0)+tail.strip())
-    return text(product),'\n'.join(dict.fromkeys(typed)),text(all_regions),len(excluded)
+    # Some CAD title blocks print the label and value in separate neighbouring
+    # cells (for example MATERIAL | SS 316 and WEIGHT | 0.142 kg). Those cells
+    # are metadata only: never feed their numbers into the dimension extractor.
+    # Pair only explicit labels with a physically adjacent, valid value.
+    for label_row in all_regions:
+        label = ' '.join(str(label_row.get('text') or '').split()).strip().rstrip(':').strip()
+        is_material = bool(re.fullmatch(r'(?:MATERIAL(?:\s+GRADE)?|MATL\.?|GRADE)', label, re.I))
+        is_weight = bool(re.fullmatch(r'(?:NET\s+WEIGHT|UNIT\s+WEIGHT|WEIGHT|MASS|WT\.?)(?:\s*\(\s*(?:KG|G|LB)\s*\))?', label, re.I))
+        if not (is_material or is_weight):
+            continue
+        a, b, c, d = label_row['box']
+        mid_y = (b + d) / 2
+        matches = []
+        for candidate in all_regions:
+            if candidate is label_row or candidate.get('page') != label_row.get('page'):
+                continue
+            x, y, x1, y1 = candidate['box']
+            if x < c - .005 or x - c > .32:
+                continue
+            if abs((y + y1) / 2 - mid_y) > max(.014, (d - b) * .9):
+                continue
+            value = ' '.join(str(candidate.get('text') or '').split()).strip()
+            if is_material:
+                valid = re.search(
+                    r'\b(?:AISI|SUS|SS\s*[-/]?\s*(?:201|202|304L?|316L?|321|430)|'
+                    r'(?:201|202|304L?|316L?|321|430)\s*SS|'
+                    r'STAINLESS\s+STEEL|MILD\s+STEEL|CARBON\s+STEEL|'
+                    r'IS\s*2062|ASTM\s*A240|ALUMINIUM|ALUMINUM|COPPER|BRASS)\b',
+                    value, re.I,
+                )
+                valid = bool(valid)
+            else:
+                valid = bool(re.fullmatch(r'\d+(?:[.,]\d+)?\s*(?:KG|KGS|G|GRAMS?|LB|LBS|POUNDS?)', value, re.I))
+            if valid:
+                matches.append((x - c, value))
+        if matches:
+            value = min(matches, key=lambda item: item[0])[1]
+            typed.append(f'{label}: {value}')
+    result = (text(product), '\n'.join(dict.fromkeys(typed)), text(all_regions), len(excluded))
+    if cache_key is not None and sum(len(part) for part in result[:3]) <= _SOURCE_TEXT_CACHE_MAX_CHARS:
+        with _SOURCE_TEXT_LOCK:
+            _SOURCE_TEXT_CACHE[cache_key] = result
+            _SOURCE_TEXT_CACHE.move_to_end(cache_key)
+            while len(_SOURCE_TEXT_CACHE) > _SOURCE_TEXT_CACHE_SIZE:
+                _SOURCE_TEXT_CACHE.popitem(last=False)
+    return result
 
 
 def geometry_text(content, filename, optical=()):
@@ -304,7 +375,7 @@ def vector_dimension_callouts(content):
     Return generic linear measurements, not inferred overall axes.
     """
     import math
-    import fitz
+    import pymupdf as fitz
     found=[]
     with fitz.open(stream=content,filetype='pdf') as doc:
         for i,page in enumerate(doc):
@@ -342,7 +413,7 @@ def vector_dimension_callouts(content):
 
 
 def native_regions_for_page(page,index):
-    import fitz
+    import pymupdf as fitz
     from app.drawing_evidence import _pdf_lines
     rules=_page_grid(page);content_boxes=_page_content_boxes(page);r=page.rect;rows=[]
     for text,boxes in _pdf_lines(page):

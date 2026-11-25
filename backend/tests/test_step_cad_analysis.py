@@ -163,8 +163,10 @@ def test_step_filename_316ss_drives_material_and_volume_weight():
     ai = result["ai_raw"]
     assert ai["material"]["family"] == "Stainless Steel"
     assert ai["material"]["grade"] == "AISI 316"
-    assert ai["weight_kg"] == 0.99125
-    assert result["drawing"].weight_kg == 0.99125
+    # AISI 316-specific density (7.98 g/cm³) must win over the generic
+    # stainless-family default (7.93 g/cm³).
+    assert ai["weight_kg"] == 0.9975
+    assert result["drawing"].weight_kg == 0.9975
 
 
 def test_step_exact_geometry_dimensions_join_pdf_dimension_shape():

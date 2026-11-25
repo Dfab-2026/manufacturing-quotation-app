@@ -28,14 +28,21 @@ Verify before deploying the frontend:
 - Import the same GitHub repository.
 - Root Directory: `frontend`
 - Framework: Next.js
-- Keep default install/build/output settings.
+- Install Command: `npm run release:install` (defined in `frontend/vercel.json`).
+- Build Command: `npm run release:check` (defined in `frontend/vercel.json`).
+- Output Directory: leave unset; Vercel handles the Next.js output.
+- Node.js Version: `22.x` (also specified in `frontend/package.json`).
+- Confirm **Root Directory = `frontend` in the Vercel project dashboard**; the repository JSON cannot set this.
+- **Before deploying v92 or later:** run `npm run release:prepare` locally from `frontend` with an accessible npm registry and commit both `frontend/package.json` and `frontend/package-lock.json`. The original v92 lockfile still has Next.js 14 / React 18 and intentionally fails the release gate. Never regenerate it during a Vercel build.
 
-Frontend environment variables (replace with the Render URL):
+Frontend environment variables (set for the intended Vercel environments; replace with your actual Render origin, without an `/api` suffix):
 - `NEXT_PUBLIC_API_BASE_URL=https://ai-quotation-api.onrender.com`
 - `NEXT_PUBLIC_FASTAPI_URL=https://ai-quotation-api.onrender.com`
 - `FASTAPI_INTERNAL_URL=https://ai-quotation-api.onrender.com`
 
-Deploy the backend first, then deploy the frontend. If using a custom non-Vercel domain, add it to Render `FRONTEND_ORIGIN`.
+`NEXT_PUBLIC_API_BASE_URL` is the browser's primary direct FastAPI URL; `NEXT_PUBLIC_FASTAPI_URL` is the existing alternative; `FASTAPI_INTERNAL_URL` is only for the Next.js `/backend-api` rewrite. On production domains, the browser defaults to `https://ai-quotation-api.onrender.com` if no public URL is set. Do not set these variables to `localhost` or expose database secrets. Redeploy after changing any `NEXT_PUBLIC_` value because Next.js bakes it into the frontend bundle.
+
+Deploy the backend first, then deploy the frontend. If using a custom non-Vercel domain, add it to Render `FRONTEND_ORIGIN`. Check Vercel deployment logs for the **first** `[release FAILED n/8]` stage: a passing test stage is not proof the later audit/build/typecheck passed. See `VERCEL_DEPLOYMENT_AUDIT_V93.md` for the v92 audit and remediation.
 
 ## 3. Final production smoke test
 1. Open Vercel frontend.

@@ -9,6 +9,7 @@ from app.drawing_evidence import attach_pdf_evidence, attach_dxf_evidence, attac
 from app.rfq_material import normalize_wall, pipe_dimensions, purchased_callouts, recover_printed_thickness, normalize_thickness, recover_cad_thickness
 from app.engineering_intelligence import enrich_engineering_intelligence, build_cost_trace
 from app.premium_engine import build_premium_estimate
+from app.quotation_document import make_quotation_pdf
 from app.db import (
     DATABASE_CONFIGURED,
     LOCAL_DATABASE,
@@ -388,7 +389,7 @@ else:
         _HOT_CACHE.setdefault("quotations", [])
         _HOT_CACHE.setdefault("actuals", [])
 
-EXTRACTION_PIPELINE_VERSION = "fastapi-product-regions-v22-ruled-cells"
+EXTRACTION_PIPELINE_VERSION = "fastapi-product-regions-v23-metadata-reliability"
 MAX_UPLOAD_BYTES = max(1, int(os.getenv("MAX_UPLOAD_MB", "100"))) * 1024 * 1024
 
 
@@ -585,6 +586,9 @@ class DetailedExportReq(ExportReq):
 
 class PdfReq(ExportReq):
     customer: str = "Customer"
+    engineering: dict = Field(default_factory=dict)
+    preview_image: str = Field(default="", max_length=2_900_000)
+    gst_pct: float = Field(default=18.0, ge=0, le=100)
 
 
 class BatchQuoteItem(BaseModel):
@@ -1616,6 +1620,8 @@ def _ocr_unavailable_warning() -> str:
     reason = ocr_configuration()["reason"]
     if reason == "disabled_by_environment":
         return "Detailed drawing reader disabled. Set LOCAL_OCR_ENABLED=true in the Render backend, then rebuild and redeploy."
+    if reason == "insufficient_memory_for_ocr":
+        return "The backend has insufficient container memory for local ONNX OCR. Native drawing PDF text was analyzed; for optical dimensions use at least 1 GB Render RAM."
     return "Detailed drawing reader dependencies missing. Install requirements-render.txt on the backend and redeploy."
 
 
@@ -1626,8 +1632,8 @@ def _get_local_ocr_engine():
     quota, or external AI service is required.
     """
     global _LOCAL_OCR_ENGINE, _LOCAL_OCR_ERROR
-    if not _local_ocr_enabled():
-        _LOCAL_OCR_ERROR = "Local OCR disabled by LOCAL_OCR_ENABLED=false"
+    if not _local_ocr_runtime_available():
+        _LOCAL_OCR_ERROR = _ocr_unavailable_warning()
         return None
     if _LOCAL_OCR_ENGINE is not None:
         return _LOCAL_OCR_ENGINE
@@ -2192,17 +2198,57 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         content, "drawing" + suffix, supplemental_text=raw_text if suffix != ".pdf" else "", primary_text=raw_text if suffix == ".pdf" else None
     )
     if drawing.description == clean_filename_description("drawing" + suffix): drawing.description = clean_filename_description(filename)
-    drawing.drawing_no = Path(filename).stem[:60]
+    # A source PDF's explicit title-block identifier always wins. Filename
+    # identifiers are lower-confidence fallbacks only, never drawing geometry.
+    filename_stem = Path(filename).stem
+    pid_from_filename = re.search(r"\bPID\s*#\s*(\d{3,})", filename_stem, re.I)
+    drawing.drawing_no = (f"PID#{pid_from_filename.group(1)}" if pid_from_filename else filename_stem[:60])
     drawing.thickness_mm = 0
     drawing.weight_kg = _extract_printed_weight_kg(combined)
     # Prevent an ordinary linear dimension of 6061/5052/etc. from becoming
     # an alloy. Bare numeric alloy/steel grades need the material field label.
-    material_lines = [line for line in combined.splitlines() if re.search(r"\b(?:material|matl|grade|AISI|SUS|SS|STAINLESS|MILD\s+STEEL|CARBON\s+STEEL|IS\s*2062|ASTM|EN\s*1\.|AL(?:UMINIUM|UMINUM)?|COPPER|BRASS|BRONZE|CAST\s+IRON|S275|S355|E250|E350)\b",line,re.I)]
+    material_lines = [line for line in combined.splitlines() if re.search(
+        r"\b(?:material|matl|grade|AISI|SUS|SS|STAINLESS|MILD\s+STEEL|CARBON\s+STEEL|IS\s*2062|ASTM|EN\s*1\.|AL(?:UMINIUM|UMINUM)?|COPPER|BRASS|BRONZE|CAST\s+IRON|S275|S355|E250|E350)\b"
+        r"|\b(?:201|202|304L?|316L?|321|430)\s*(?:SS|STAINLESS)\b", line, re.I
+    )]
     drawing.material, _ = detect_material("\n".join(material_lines), "")
+    material_from_filename = False
+    material_from_secondary_text = False
+    if drawing.material == "Not detected" and vector_text.strip():
+        # PyPDF may recover literal title-block labels that the positioned PDF
+        # extractor cannot decode. Only use it for material, not dimensions.
+        secondary_material, _ = detect_material(vector_text, "")
+        if secondary_material != "Not detected":
+            drawing.material = secondary_material
+            material_from_secondary_text = True
+    if drawing.material == "Not detected":
+        # The uploaded filename may explicitly say "316SS", but that is a
+        # suggestion requiring engineer review, not verified PDF evidence.
+        filename_material, _ = detect_material("", filename_stem)
+        if filename_material != "Not detected":
+            drawing.material = filename_material
+            material_from_filename = True
     doc_match = first_match([r"\bDRAWING\s*(?:NO\.?|NUMBER)\s*[:#\-]?\s*([A-Z0-9._/-]{3,})", r"\bPID\s*[#:\-]?\s*(\d{3,})\b"], full_text)
-    if doc_match: drawing.drawing_no = doc_match.group(1)
+    if not doc_match and vector_text.strip():
+        doc_match = first_match([r"\bDRAWING\s*(?:NO\.?|NUMBER)\s*[:#\-]?\s*([A-Z0-9._/-]{3,})", r"\bPID\s*[#:\-]?\s*(\d{3,})\b"], vector_text)
+    if doc_match:
+        drawing.drawing_no = doc_match.group(1)
+    elif pid_from_filename:
+        warnings.append("Drawing identifier derived from filename; confirm against the source title block.")
     rev_match = first_match([r"\bREV(?:ISION)?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9.\-]*)\b"], full_text)
-    drawing.revision = rev_match.group(1) if rev_match else ""
+    if not rev_match and vector_text.strip():
+        rev_match = first_match([r"\bREV(?:ISION)?\s*[:#\-]?\s*([A-Z0-9][A-Z0-9.\-]*)\b"], vector_text)
+    if rev_match:
+        drawing.revision = rev_match.group(1)
+    else:
+        rev_filename = re.search(r"(?:^|[-_\s])(?P<rev>R\d+(?:\.\d+)?)(?:[-_\s]*20\d{2}[-_]\d{2}[-_]\d{2})?$", filename_stem, re.I)
+        drawing.revision = rev_filename.group('rev').upper() if rev_filename else ""
+        if rev_filename:
+            warnings.append("Revision derived from filename; confirm against the source title block.")
+    if material_from_filename:
+        warnings.append("Material inferred from filename only; confirm the actual grade on the source drawing before costing.")
+    elif material_from_secondary_text:
+        warnings.append("Material recovered from secondary PDF text; verify the title-block grade.")
     warnings = [*ocr_warnings, *warnings]
     hay = normalize_length_units(raw_text)
     upper = hay.upper()
@@ -2569,10 +2615,19 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
 
     material_family = drawing.material if drawing.material != "Not detected" else ""
     material_grade = ""
-    grade_match = re.search(r"\b(?:AISI|SUS|SS|ASTM\s*A240|MATERIAL(?:\s+GRADE)?\s*[:=]?)\s*[-_/ ]?(201|202|304L?|316L?|321|430)\b", combined, re.I)
+    grade_source = combined
+    if material_from_secondary_text:
+        grade_source += "\n" + vector_text
+    if material_from_filename:
+        grade_source += "\n" + filename_stem
+    grade_match = re.search(
+        r"\b(?:AISI|SUS|SS|ASTM\s*A240|MATERIAL(?:\s+GRADE)?\s*[:=]?)\s*[-_/ ]?(201|202|304L?|316L?|321|430)\b"
+        r"|\b(201|202|304L?|316L?|321|430)\s*(?:SS|STAINLESS)\b",
+        grade_source, re.I,
+    )
     en_grade = re.search(r"\bEN\s*1\.(4301|4307|4401|4404)\b", combined, re.I)
     if grade_match or en_grade:
-        raw_grade = grade_match.group(1).upper() if grade_match else {"4301":"304","4307":"304L","4401":"316","4404":"316L"}[en_grade.group(1)]
+        raw_grade = (grade_match.group(1) or grade_match.group(2)).upper() if grade_match else {"4301":"304","4307":"304L","4401":"316","4404":"316L"}[en_grade.group(1)]
         material_grade = f"AISI {raw_grade}"
         material_family = "Stainless Steel"
     elif (m := re.search(r"\bS(275|355)(?:JR|J2|J0)?\b", "\n".join(material_lines))):
@@ -2618,8 +2673,9 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         "manufacturing_processes": processes,
         "notes": list(drawing.notes),
         "confidence": {
-            "drawing_no": 92 if drawing.drawing_no else 0,
-            "material": 88 if material_family else 0,
+            "drawing_no": (92 if doc_match else 55 if pid_from_filename else 35) if drawing.drawing_no else 0,
+            "revision": 90 if rev_match else 55 if drawing.revision else 0,
+            "material": (55 if material_from_filename else 76 if material_from_secondary_text else 88) if material_family else 0,
             "thickness": 84 if drawing.thickness_mm > 0 else 0,
             "weight": 95 if explicit_weight > 0 else (75 if drawing.weight_kg > 0 else 0),
             "dimensions": 88 if dimensions else 0,
@@ -2628,7 +2684,11 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         "evidence": [
             {"field": "weight", "basis": "FastAPI PDF/OCR title-block extraction", "value": f"{explicit_weight:g} kg", "confidence": 95}
         ] if explicit_weight > 0 else [],
-        "missing_or_uncertain": [],
+        "missing_or_uncertain": (
+            ["Material grade originates from the filename, not the drawing; engineer confirmation required."]
+            if material_from_filename else []
+        ),
+        "material_source": "filename_review_required" if material_from_filename else "secondary_pdf_text" if material_from_secondary_text else "drawing_text" if material_family else "unknown",
         "extraction_engine": "fastapi_local",
         "product_region_policy": "positioned_product_only",
         "excluded_administrative_regions": excluded_count,
@@ -2652,7 +2712,12 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
     # deterministic geometry only when material density + usable geometry exist.
     # This happens before costing rows are built so Material qty/rates populate
     # the Cost Sheet instead of remaining at zero.
-    derived_weight, weight_basis, weight_confidence = _derive_local_geometry_weight(ai_raw, drawing, hay)
+    # A filename-suggested alloy grade is not a safe density for automatic
+    # costing: wait for a confirmed drawing grade or engineer input.
+    derived_weight, weight_basis, weight_confidence = (
+        (0.0, "", 0) if material_from_filename
+        else _derive_local_geometry_weight(ai_raw, drawing, hay)
+    )
     if explicit_weight <= 0 and derived_weight > 0:
         drawing.weight_kg = derived_weight
         ai_raw["weight_kg"] = derived_weight
@@ -2674,8 +2739,8 @@ def _local_fastapi_engineering_extract(content: bytes, filename: str, include_oc
         "length_mm": float(ai_raw.get("length_mm") or 0) > 0,
         "width_mm": float(ai_raw.get("width_mm") or 0) > 0 or ai_raw["field_applicability"].get("width")=="not_applicable",
         "thickness_mm": float(ai_raw.get("thickness_mm") or drawing.thickness_mm or 0) > 0 or ai_raw["field_applicability"].get("thickness")=="not_applicable",
-        "material": bool(material_family),
-        "material_grade": bool(material_grade),
+        "material": bool(material_family) and not material_from_filename,
+        "material_grade": bool(material_grade) and not material_from_filename,
         "weight_kg": float(ai_raw.get("weight_kg") or drawing.weight_kg or 0) > 0,
     }
     ai_raw["mandatory_fields"] = mandatory_status
@@ -3370,6 +3435,12 @@ def _internal_material_key(ai_data: dict, drawing: Drawing) -> str:
 
 def _internal_density(ai_data: dict, drawing: Drawing) -> float:
     key = _internal_material_key(ai_data, drawing)
+    # A generic 'Stainless Steel' family must not shadow a specific grade.
+    # In particular AISI 316 uses 7.98 g/cm³ rather than generic 7.93.
+    if any(token in key for token in ("AISI316", "SS316", "316SS", "SUS316", "EN14401", "EN14404")):
+        return _INTERNAL_DENSITY_KG_PER_MM3["SS316"]
+    if any(token in key for token in ("AISI304", "SS304", "304SS", "SUS304", "EN14301", "EN14307")):
+        return _INTERNAL_DENSITY_KG_PER_MM3["SS304"]
     for family, density in _INTERNAL_DENSITY_KG_PER_MM3.items():
         if family in key:
             return density
@@ -5271,6 +5342,12 @@ def analyze_cad(value: CadAnalysisReq):
     filename = Path(value.filename or "cad_part.step").name
     stem = Path(filename).stem[:120]
     fmt = str(value.format or "CAD").upper()
+    # CAD sources often omit PMI/title blocks; recover identifiers only as
+    # review-required filename hints, never as authenticated CAD properties.
+    filename_pid = re.search(r"\bPID\s*#\s*(\d{3,})\b", stem, re.I)
+    filename_revision = re.search(r"(?<![A-Za-z0-9])R\d+(?:\.\d+)*(?=\b|[-_])", stem, re.I)
+    drawing_identity = f"PID#{filename_pid.group(1)}" if filename_pid else stem
+    drawing_revision = filename_revision.group(0).upper() if filename_revision else ""
 
     x = max(0.0, float(value.dimensions_mm.get("x", 0) or 0))
     y = max(0.0, float(value.dimensions_mm.get("y", 0) or 0))
@@ -5335,10 +5412,36 @@ def analyze_cad(value: CadAnalysisReq):
         if str(name).strip()
     ][:100]
 
+    def _numeric_cad_solid_volume(row):
+        try:
+            value = float(row.get("volume_mm3") or 0)
+            return value if math.isfinite(value) and value > 0 else 0
+        except (ValueError, TypeError):
+            return 0
+
+    part_count = max(1, int(value.part_count or 1))
     assembly_parts = []
-    for index, name in enumerate(component_names, 1):
-        assembly_parts.append(
-            {
+    solid_components = [item for item in (step_metadata.get("solid_components") or [])
+                        if isinstance(item, dict) and _numeric_cad_solid_volume(item) > 0]
+    # When every CAD solid has a measured volume, use those true components
+    # rather than trusting a single assembly-name string as the entire BOM.
+    if part_count > 1 and len(solid_components) == part_count:
+        for index, solid in enumerate(solid_components, 1):
+            size = solid.get("dimensions_mm") or {}
+            name = (component_names[index-1] if len(component_names) == part_count
+                    else f"CAD Solid {index} (unnamed)")
+            assembly_parts.append({
+                "item_no": str(index), "part_name": name, "drawing_no": "",
+                "quantity": 1, "material": "",
+                "length_mm": size.get("x"), "width_mm": size.get("y"),
+                "height_mm": size.get("z"), "thickness_mm": None,
+                "volume_mm3": solid.get("volume_mm3"),
+                "description": "Measured independent STEP solid; component identity and grade require review",
+                "confidence": 100,
+            })
+    else:
+        for index, name in enumerate(component_names, 1):
+            assembly_parts.append({
                 "item_no": str(index),
                 "part_name": name,
                 "drawing_no": "",
@@ -5350,11 +5453,9 @@ def analyze_cad(value: CadAnalysisReq):
                 "thickness_mm": None,
                 "description": "Component name read from CAD assembly tree",
                 "confidence": 90,
-            }
-        )
+            })
 
     parser_exact = value.parser_status == "parsed"
-    part_count = max(1, int(value.part_count or 1))
 
     process_name = "CNC Milling" if parser_exact else "General Machining"
     process_confidence = 80 if parser_exact else 55
@@ -5363,6 +5464,11 @@ def analyze_cad(value: CadAnalysisReq):
         "Material / grade is not reliably defined by the triangulated CAD geometry; confirm before costing.",
         "Manufacturing tolerances and surface-finish requirements must be confirmed from the released engineering specification.",
     ]
+    if part_count > 1:
+        missing_or_uncertain.append(
+            "Multi-solid assembly: joining/welding, forming, finishing and test operations cannot be established "
+            "from geometry alone. Add required operations and rates to the Cost Sheet before quotation release."
+        )
 
     if not parser_exact:
         missing_or_uncertain.insert(
@@ -5455,8 +5561,8 @@ def analyze_cad(value: CadAnalysisReq):
         cad_primary = process_name
 
     ai_raw = {
-        "drawing_no": stem,
-        "revision": "",
+        "drawing_no": drawing_identity,
+        "revision": drawing_revision,
         "description": value.root_name.strip() or (step_product_names[0] if step_product_names else stem),
         "drawing_type": "assembly" if part_count > 1 else "machining",
         "document_type": cad_document_type,
@@ -5560,6 +5666,25 @@ def analyze_cad(value: CadAnalysisReq):
         },
     }
 
+    if filename_pid:
+        ai_raw.setdefault("missing_or_uncertain", []).append(
+            "Drawing number read from STEP filename; confirm against released drawing."
+        )
+        ai_raw.setdefault("evidence", []).append({
+            "field": "Drawing Number", "value": drawing_identity,
+            "basis": "Source CAD filename only; review required", "page": 0,
+            "confidence": 65,
+        })
+    if filename_revision:
+        ai_raw.setdefault("missing_or_uncertain", []).append(
+            "Revision read from STEP filename; confirm against released drawing."
+        )
+        ai_raw.setdefault("evidence", []).append({
+            "field": "Revision", "value": drawing_revision,
+            "basis": "Source CAD filename only; review required", "page": 0,
+            "confidence": 65,
+        })
+
     if predicted_wall_thickness:
         ai_raw.setdefault("evidence", []).append({
             "field": "Predicted Wall Thickness",
@@ -5575,6 +5700,10 @@ def analyze_cad(value: CadAnalysisReq):
 
     # If STEP contains a usable material hint, calculate mass from exact solid
     # volume using the same recognized-density policy used by PDF extraction.
+    # Filename grade hints can support a *provisional* estimate, not a
+    # certified material designation; keep the mass confidence bounded by the
+    # source material evidence and retain a release review item.
+    grade_explicit_in_cad = bool(str(step_metadata.get("material_text") or "").strip())
     if parser_exact and float(value.volume_mm3 or 0) > 0 and material_family:
         provisional = ai_result_to_drawing(ai_raw)
         density = _internal_density(ai_raw, provisional)
@@ -5584,13 +5713,14 @@ def analyze_cad(value: CadAnalysisReq):
                 ai_raw["weight_kg"] = round(calculated_weight, 6)
                 ai_raw["calculated_weight_kg"] = round(calculated_weight, 6)
                 ai_raw["weight_source"] = "cad_solid_volume"
-                ai_raw["confidence"]["weight"] = 92
+                weight_confidence = min(92, material_confidence or 60)
+                ai_raw["confidence"]["weight"] = weight_confidence
                 ai_raw.setdefault("evidence", []).append({
                     "field": "Calculated Weight",
                     "value": f"{calculated_weight:.6g} kg",
-                    "basis": "STEP triangulated solid volume × recognized material density",
+                    "basis": "Exact STEP B-Rep net solid volume × assumed material density; verify grade before release",
                     "page": 0,
-                    "confidence": 92,
+                    "confidence": weight_confidence,
                 })
 
     if material_family:
@@ -5598,10 +5728,15 @@ def analyze_cad(value: CadAnalysisReq):
             item for item in ai_raw.get("missing_or_uncertain", [])
             if not str(item).startswith("Material / grade")
         ]
+        if not grade_explicit_in_cad:
+            ai_raw["missing_or_uncertain"].append(
+                "Material grade inferred from CAD filename/name, not a certified STEP property; verify with released drawing or MTC."
+            )
         ai_raw.setdefault("evidence", []).append({
             "field": "Material",
             "value": " ".join(v for v in [material_family, material_grade] if v),
-            "basis": "Material designation/name detected in STEP metadata",
+            "basis": ("Explicit material designation embedded in CAD" if grade_explicit_in_cad
+                      else "Filename/CAD product-name hint; material grade unverified"),
             "page": 0,
             "confidence": material_confidence,
         })
@@ -5695,7 +5830,7 @@ def _merge_step_metadata(browser_meta: dict, server_meta: dict) -> dict:
     authoritative_geometry_keys = (
         "geometry_dimensions", "geometry_locations", "cylindrical_diameters_mm", "circle_diameters_mm",
         "torus_radii_mm", "conical_surfaces", "hole_features",
-        "primary_outer_diameters_mm", "primary_inner_diameters_mm"
+        "primary_outer_diameters_mm", "primary_inner_diameters_mm", "solid_components", "bolt_circle_patterns"
     )
     for key in authoritative_geometry_keys:
         if key in server_meta and server_meta.get(key) is not None:
@@ -5770,7 +5905,7 @@ async def analyze_cad_file(
         key: server_geometry.get(key)
         for key in (
             "geometry_dimensions", "geometry_locations", "cylindrical_diameters_mm", "circle_diameters_mm",
-            "torus_radii_mm", "conical_surfaces", "hole_features", "primary_outer_diameters_mm", "primary_inner_diameters_mm", "entity_counts", "wall_thickness", "parser"
+            "torus_radii_mm", "conical_surfaces", "hole_features", "primary_outer_diameters_mm", "primary_inner_diameters_mm", "entity_counts", "wall_thickness", "solid_components", "bolt_circle_patterns", "parser"
         )
         if server_geometry.get(key) is not None
     }
@@ -6946,7 +7081,7 @@ def excel(value: DetailedExportReq):
             row.rateSource,
             row.criticalScore,
             row.confidence,
-            row.costingQty * row.rate,
+            f"=MAX(0,D{row_no})*MAX(0,F{row_no})",
         ]
         for col_no, val in enumerate(vals, 1):
             cell = ws.cell(row_no, col_no, val)
@@ -6966,20 +7101,61 @@ def excel(value: DetailedExportReq):
             score_cell.font = Font(color="274E13", bold=True)
 
     summary_row = start + len(value.rows) + 3
-    summary = [
-        ("Direct Cost", value.summary.direct_cost),
-        (f"Material Wastage ({value.summary.material_wastage_pct:g}% | C{value.summary.material_wastage_critical})", value.summary.material_wastage),
-        (f"Factory Overhead ({value.summary.overhead_pct:g}% | C{value.summary.overhead_critical})", value.summary.overhead),
-        ("Manufacturing Cost", value.summary.manufacturing_cost),
-        (f"Markup ({value.summary.markup_pct:g}% | C{value.summary.markup_critical})", value.summary.markup),
-        ("Selling Price", value.summary.selling_price),
+    last_cost_row = start + len(value.rows)
+    direct_row, waste_row, overhead_row, manufacturing_row, markup_row, selling_row = range(summary_row, summary_row + 6)
+    # Cost quantity and rate are editable input cells.  Summary amounts remain
+    # formula-linked to those inputs, while explicit manual commercial overrides
+    # from the current quotation are retained as editable override cells.
+    ws[f"I{direct_row}"] = "Direct Cost"
+    ws[f"J{direct_row}"] = f"=SUM(J{start+1}:J{last_cost_row})" if value.rows else "=0"
+    summary_config = [
+        (waste_row, "Material Wastage", value.summary.material_wastage_pct),
+        (overhead_row, "Factory Overhead", value.summary.overhead_pct),
+        (markup_row, "Markup", value.summary.markup_pct),
     ]
-    for i, (key, val) in enumerate(summary, summary_row):
-        ws[f"I{i}"] = key
-        ws[f"J{i}"] = val
-        ws[f"I{i}"].font = Font(bold=True)
-        ws[f"J{i}"].number_format = "₹#,##0.00"
-
+    ws["K11"] = "Override INR (-1 = auto)"
+    ws["L11"] = "Rate %"
+    for row_number, name, pct in summary_config:
+        ws[f"I{row_number}"] = name
+        ws[f"L{row_number}"] = pct
+        ws[f"L{row_number}"].number_format = '0.00"%"'
+    material_sum = (f'SUMIF(A{start+1}:A{last_cost_row},"MATERIAL",J{start+1}:J{last_cost_row})'
+                    if value.rows else '0')
+    # Special stock-based material row already accounts for waste, matching calc().
+    stock_lines = [f'J{r}' for r, row in enumerate(value.rows, start+1) if row.id == "ai-material-stock"]
+    material_sum = f'({material_sum}-' + ('-'.join(stock_lines) if stock_lines else '0') + ')' 
+    expected_wastage = sum(max(0, r.costingQty) * max(0, r.rate) for r in value.rows
+                           if r.category.upper() == "MATERIAL" and r.id != "ai-material-stock") * value.summary.material_wastage_pct / 100
+    expected_overhead = (value.summary.direct_cost + value.summary.material_wastage) * value.summary.overhead_pct / 100
+    expected_markup = value.summary.manufacturing_cost * value.summary.markup_pct / 100
+    def override_cell(row_number, actual, expected):
+        # A non-negative override is used only when the user changed the
+        # commercial amount. -1 means follow calculated amount automatically.
+        ws[f"K{row_number}"] = round(float(actual), 2) if abs(float(actual) - float(expected)) > 0.03 else -1
+        ws[f"K{row_number}"].number_format = '₹#,##0.00;[Red](₹#,##0.00)'
+    override_cell(waste_row, value.summary.material_wastage, expected_wastage)
+    override_cell(overhead_row, value.summary.overhead, expected_overhead)
+    override_cell(markup_row, value.summary.markup, expected_markup)
+    ws[f"J{waste_row}"] = f"=IF(K{waste_row}>=0,K{waste_row},MAX(0,{material_sum})*L{waste_row}/100)"
+    ws[f"J{overhead_row}"] = f"=IF(K{overhead_row}>=0,K{overhead_row},(J{direct_row}+J{waste_row})*L{overhead_row}/100)"
+    ws[f"I{manufacturing_row}"] = "Manufacturing Cost"
+    ws[f"J{manufacturing_row}"] = f"=J{direct_row}+J{waste_row}+J{overhead_row}"
+    ws[f"J{markup_row}"] = f"=IF(K{markup_row}>=0,K{markup_row},J{manufacturing_row}*L{markup_row}/100)"
+    ws[f"I{selling_row}"] = "Selling Price"
+    expected_selling = value.summary.manufacturing_cost + value.summary.markup
+    override_cell(selling_row, value.summary.selling_price, expected_selling)
+    ws[f"J{selling_row}"] = f"=IF(K{selling_row}>=0,K{selling_row},J{manufacturing_row}+J{markup_row})"
+    ws[f"I{selling_row+1}"] = "GST (provisional)"
+    ws[f"L{selling_row+1}"] = 18
+    ws[f"J{selling_row+1}"] = f"=J{selling_row}*L{selling_row+1}/100"
+    ws[f"I{selling_row+2}"] = "Total incl GST"
+    ws[f"J{selling_row+2}"] = f"=J{selling_row}+J{selling_row+1}"
+    for row_number in range(direct_row, selling_row + 3):
+        ws[f"I{row_number}"].font = Font(bold=row_number in (direct_row, manufacturing_row, selling_row, selling_row+2))
+        ws[f"J{row_number}"].number_format = '₹#,##0.00'
+    ws[f"L{selling_row+1}"].number_format = '0.00"%"'
+    ws["K12"] = "Editable: -1 = auto, >=0 = manual"
+    ws["L12"] = "Percent values editable"
     widths = {
         "A": 15,
         "B": 38,
@@ -6991,6 +7167,8 @@ def excel(value: DetailedExportReq):
         "H": 18,
         "I": 15,
         "J": 18,
+        "K": 32,
+        "L": 22,
     }
     for col, width in widths.items():
         ws.column_dimensions[col].width = width
@@ -7022,12 +7200,22 @@ def excel(value: DetailedExportReq):
         detail_tab(title, records)
     detail_tab("BOM", value.bom)
     detail_tab("Commercial Summary", [value.summary.model_dump()])
-    # Formula injection protection for user-supplied text in the legacy sheet.
+    # Formula injection protection: ONLY app-generated formula cells are trusted.
+    # Uploaded drawing text (including a string beginning with '=') stays literal.
+    trusted_formulas = {f"J{r}" for r in range(start + 1, last_cost_row + 1)}
+    trusted_formulas.update(f"J{r}" for r in range(direct_row, selling_row + 3))
     for row in ws.iter_rows():
         for cell in row:
+            if cell.coordinate in trusted_formulas:
+                continue
             if isinstance(cell.value,str) and cell.value.startswith(("=", "+", "-", "@")):
                 cell.value = "'" + cell.value
     ws.freeze_panes = "C13"
+    # Excel/LibreOffice must refresh every editable cost and tax total when the
+    # workbook is opened; exported formula caches are intentionally not stale.
+    if getattr(wb, "calculation", None) is not None:
+        wb.calculation.calcMode = "auto"
+        wb.calculation.fullCalcOnLoad = True
     out = BytesIO()
     wb.save(out)
     out.seek(0)
@@ -7042,87 +7230,23 @@ def excel(value: DetailedExportReq):
 
 @app.post("/api/export/pdf")
 def pdf(value: PdfReq):
-    # Customer-facing PDF intentionally excludes internal criticality/risk scores.
-    out = BytesIO()
-    doc = SimpleDocTemplate(
-        out,
-        pagesize=A4,
-        rightMargin=18 * mm,
-        leftMargin=18 * mm,
-        topMargin=18 * mm,
-        bottomMargin=18 * mm,
+    # Customer quotation uses the reviewed selling price; no reference-project
+    # prices are injected by document rendering.
+    payload = make_quotation_pdf(
+        customer=value.customer,
+        drawing=value.drawing.model_dump(),
+        rows=[row.model_dump() for row in value.rows],
+        summary=value.summary.model_dump(),
+        engineering=value.engineering,
+        preview_image=value.preview_image,
+        gst_pct=value.gst_pct,
     )
-    styles = getSampleStyleSheet()
-    story = [
-        Paragraph("QUOTATION", styles["Title"]),
-        Spacer(1, 5 * mm),
-        Paragraph(f"<b>Customer:</b> {value.customer}", styles["BodyText"]),
-        Paragraph(
-            f"<b>Drawing:</b> {value.drawing.drawing_no} / {value.drawing.revision}",
-            styles["BodyText"],
-        ),
-        Paragraph(f"<b>Description:</b> {value.drawing.description}", styles["BodyText"]),
-        Spacer(1, 5 * mm),
-    ]
-
-    data = [["Item / Process", "Qty", "Unit", "Rate (INR)", "Cost (INR)"]] + [
-        [
-            row.item,
-            f"{row.costingQty:g}",
-            row.unit,
-            f"{row.rate:,.2f}",
-            f"{row.costingQty * row.rate:,.2f}",
-        ]
-        for row in value.rows
-    ]
-    table = Table(data, colWidths=[76 * mm, 20 * mm, 18 * mm, 26 * mm, 30 * mm], repeatRows=1)
-    table.setStyle(
-        TableStyle(
-            [
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#17365D")),
-                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
-            ]
-        )
-    )
-    story += [table, Spacer(1, 6 * mm)]
-
-    sums = [
-        ["Direct Cost", f"INR {value.summary.direct_cost:,.2f}"],
-        [f"Material Wastage ({value.summary.material_wastage_pct:g}%)", f"INR {value.summary.material_wastage:,.2f}"],
-        [f"Factory Overhead ({value.summary.overhead_pct:g}%)", f"INR {value.summary.overhead:,.2f}"],
-        ["Manufacturing Cost", f"INR {value.summary.manufacturing_cost:,.2f}"],
-        [f"Markup ({value.summary.markup_pct:g}%)", f"INR {value.summary.markup:,.2f}"],
-        ["Selling Price", f"INR {value.summary.selling_price:,.2f}"],
-    ]
-    summary_table = Table(sums, colWidths=[65 * mm, 45 * mm], hAlign="RIGHT")
-    summary_table.setStyle(
-        TableStyle(
-            [
-                ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D9D9D9")),
-                ("FONTNAME", (0, -1), (-1, -1), "Helvetica-Bold"),
-                ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#E2F0D9")),
-                ("ALIGN", (1, 0), (1, -1), "RIGHT"),
-            ]
-        )
-    )
-    story.append(summary_table)
-    doc.build(story)
-    out.seek(0)
+    safe_no = re.sub(r'[^A-Za-z0-9._-]+', '_', value.drawing.drawing_no or 'drawing')[:80]
     return StreamingResponse(
-        out,
+        BytesIO(payload),
         media_type="application/pdf",
-        headers={
-            "Content-Disposition": f'attachment; filename="{value.drawing.drawing_no}_quotation.pdf"'
-        },
+        headers={"Content-Disposition": f'attachment; filename="Quotation_{safe_no}.pdf"'},
     )
-
-
-def _safe_pdf_name(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value or "drawing")
-    return cleaned.strip("._") or "drawing"
 
 
 def _render_single_batch_pdf(

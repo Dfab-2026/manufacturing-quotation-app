@@ -350,6 +350,26 @@ def _upsert_drawing(
     connection = session.connection()
     column_info = inspect(connection).get_columns("drawings")
     existing_columns = {column["name"] for column in column_info}
+    # The repository contains TWO distinct workflows. The authenticated ERP
+    # owns public.drawings (tenant_id/rfq_id/storage_path), whereas the legacy
+    # no-login quotation tool uses drawings as an optional denormalized cache.
+    # Never insert into or change the ERP-owned table without a tenant/RFQ and
+    # its authenticated upload flow. Review/extraction JSON is durably stored
+    # in its own tables and must not be rolled back by this optional cache.
+    if {"tenant_id", "rfq_id", "storage_path"} & existing_columns:
+        return
+
+    # An older third-party drawing table may have additional required fields.
+    # Skip the optional mirror rather than failing the entire review transaction.
+    for column in column_info:
+        if (column["name"] not in {"id", "file_hash", "drawing_no", "revision",
+                                   "description", "material", "thickness_mm",
+                                   "weight_kg", "quantity", "updated_at", "payload"}
+            and not column.get("nullable", True)
+            and column.get("default") is None
+            and column.get("identity") is None
+            and column.get("computed") is None):
+            return
     id_column = next((column for column in column_info if column["name"] == "id"), None)
     id_type = str((id_column or {}).get("type") or "").upper()
     drawing_id = _drawing_primary_key(stable_source_id, id_type)
@@ -1389,6 +1409,10 @@ def _ensure_schema_compatibility() -> dict:
         return {"applied": applied, "warnings": warnings}
 
     existing = {column["name"] for column in inspector.get_columns("drawings")}
+    if {"tenant_id", "rfq_id", "storage_path"} & existing:
+        # The tenant-based ERP owns this table. Its schema must never be
+        # extended by the unrelated legacy quotation-cache migration.
+        return {"applied": applied, "warnings": warnings}
     required_columns = {
         "file_hash": "VARCHAR(128) DEFAULT ''",
         "drawing_no": "VARCHAR(120) DEFAULT ''",

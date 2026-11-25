@@ -3,7 +3,7 @@ services:
     name: ai-quotation-api
     runtime: python
     rootDir: backend
-    buildCommand: python -m pip install --upgrade pip && pip install -r requirements-render.txt && python verify_runtime.py --require-ocr
+    buildCommand: python -m pip install --upgrade pip && pip install -r requirements-render.txt && python verify_runtime.py
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     autoDeploy: true
@@ -14,6 +14,14 @@ services:
         sync: false
       - key: LOCAL_OCR_ENABLED
         value: "true"
+      # The 512 MiB instance cannot reliably initialize all ONNX OCR models.
+      # Native PDF text extraction stays online. Use >=1 GiB RAM for local OCR.
+      - key: OCR_MIN_MEMORY_MB
+        value: "768"
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"
       - key: MAX_UPLOAD_MB
         value: 100
       - key: DB_POOL_SIZE

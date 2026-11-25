@@ -67,7 +67,7 @@ def _features(data):
 
 def _pdf_lines(page):
     """Return text plus exact character boxes, including individually rotated text."""
-    import fitz
+    import pymupdf as fitz
     for block in page.get_text('rawdict',flags=fitz.TEXTFLAGS_RAWDICT & ~fitz.TEXT_PRESERVE_IMAGES)['blocks']:
         for line in block.get('lines',[]):
             chars=[]; boxes=[]
@@ -122,7 +122,7 @@ def _text_hit_score(text, match, label, unit, callout):
 
 
 def _find_anchors(data,lines,preview):
-    import fitz
+    import pymupdf as fitz
     locations=[]; seen=set()
     # Build candidates for every dimension with source semantics. Multiple real
     # matching callouts are retained, never silently reduced to an arbitrary point.
@@ -193,7 +193,7 @@ def _find_anchors(data,lines,preview):
 
 def _partitioned_anchors(data, lines, preview, native=None):
     """Use the identical product-region policy for extraction and Locate."""
-    import fitz
+    import pymupdf as fitz
     from app.extraction.product_regions import partition
     regions=[]
     for idx,(page,text,boxes,rect,rotation) in enumerate(lines):
@@ -222,7 +222,7 @@ def _partitioned_anchors(data, lines, preview, native=None):
 
 def render_pdf_evidence_page(content, index):
     """Render only the requested page; keep large PDFs out of saved quotation payloads."""
-    import fitz
+    import pymupdf as fitz
     with fitz.open(stream=content,filetype='pdf') as doc:
         if not 0<=index<len(doc): raise IndexError('Drawing page out of range')
         page=doc[index]; scale=min(4.0,2400/max(page.rect.width,page.rect.height,1))
@@ -231,7 +231,7 @@ def render_pdf_evidence_page(content, index):
 
 
 def attach_pdf_evidence(data, content):
-    import fitz
+    import pymupdf as fitz
     with fitz.open(stream=content,filetype='pdf') as doc:
         if not len(doc):return
         previews={}
@@ -280,7 +280,7 @@ def attach_image_evidence(data, content, ocr=None):
     """Image preview with source anchors when local OCR provides trustworthy positions."""
     from io import BytesIO
     from PIL import Image,ImageOps
-    import fitz
+    import pymupdf as fitz
     with Image.open(BytesIO(content)) as original:
         image=ImageOps.exif_transpose(original).convert('RGB')
         image.thumbnail((1800,1800))
@@ -335,7 +335,7 @@ def attach_dxf_evidence(data,content):
     import ezdxf
     from ezdxf.addons.drawing import Frontend,RenderContext,layout,config
     from ezdxf.addons.drawing.pymupdf import PyMuPdfBackend
-    import fitz
+    import pymupdf as fitz
     with tempfile.NamedTemporaryFile(suffix='.dxf',delete=False) as file:
         file.write(content); name=file.name
     try:

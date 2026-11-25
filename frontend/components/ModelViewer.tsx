@@ -8,15 +8,18 @@ import {
 
 export default function ModelViewer({
   file,
-  issueCount = 0, highlightPoints = [], highlightPulse = 0
+  issueCount = 0, highlightPoints = [], highlightPulse = 0, onSnapshot
 }: {
   file: File | null;
   issueCount?: number;
   highlightPoints?: number[][];
   highlightPulse?: number;
+  onSnapshot?: (image: string) => void;
 }) {
   const highlightRef = useRef<(points:number[][])=>void>(()=>{});
   const latestPoints = useRef(highlightPoints);
+  const snapshotCallbackRef = useRef(onSnapshot);
+  useEffect(() => { snapshotCallbackRef.current = onSnapshot; }, [onSnapshot]);
   useEffect(()=>{latestPoints.current=highlightPoints;highlightRef.current(highlightPoints)},[highlightPoints,highlightPulse]);
   const cadHostRef = useRef<HTMLDivElement | null>(null);
   const cadCanvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -305,6 +308,14 @@ export default function ModelViewer({
         setCadReady(true);
         setCadMessage("");
         render();
+        // Capture one already-rendered frame for the existing quotation PDF.
+        // This is optional and never changes the interactive CAD viewer.
+        if (snapshotCallbackRef.current) {
+          try {
+            const image = renderer.domElement.toDataURL("image/png");
+            if (image.length < 2_900_000) snapshotCallbackRef.current(image);
+          } catch { /* WebGL screenshots are best-effort, not a CAD-analysis blocker. */ }
+        }
 
         cleanup = () => {
           observer.disconnect();

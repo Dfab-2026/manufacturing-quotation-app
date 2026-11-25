@@ -54,7 +54,7 @@ type BatchFailure = {
 };
 
 
-const BATCH_ANALYZE_CONCURRENCY = 2; // Keep AI calls conservative; per-drawing work is optimized below.
+const BATCH_ANALYZE_CONCURRENCY = 1; // Serial analysis prevents simultaneous OCR model allocations on small Render instances.
 const DFM_HISTORY_KEY = "dfab-dfm-history-v080";
 const BOM_HISTORY_KEY = "dfab-bom-history-v080";
 const QUOTE_HISTORY_CACHE_KEY = "dfab-quotation-history-cache-v036";
@@ -1428,6 +1428,7 @@ export default function Page() {
   const [trainingPromptItems, setTrainingPromptItems] = useState<BatchWorkspace[]>([]);
   const [trainingBusy, setTrainingBusy] = useState(false);
 
+  const quotationCadPreviewRef = useRef<{ hash: string; image: string } | null>(null);
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null);
   const [drawing, setDrawing] = useState<DrawingDetails | null>(null);
   const [rows, setRows] = useState<CostRow[]>([]);
@@ -3029,7 +3030,7 @@ export default function Page() {
         }
         return await api.analyzeCad(cadSummary);
       }
-      return await api.analyzeDrawing(selected, true);
+      return await api.analyzeDrawing(selected, false);
     } catch (error) {
       primaryReason = error instanceof Error ? error.message : primaryReason;
     }
@@ -3040,6 +3041,15 @@ export default function Page() {
       const fallbackReason = fallbackError instanceof Error
         ? `${primaryReason}; fallback service: ${fallbackError.message}`
         : primaryReason;
+      // Network failure is not a completed drawing analysis. Do not silently
+      // persist fabricated, empty engineering data as a successful extraction.
+      // Existing Retry Failed action can recover once Render is reachable.
+      const networkFailure = /failed to fetch|networkerror|load failed|\b(502|503|504)\b/i;
+      const fallbackUnavailable = fallbackError instanceof TypeError ||
+        (fallbackError instanceof Error && networkFailure.test(fallbackError.message));
+      if (networkFailure.test(primaryReason) && fallbackUnavailable) {
+        throw new Error("Analysis service is temporarily unreachable. Your uploaded drawing is preserved; use Retry Failed to analyze it after the service recovers.");
+      }
       return createClientPredictedAnalysis(selected, fallbackReason);
     }
   };
@@ -4487,8 +4497,12 @@ export default function Page() {
       await api.exportPdf(
         drawing,
         rows,
-        summary,
-        customer
+        liveCostSummary,
+        customer,
+        reviewedEngineeringData,
+        quotationCadPreviewRef.current?.hash === analysis?.file_hash
+          ? quotationCadPreviewRef.current.image
+          : (analysis?.preview_image || "")
       );
     } else {
       await api.exportBatchPdf(
@@ -5833,6 +5847,9 @@ export default function Page() {
                             key={fileKey(drawingPreviewSource)}
                             file={drawingPreviewSource}
                             issueCount={(analysis?.extraction_warnings || []).length}
+                            onSnapshot={(image) => {
+                              if (analysis?.file_hash) quotationCadPreviewRef.current = { hash: analysis.file_hash, image };
+                            }}
                           />
                         )
                         : drawingPreviewSource && isPdfPreview

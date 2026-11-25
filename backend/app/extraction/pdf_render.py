@@ -1,7 +1,5 @@
 from pathlib import Path
-import fitz
-
-
+import pymupdf as fitz
 def pdf_to_images(pdf_path: str, output_folder: str):
     pdf_path = Path(pdf_path)
     output_folder = Path(output_folder)

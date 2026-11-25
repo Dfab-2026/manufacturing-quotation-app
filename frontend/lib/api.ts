@@ -230,28 +230,31 @@ export async function analyzeDrawing(file: File, forceAI = false) {
 
   let lastError: unknown = null;
   for (const target of targets) {
-    try {
-      // Best-effort warmup for Render cold starts. Never block Analyze on health.
-      if (/^https?:\/\//i.test(target)) {
-        const warmController = new AbortController();
-        const warmTimer = globalThis.setTimeout(() => warmController.abort(), 8000);
-        try {
-          await fetch(`${target}/api/health`, {
-            method: "GET",
-            cache: "no-store",
-            signal: warmController.signal
-          });
-        } catch {
-          // The analyze request below is authoritative.
-        } finally {
-          globalThis.clearTimeout(warmTimer);
+    // A Render instance can restart between health and analysis. Retry genuine
+    // connection failures, but never re-send an invalid file or other HTTP 4xx.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        if (/^https?:\/\//i.test(target)) {
+          const warmController = new AbortController();
+          const warmTimer = globalThis.setTimeout(() => warmController.abort(), 8000);
+          try {
+            await fetch(`${target}/api/health`, {
+              method: "GET", cache: "no-store", signal: warmController.signal
+            });
+          } catch {
+            // The analyze request below is authoritative.
+          } finally {
+            globalThis.clearTimeout(warmTimer);
+          }
         }
+        return await postAnalyzeTo(target, file, forceAI, 240000);
+      } catch (error) {
+        lastError = error;
+        const transient = error instanceof TypeError ||
+          (error instanceof Error && /failed to fetch|networkerror|load failed|\b(502|503|504)\b/i.test(error.message));
+        if (!transient || attempt === 2) break;
+        await new Promise<void>((resolve) => globalThis.setTimeout(resolve, (attempt + 1) * 1500));
       }
-
-      return await postAnalyzeTo(target, file, forceAI, 240000);
-    } catch (error) {
-      lastError = error;
-      // Only fall through to the proxy after a direct request truly failed.
     }
   }
 
@@ -577,11 +580,11 @@ export async function fetchDrawingPage(file: File, page: number, signal: AbortSi
   throw lastError instanceof Error ? lastError : new Error("Unable to render page.");
 }
 
-export async function exportPdf(drawing: DrawingDetails, rows: CostRow[], summary: QuoteSummary, customer: string) {
+export async function exportPdf(drawing: DrawingDetails, rows: CostRow[], summary: QuoteSummary, customer: string, engineering: AIExtraction | null = null, previewImage = "") {
   await dl(await request("/api/export/pdf", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ drawing, rows, summary, customer })
+    body: JSON.stringify({ drawing, rows, summary, customer, engineering: engineering || {}, preview_image: previewImage })
   }), "quotation.pdf");
 }
 

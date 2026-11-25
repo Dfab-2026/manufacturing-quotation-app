@@ -31,6 +31,10 @@ export function nodeSupported(value) {
 export function lockVersion(lock, name) { return lock?.packages?.[`node_modules/${name}`]?.version || ''; }
 export const CHECKED_PACKAGES = ['next', 'react', 'react-dom', '@types/react', '@types/react-dom', 'typescript', 'occt-import-js', 'ag-grid-community', 'ag-grid-react', 'three'];
 export function releaseLockReady(manifest, lock) {
+  if (lock?.lockfileVersion !== 3 || lock?.name !== manifest?.name || lock?.version !== manifest?.version) return false;
+  const rootMetadata = lock?.packages?.[''];
+  if (rootMetadata?.name !== manifest?.name || rootMetadata?.version !== manifest?.version ||
+      rootMetadata?.engines?.node !== manifest?.engines?.node) return false;
   const react = lockVersion(lock, 'react');
   if (!supportedNext(lockVersion(lock, 'next')) || !supportedReact(react) || react !== lockVersion(lock, 'react-dom')) return false;
   if (!['@types/react', '@types/react-dom'].every(name => versionParts(lockVersion(lock,name))[0] === 19)) return false;
