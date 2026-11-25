@@ -4494,14 +4494,16 @@ export default function Page() {
     const items = currentBatchPayload();
 
     if (items.length <= 1) {
+      const quotationCadPreview = quotationCadPreviewRef.current;
+
       await api.exportPdf(
         drawing,
         rows,
         liveCostSummary,
         customer,
         reviewedEngineeringData,
-        quotationCadPreviewRef.current?.hash === analysis?.file_hash
-          ? quotationCadPreviewRef.current.image
+        quotationCadPreview && quotationCadPreview.hash === analysis?.file_hash
+          ? quotationCadPreview.image
           : (analysis?.preview_image || "")
       );
     } else {

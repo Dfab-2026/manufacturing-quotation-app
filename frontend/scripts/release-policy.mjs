@@ -1,17 +1,17 @@
 // Release policy intentionally follows the application's committed framework
 // generation. CI/Vercel must install the checked-in lockfile exactly and must
 // not force a framework-major migration during deployment.
-export const TARGET_RUNTIME = Object.freeze({ next: '^14.2.35', react: '^18.3.1', 'react-dom': '^18.3.1' });
+export const TARGET_RUNTIME = Object.freeze({ next: '16.4.6', react: '19.3.1', 'react-dom': '19.3.1' });
 export const TARGET_OVERRIDES = Object.freeze({});
-export const TARGET_TYPES = Object.freeze({ '@types/react': '^18.3.12', '@types/react-dom': '^18.3.1' });
+export const TARGET_TYPES = Object.freeze({ '@types/react': '19.3.0', '@types/react-dom': '19.3.0' });
 const versionParts = value => /^\d+\.\d+\.\d+$/.test(String(value)) ? String(value).split('.').map(Number) : [];
 export function supportedNext(value) {
   const [major, minor, patch] = versionParts(value);
-  return major === 14 && (minor > 2 || (minor === 2 && patch >= 35));
+  return major === 16 && (minor > 4 || (minor === 4 && patch >= 6));
 }
 export function supportedReact(value) {
   const [major, minor, patch] = versionParts(value);
-  return major === 18 && (minor > 3 || (minor === 3 && patch >= 1));
+  return major === 19 && (minor > 3 || (minor === 3 && patch >= 1));
 }
 export function nodeSupported(value) {
   return [22, 24].includes(Number(String(value).split('.')[0]));
@@ -25,7 +25,7 @@ export function releaseLockReady(manifest, lock) {
       rootMetadata?.engines?.node !== manifest?.engines?.node) return false;
   const react = lockVersion(lock, 'react');
   if (!supportedNext(lockVersion(lock, 'next')) || !supportedReact(react) || react !== lockVersion(lock, 'react-dom')) return false;
-  if (!['@types/react', '@types/react-dom'].every(name => versionParts(lockVersion(lock,name))[0] === 18)) return false;
+  if (!['@types/react', '@types/react-dom'].every(name => versionParts(lockVersion(lock,name))[0] === 19)) return false;
   const root = lock?.packages?.[''];
   if (!root) return false;
   // npm ci verifies the full graph. This early check catches manifest/lock drift
