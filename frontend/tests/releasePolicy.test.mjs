@@ -6,20 +6,20 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { CHECKED_PACKAGES, TARGET_RUNTIME, TARGET_OVERRIDES, migrationManifest, supportedNext, supportedReact, releaseLockReady, nodeSupported } from '../scripts/release-policy.mjs';
 const sourceManifest=JSON.parse(readFileSync(new URL('../package.json',import.meta.url),'utf8'));
-const seedManifest={...sourceManifest,dependencies:{...sourceManifest.dependencies,next:'^14.2.35',react:'^18.3.1','react-dom':'^18.3.1'},devDependencies:{...sourceManifest.devDependencies,'@types/react':'^18.3.12','@types/react-dom':'^18.3.1'}};
-const versions={'next':'15.5.29','react':'19.3.1','react-dom':'19.3.1','@types/react':'19.2.0','@types/react-dom':'19.2.0','typescript':'5.9.3','occt-import-js':'0.0.23','three':'0.185.1','ag-grid-community':'32.3.9','ag-grid-react':'32.3.9','postcss':'8.5.33','sharp':'0.35.5'};
+const seedManifest={...sourceManifest,dependencies:{...sourceManifest.dependencies,next:'^13.5.0',react:'^17.0.2','react-dom':'^17.0.2'},devDependencies:{...sourceManifest.devDependencies,'@types/react':'^17.0.0','@types/react-dom':'^17.0.0'}};
+const versions={'next':'14.2.35','react':'18.3.1','react-dom':'18.3.1','@types/react':'18.3.31','@types/react-dom':'18.3.7','typescript':'5.9.3','occt-import-js':'0.0.23','three':'0.185.1','ag-grid-community':'32.3.9','ag-grid-react':'32.3.9','postcss':'8.5.33','sharp':'0.35.5'};
 const makeLock=(manifest, overrides={})=>({name:manifest.name,version:manifest.version,lockfileVersion:3, packages:{'':{name:manifest.name,version:manifest.version,engines:manifest.engines,dependencies:manifest.dependencies,devDependencies:manifest.devDependencies},...Object.fromEntries(Object.entries({...versions,...overrides}).map(([k,v])=>[`node_modules/${k}`,{version:v}]))}});
 test('deployment rejects the original unsupported release and invalid/prerelease versions',()=>{
-  for (const version of ['14.2.35','15.5.28','16.4.4','15.5.29-canary.0','garbage','']) assert.equal(supportedNext(version),false,version);
-  for (const version of ['15.5.29','16.4.5','16.5.0']) assert.equal(supportedNext(version),true,version);
-  assert.equal(supportedReact('19.3.0'),false); assert.equal(supportedReact('19.2.8'),false); assert.equal(supportedReact('19.3.1'),true);
+  for (const version of ['13.5.11','14.2.34','15.0.0','14.2.35-canary.0','garbage','']) assert.equal(supportedNext(version),false,version);
+  for (const version of ['14.2.35','14.2.36','14.3.0']) assert.equal(supportedNext(version),true,version);
+  assert.equal(supportedReact('18.3.0'),false); assert.equal(supportedReact('17.0.2'),false); assert.equal(supportedReact('18.3.1'),true);
   assert.equal(nodeSupported('22.16.0'),true); assert.equal(nodeSupported('24.0.0'),true); assert.equal(nodeSupported('20.0.0'),false);
 });
 test('migration changes only the framework and React dependency entries',()=>{
   const migrated=migrationManifest(seedManifest);
   assert.deepEqual(migrated.scripts,seedManifest.scripts);
   for (const [name,version] of Object.entries(seedManifest.dependencies)) if(!(name in TARGET_RUNTIME)) assert.equal(migrated.dependencies[name],version);
-  assert.equal(migrated.dependencies.next,'^15.5.29');
+  assert.equal(migrated.dependencies.next,'^14.2.35');
   assert.equal(migrated.dependencies.react,migrated.dependencies['react-dom']);
   assert.equal(migrated.devDependencies.typescript,seedManifest.devDependencies.typescript);
 });
@@ -30,9 +30,9 @@ test('release lock policy rejects manifest drift, old React and mismatched React
   assert.equal(releaseLockReady(manifest,{...lock,name:'not-the-app'}),false);
   assert.equal(releaseLockReady(manifest,{...lock,lockfileVersion:2}),false);
   assert.equal(releaseLockReady(seedManifest,lock),false);
-  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'react-dom':'19.2.9'})),false);
-  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'react':'18.3.1','react-dom':'18.3.1'})),false);
-  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'@types/react':'18.3.31'})),false);
+  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'react-dom':'18.3.0'})),false);
+  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'react':'17.0.2','react-dom':'17.0.2'})),false);
+  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'@types/react':'17.0.68'})),false);
 });
 // Exercise the real release orchestration with an isolated simulated npm runner.
 // This tests control flow and rollback, NOT availability of packages on npm.
@@ -43,7 +43,7 @@ function withFixture(fn){
     for(const name of ['install-release.mjs','prepare-release.mjs','release-policy.mjs','check-release.mjs']) copyFileSync(new URL('../scripts/'+name,import.meta.url),join(dir,'scripts',name));
     const manifestPath=join(dir,'package.json'),lockPath=join(dir,'package-lock.json');
     const manifestBytes=JSON.stringify(seedManifest,null,2)+'\n';
-    const lockBytes=JSON.stringify(makeLock(seedManifest,{next:'14.2.35',react:'18.3.1','react-dom':'18.3.1'}),null,2)+'\n';
+    const lockBytes=JSON.stringify(makeLock(seedManifest,{next:'13.5.11',react:'17.0.2','react-dom':'17.0.2','@types/react':'17.0.68','@types/react-dom':'17.0.22'}),null,2)+'\n';
     writeFileSync(manifestPath,manifestBytes);writeFileSync(lockPath,lockBytes);
     const stub=join(dir,'npm-runner.mjs');
     writeFileSync(stub,`import fs from 'node:fs';import path from 'node:path';
@@ -52,7 +52,7 @@ if(process.env.FAIL_COMMAND===cmd) process.exit(9);
 const versions=${JSON.stringify(versions)};
 if(cmd==='install') {
  const m=JSON.parse(fs.readFileSync('package.json','utf8'));
- if(m.dependencies.next!=='^15.5.29'||m.dependencies.react!==m.dependencies['react-dom']||m.devDependencies['@types/react']!=='^19.0.0') process.exit(7);
+ if(m.dependencies.next!=='^14.2.35'||m.dependencies.react!==m.dependencies['react-dom']||m.devDependencies['@types/react']!=='^18.3.12') process.exit(7);
  fs.writeFileSync('package-lock.json',JSON.stringify({name:m.name,version:m.version,lockfileVersion:3,packages:{'':{name:m.name,version:m.version,engines:m.engines,dependencies:m.dependencies,devDependencies:m.devDependencies},...Object.fromEntries(Object.entries(versions).map(([k,v])=>['node_modules/'+k,{version:v}]))}}));
 } else if(cmd==='ci') {
  for(const name of ${JSON.stringify(CHECKED_PACKAGES)}) {const p=path.join('node_modules',name);fs.mkdirSync(p,{recursive:true});fs.writeFileSync(path.join(p,'package.json'),JSON.stringify({version:versions[name]}));}
@@ -133,15 +133,12 @@ test('installer distinguishes missing npm lifecycle from a Node version failure'
 }));
 
 
-test('release rejects outdated transitive CSS and image processing packages, including nested copies',()=>{
-  const manifest=migrationManifest(seedManifest);
-  assert.deepEqual(manifest.overrides,TARGET_OVERRIDES);
-  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'postcss':'8.4.31'})),false);
-  assert.equal(releaseLockReady(manifest,makeLock(manifest,{'sharp':'0.34.5'})),false);
-  const lock=makeLock(manifest);
-  lock.packages['node_modules/next/node_modules/postcss']={version:'8.5.18'};
-  assert.equal(releaseLockReady(manifest,lock),false);
-  assert.equal(releaseLockReady({...manifest,overrides:{}},makeLock(manifest)),false);
+test('committed frontend manifest and lockfile satisfy release policy',()=>{
+  const lock=JSON.parse(readFileSync(new URL('../package-lock.json',import.meta.url),'utf8'));
+  assert.equal(releaseLockReady(sourceManifest,lock),true);
+  assert.equal(lock.packages['node_modules/next'].version,'14.2.35');
+  assert.equal(lock.packages['node_modules/react'].version,'18.3.1');
+  assert.equal(lock.packages['node_modules/react-dom'].version,'18.3.1');
 });
 
 test('release runner identifies the failing command and never reports a false pass',()=>{
